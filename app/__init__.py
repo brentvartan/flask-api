@@ -70,6 +70,11 @@ def create_app(config_name=None):
         app.logger.error("500 error: %s", str(e))
         return jsonify({"error": "Internal server error"}), 500
 
+    # Health check endpoint
+    @app.route("/health")
+    def health():
+        return jsonify({"status": "ok"}), 200
+
     # Register blueprints
     from .api.auth import bp as auth_bp
     from .api.items import bp as items_bp
