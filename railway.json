@@ -4,7 +4,7 @@
     "builder": "DOCKERFILE"
   },
   "deploy": {
-    "startCommand": "flask db upgrade && gunicorn 'app:create_app()' --bind '0.0.0.0:5001' --workers 2 --timeout 120",
+    "startCommand": "flask db upgrade && gunicorn 'app:create_app()' --bind \"0.0.0.0:$PORT\" --workers 2 --timeout 120 --access-logfile - --error-logfile -",
     "healthcheckPath": "/health",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
