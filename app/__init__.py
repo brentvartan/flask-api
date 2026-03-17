@@ -88,24 +88,26 @@ def create_app(config_name=None):
     from .cli import register_commands
     register_commands(app)
 
-    # Swagger docs
-    from flasgger import Swagger
-    Swagger(app, config={
-        "headers": [],
-        "specs": [{"endpoint": "apispec", "route": "/apispec.json"}],
-        "static_url_path": "/flasgger_static",
-        "swagger_ui": True,
-        "specs_route": "/api/docs",
-        "title": "Flask API",
-        "version": "1.0.0",
-        "securityDefinitions": {
-            "Bearer": {
-                "type": "apiKey",
-                "name": "Authorization",
-                "in": "header",
-                "description": "JWT token: Bearer <token>",
-            }
-        },
-    })
+    # Swagger docs (dev/staging only — skip in production to avoid
+    # Flasgger/Flask 3.x compatibility issues and YAML parse errors)
+    if config_name != "production":
+        from flasgger import Swagger
+        Swagger(app, config={
+            "headers": [],
+            "specs": [{"endpoint": "apispec", "route": "/apispec.json"}],
+            "static_url_path": "/flasgger_static",
+            "swagger_ui": True,
+            "specs_route": "/api/docs",
+            "title": "Flask API",
+            "version": "1.0.0",
+            "securityDefinitions": {
+                "Bearer": {
+                    "type": "apiKey",
+                    "name": "Authorization",
+                    "in": "header",
+                    "description": "JWT token: Bearer <token>",
+                }
+            },
+        })
 
     return app
