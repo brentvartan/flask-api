@@ -79,6 +79,10 @@ def create_app(config_name=None):
     app.register_blueprint(items_bp, url_prefix="/api/items")
     app.register_blueprint(admin_bp, url_prefix="/api/admin")
 
+    # CLI commands
+    from .cli import register_commands
+    register_commands(app)
+
     # Swagger docs
     from flasgger import Swagger
     Swagger(app, config={
