@@ -33,3 +33,16 @@ class ItemUpdateSchema(Schema):
 class PaginationSchema(Schema):
     page = fields.Int(load_default=1, validate=validate.Range(min=1))
     per_page = fields.Int(load_default=20, validate=validate.Range(min=1, max=100))
+
+
+class LogoutSchema(Schema):
+    refresh_token = fields.Str(load_default=None)
+
+
+class ForgotPasswordSchema(Schema):
+    email = fields.Email(required=True)
+
+
+class ResetPasswordSchema(Schema):
+    token = fields.Str(required=True)
+    password = fields.Str(required=True, validate=validate.Length(min=8))

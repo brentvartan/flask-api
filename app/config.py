@@ -8,6 +8,8 @@ class Config:
     JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "jwt-change-me-in-production")
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)
+    FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+    MAIL_SUPPRESS_SEND = False
 
 
 class DevelopmentConfig(Config):
@@ -22,6 +24,7 @@ class TestingConfig(Config):
     TESTING = True
     WTF_CSRF_ENABLED = False
     RATELIMIT_ENABLED = False
+    MAIL_SUPPRESS_SEND = True
     SQLALCHEMY_DATABASE_URI = os.environ.get(
         "TEST_DATABASE_URL",
         f"postgresql://{os.environ.get('USER', 'postgres')}@localhost:5432/flask_api_test",
