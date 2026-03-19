@@ -3,6 +3,7 @@ import logging
 import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 from flask import Flask, jsonify
+from flask_cors import CORS
 from .config import config
 from .extensions import db, migrate, jwt, bcrypt, limiter
 
@@ -29,6 +30,13 @@ def create_app(config_name=None):
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # CORS — allow requests from the frontend dev server and production domain
+    CORS(app, resources={r"/api/*": {"origins": [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        os.environ.get("FRONTEND_URL", "http://localhost:5173"),
+    ]}}, supports_credentials=True)
 
     # Init extensions
     db.init_app(app)
