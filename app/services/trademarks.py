@@ -124,7 +124,17 @@ def search_recent_trademarks(days_back: int = 30, max_results: int = 200) -> dic
         resp = requests.post(
             USPTO_SEARCH_URL,
             json=es_query,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://tmsearch.uspto.gov",
+                "Referer": "https://tmsearch.uspto.gov/search/search-results",
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+            },
             timeout=REQUEST_TIMEOUT,
         )
         resp.raise_for_status()
