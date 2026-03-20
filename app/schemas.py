@@ -32,7 +32,7 @@ class ItemUpdateSchema(Schema):
 
 class PaginationSchema(Schema):
     page = fields.Int(load_default=1, validate=validate.Range(min=1))
-    per_page = fields.Int(load_default=20, validate=validate.Range(min=1, max=100))
+    per_page = fields.Int(load_default=20, validate=validate.Range(min=1, max=1000))
 
 
 class LogoutSchema(Schema):
