@@ -31,12 +31,22 @@ def create_app(config_name=None):
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    # CORS — allow requests from the frontend dev server and production domain
-    CORS(app, resources={r"/api/*": {"origins": [
+    # CORS — allow requests from the frontend dev server and production domain(s).
+    # FRONTEND_URLS accepts a comma-separated list for multiple environments
+    # (e.g. Vercel preview + production custom domain).
+    # FRONTEND_URL is kept for backwards compatibility.
+    _extra = [
+        u.strip()
+        for u in os.environ.get("FRONTEND_URLS", os.environ.get("FRONTEND_URL", "")).split(",")
+        if u.strip()
+    ]
+    _allowed_origins = list({
         "http://localhost:3000",
         "http://localhost:5173",
-        os.environ.get("FRONTEND_URL", "http://localhost:5173"),
-    ]}}, supports_credentials=True)
+        *_extra,
+    })
+    CORS(app, resources={r"/api/*": {"origins": _allowed_origins}},
+         supports_credentials=True)
 
     # Init extensions
     db.init_app(app)
