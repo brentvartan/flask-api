@@ -110,11 +110,13 @@ def create_app(config_name=None):
     from .api.items import bp as items_bp
     from .api.admin import bp as admin_bp
     from .api.scans import bp as scans_bp
+    from .api.enrich import bp as enrich_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(items_bp, url_prefix="/api/items")
     app.register_blueprint(admin_bp, url_prefix="/api/admin")
     app.register_blueprint(scans_bp, url_prefix="/api/scans")
+    app.register_blueprint(enrich_bp, url_prefix="/api/enrich")
 
     # CLI commands
     from .cli import register_commands
