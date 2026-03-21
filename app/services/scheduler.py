@@ -35,16 +35,32 @@ def run_scan_now(scan, user_id: int) -> dict:
     from ..services.email import send_hot_alert
     from ..extensions import db
 
-    # ── 1. Fetch USPTO data ───────────────────────────────────────────────────
-    result = search_recent_trademarks(
+    # ── 1. Fetch signals from all live sources ────────────────────────────────
+    from ..services.delaware import search_recent_delaware_entities
+
+    signals = []
+
+    tm_result = search_recent_trademarks(
         days_back=scan.days_back,
         max_results=scan.max_results,
     )
+    if not tm_result.get("error"):
+        signals.extend(tm_result["signals"])
+    else:
+        logger.warning("USPTO scan error: %s", tm_result["error"])
 
-    if result.get("error"):
-        return {"error": result["error"], "new_saved": 0, "hot_found": 0}
+    de_result = search_recent_delaware_entities(
+        days_back=scan.days_back,
+        max_results=150,
+        check_domains=True,
+    )
+    if not de_result.get("error"):
+        signals.extend(de_result["signals"])
+    else:
+        logger.warning("Delaware scan error: %s", de_result["error"])
 
-    signals = result["signals"]
+    if not signals:
+        return {"error": "All signal sources failed", "new_saved": 0, "hot_found": 0}
 
     # ── 2. Load existing fingerprints (dedup) ─────────────────────────────────
     rows = (
