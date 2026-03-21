@@ -84,7 +84,8 @@ def run_scan_now(scan, user_id: int) -> dict:
     new_item_ids = []
 
     for sig in signals:
-        key = f"trademark:{sig['companyName'].upper().strip()}:{sig['timestamp'][:10]}"
+        signal_type = sig.get("signal_type", "trademark")
+        key = f"{signal_type}:{sig['companyName'].upper().strip()}:{sig['timestamp'][:10]}"
         fp  = hashlib.sha256(key.encode()).hexdigest()[:16]
 
         if fp in existing_fps:
@@ -97,9 +98,9 @@ def run_scan_now(scan, user_id: int) -> dict:
                 "_type":        "signal",
                 "fp":           fp,
                 "company_name": sig["companyName"],
-                "signal_type":  "trademark",
+                "signal_type":  signal_type,
                 "category":     sig["category"],
-                "score_boost":  15,
+                "score_boost":  sig.get("score_boost", 5),
                 "description":  sig["description"],
                 "url":          sig["url"],
                 "notes":        sig.get("notes", ""),
@@ -168,7 +169,7 @@ def run_scan_now(scan, user_id: int) -> dict:
     return {
         "new_saved":     new_saved,
         "hot_found":     len(hot_brands),
-        "total_fetched": result["fetched"],
+        "total_fetched": len(signals),
         "alert_sent":    alert_sent,
     }
 
