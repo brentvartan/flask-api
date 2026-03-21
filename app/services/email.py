@@ -2,6 +2,100 @@ import os
 import resend
 
 
+def _resend_client():
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        raise RuntimeError("RESEND_API_KEY environment variable is not set")
+    resend.api_key = api_key
+    return os.environ.get("MAIL_FROM", "noreply@mail.bullish.co")
+
+
+def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
+    """Send a HOT signal alert email via Resend when new HOT brands are discovered."""
+    if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
+        return
+
+    from_address = _resend_client()
+    app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
+
+    count = len(hot_brands)
+    subject = f"🔵 {count} HOT Signal{'s' if count != 1 else ''} — Stealth Finder"
+
+    brand_cards = ""
+    for b in hot_brands:
+        brand_cards += f"""
+        <div style="border:2px solid #052EF0;border-radius:8px;padding:20px;margin:16px 0;background:#fff;">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <div style="background:#052EF0;color:#fff;border-radius:6px;padding:8px 12px;font-family:monospace;font-weight:bold;font-size:20px;min-width:52px;text-align:center;">
+              {b.get('score', '—')}
+            </div>
+            <div>
+              <div style="font-family:monospace;font-weight:bold;font-size:18px;letter-spacing:2px;text-transform:uppercase;color:#000;">
+                {b.get('name', '')}
+              </div>
+              <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:2px;">
+                {b.get('category', '')}
+              </div>
+            </div>
+          </div>
+          {f'<p style="font-style:italic;color:#333;margin:8px 0;border-left:3px solid #052EF0;padding-left:12px;">{b["thesis"]}</p>' if b.get('thesis') else ''}
+          {f'<p style="font-size:12px;color:#052EF0;font-weight:600;margin:8px 0;">2026 Theme: {b["theme"]}</p>' if b.get('theme') else ''}
+        </div>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
+      <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
+
+        <!-- Header -->
+        <div style="padding:32px 40px 24px;border-bottom:1px solid #222;">
+          <div style="font-family:monospace;font-size:11px;color:#666;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">
+            Bullish Intelligence · Stealth Finder
+          </div>
+          <h1 style="margin:0;color:#052EF0;font-family:monospace;font-size:28px;font-weight:bold;letter-spacing:3px;">
+            🔵 HOT SIGNAL{('S' if count != 1 else '')}
+          </h1>
+          <p style="margin:8px 0 0;color:#888;font-size:14px;">
+            {count} new HOT brand{'s' if count != 1 else ''} detected — {scan_name}
+          </p>
+        </div>
+
+        <!-- Brand cards -->
+        <div style="padding:24px 40px;">
+          {brand_cards}
+        </div>
+
+        <!-- CTA -->
+        <div style="padding:0 40px 32px;">
+          <a href="{app_url}"
+             style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
+                    padding:14px 28px;border-radius:6px;font-family:monospace;font-weight:bold;
+                    font-size:13px;letter-spacing:1px;text-transform:uppercase;">
+            View in Stealth Finder →
+          </a>
+        </div>
+
+        <!-- Footer -->
+        <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
+          <p style="margin:0;color:#555;font-size:11px;">
+            Bullish Brand Fund III · Stealth Finder · Automated Signal Detection
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+    resend.Emails.send({
+        "from":    from_address,
+        "to":      [to_email],
+        "subject": subject,
+        "html":    html,
+    })
+
+
 def send_password_reset_email(to_email: str, reset_url: str) -> None:
     """Send a password-reset email via Resend.
 
