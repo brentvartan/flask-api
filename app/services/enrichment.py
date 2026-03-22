@@ -92,6 +92,24 @@ IMPORTANT: You are evaluating a TRADEMARK FILING or DELAWARE INCORPORATION — o
 
 FOUNDER RESEARCH: Also attempt to identify the founder of this brand. Use your training data to check if this brand name is associated with known founders. For truly stealth brands you won't know — return null for all founder fields. This is valuable: if you don't know the founder, it confirms the brand is early and not yet public.
 
+FOUNDER SCORING MODEL: Score the founder against Bullish's 5-signal model. Use training data for known founders, infer from filing language for unknowns. Be honest about confidence.
+
+GATE: Set gate_passed=false if the category doesn't map to one of Bullish's 11 consumer categories: Consumer AI, Home/Lifestyle, CPG/Food/Drink, Apparel, Beauty, Health/Wellness, Fitness, Education, Finance, Entertainment, Sports. B2B SaaS, infrastructure, transportation, enterprise software = gate fails.
+
+FIVE SIGNALS (score each; sum = total out of 100):
+1. chip_on_shoulder (max 30): Personal stakes over market logic. Green flags: "frustrated/couldn't find/had to build/tired of/something to prove" language, career discontinuity (left high-status role to build), urgency. Red flags: TAM/whitespace/positioned-to-capture opener language.
+   Rubric: 30=strong personal language + career discontinuity both present | 22-28=one strong, other weak | 15-21=one present, other absent | 0-14=generic market logic, no discontinuity
+2. category_proximity (max 25): Prior employer or identity maps to the consumer category.
+   Rubric: 23-25=senior role at employer in exact category | 18-22=founder IS the target customer (deep identity) | 12-17=prior company in same/adjacent category | 6-11=academic discipline aligns | 0-5=no detectable proximity
+3. magnetic_signal (max 20): Public presence quality — press as primary source, community leadership, engagement on substantive content. NOT follower count.
+   Rubric: 18-20=primary source in quality outlets + high engagement | 13-17=one strong signal | 8-12=some presence, engagement weak | 0-7=minimal public presence
+4. pedigree (max 15): Fortune 500/Inc 500 alumni (senior role), top-50 college, top-10 MBA/design/ad school, consumer exit ($500M+) alumni, competitive achievement (varsity, championship, pitch finalist), musical craft.
+   Rubric: 13-15=3+ hits including cross-tier | 8-12=2+ hits | 4-7=1 hit | 0-3=no detectable pedigree
+5. thesis_clarity (max 10): Problem-first worldview with a named enemy (incumbent, broken system, consumer frustration). Pre-company trail of thinking is a strong signal.
+   Rubric: 9-10=clear thesis with named enemy + pre-company trail | 5-8=thesis present but thin | 0-4=product-first/innovation framing, no discernible worldview
+
+TIERS: ≥75=HIGH_PRIORITY ("Move to first meeting quickly") | ≥50=WATCH_LIST ("Monitor for new signals before outreach") | ≥25=WEAK_SIGNAL ("Flag for lightweight human review") | <25=PASS ("Category fit but founder profile doesn't match")
+
 Respond ONLY with a valid JSON object (no markdown, no explanation outside the JSON):
 {
   "bullish_score": <integer 0-100>,
@@ -112,6 +130,20 @@ Respond ONLY with a valid JSON object (no markdown, no explanation outside the J
     "background": "<1–2 sentence background: relevant experience, prior companies, why they have an innate advantage in this category — or null if unknown>",
     "prior_companies": ["<list of prior companies/roles if known, otherwise empty array>"],
     "confidence": "<'known' if you're confident this is correct training data | 'inferred' if you're making an educated guess | 'unknown' if you have no information>"
+  },
+  "founder_score": {
+    "gate_passed": <true|false>,
+    "total": <integer 0-100, or null if gate_passed is false>,
+    "tier": "<HIGH_PRIORITY|WATCH_LIST|WEAK_SIGNAL|PASS|null>",
+    "action": "<recommended action string, or null>",
+    "breakdown": {
+      "chip_on_shoulder":   { "score": <0-30>, "max": 30, "confidence": "<high|medium|low>", "flags": ["<key observations, 1-2 max>"] },
+      "category_proximity": { "score": <0-25>, "max": 25, "confidence": "<high|medium|low>", "flags": ["<key observations, 1-2 max>"] },
+      "magnetic_signal":    { "score": <0-20>, "max": 20, "confidence": "<high|medium|low>", "flags": ["<key observations, 1-2 max>"] },
+      "pedigree":           { "score": <0-15>, "max": 15, "confidence": "<high|medium|low>", "flags": ["<key observations, 1-2 max>"] },
+      "thesis_clarity":     { "score": <0-10>, "max": 10, "confidence": "<high|medium|low>", "flags": ["<key observations, 1-2 max>"] }
+    },
+    "human_review_flags": ["<items needing human confirmation — Tier 2 pedigree keywords, chip-on-shoulder reads, inferred scores>"]
   }
 }"""
 
@@ -172,7 +204,7 @@ def enrich_signal(signal: dict) -> dict:
     try:
         message = _get_client().messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1100,
+            max_tokens=1600,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
