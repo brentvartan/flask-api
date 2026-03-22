@@ -61,7 +61,11 @@ def _load_signal_manifest() -> str:
 
     if not lines:
         return "No enriched signals in the database yet."
-    return "\n".join(lines)
+    # Cap at 100 signals to stay well within API token limits
+    manifest = "\n".join(lines[:100])
+    import logging
+    logging.getLogger(__name__).info("manifest size: %d chars, %d signals", len(manifest), len(lines[:100]))
+    return manifest
 
 
 SYSTEM_PROMPT = """You are the Bullish AI Analyst — an intelligent research assistant embedded in Bullish's Stealth Finder platform.
