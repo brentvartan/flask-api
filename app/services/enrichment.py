@@ -88,7 +88,9 @@ CALIBRATION (use these to anchor your scoring):
 - Holding company trademark: ~5
 - B2B software trademark: 0
 
-IMPORTANT: You are evaluating a TRADEMARK FILING — one of the earliest possible signals a brand is being built. You can see the brand name, product category, and goods/services description — but NOT the founder or any traction. Be appropriately uncertain. Use the goods/services text to infer what this brand might be. Lean toward consumer brand assessment; most filers are building something real.
+IMPORTANT: You are evaluating a TRADEMARK FILING or DELAWARE INCORPORATION — one of the earliest possible signals a brand is being built. You can see the brand name, product category, and goods/services description — but typically NOT the founder or any traction. Be appropriately uncertain. Use the goods/services text to infer what this brand might be. Lean toward consumer brand assessment; most filers are building something real.
+
+FOUNDER RESEARCH: Also attempt to identify the founder of this brand. Use your training data to check if this brand name is associated with known founders. For truly stealth brands you won't know — return null for all founder fields. This is valuable: if you don't know the founder, it confirms the brand is early and not yet public.
 
 Respond ONLY with a valid JSON object (no markdown, no explanation outside the JSON):
 {
@@ -103,7 +105,13 @@ Respond ONLY with a valid JSON object (no markdown, no explanation outside the J
   "remarkability_drivers": ["<which of the 7 Remarkability factors could be strong based on category and positioning>"],
   "one_line_thesis": "<if score >= 50: the Bullish investment thesis in one sentence; if score < 50: why this is a pass>",
   "red_flags": ["<specific concerns, or empty array>"],
-  "comparable_portfolio": "<closest Bullish portfolio comp, e.g. 'Similar to Hu — clean food with dietary identity', or null>"
+  "comparable_portfolio": "<closest Bullish portfolio comp, e.g. 'Similar to Hu — clean food with dietary identity', or null>",
+  "founder": {
+    "name": "<founder full name if known from your training data, otherwise null>",
+    "background": "<1–2 sentence background: relevant experience, prior companies, why they have an innate advantage in this category — or null if unknown>",
+    "prior_companies": ["<list of prior companies/roles if known, otherwise empty array>"],
+    "confidence": "<'known' if you're confident this is correct training data | 'inferred' if you're making an educated guess | 'unknown' if you have no information>"
+  }
 }"""
 
 
@@ -138,7 +146,7 @@ def enrich_signal(signal: dict) -> dict:
     try:
         message = _get_client().messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=800,
+            max_tokens=1100,
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
