@@ -9,6 +9,7 @@ from ...extensions import db
 from ...models.item import Item
 from ...services.trademarks import search_recent_trademarks
 from ...services.delaware import search_recent_delaware_entities
+from ...services.producthunt import search_recent_producthunt
 
 
 def _make_fingerprint(signal_type: str, company_name: str, timestamp: str) -> str:
@@ -221,6 +222,83 @@ def run_delaware_scan():
         "total_found": total_found,
         "fetched":     result["fetched"],
         "domain_hits": domain_hits,
+        "new_saved":   new_saved,
+        "skipped":     skipped,
+        "error":       None,
+    }), 200
+
+
+@bp.route("/producthunt", methods=["POST"])
+@jwt_required()
+def run_producthunt_scan():
+    """
+    Fetch recent Product Hunt consumer launches and persist new ones.
+
+    Request body (all optional):
+        days_back   int   Days of launches to include (1–30, default 14)
+        max_results int   Max PH items to process    (1–200, default 100)
+
+    Response:
+        { "total_found": int, "fetched": int, "new_saved": int,
+          "skipped": int, "error": null | str }
+    """
+    data = request.get_json(silent=True) or {}
+
+    days_back   = max(1, min(int(data.get("days_back",   14)),  30))
+    max_results = max(1, min(int(data.get("max_results", 100)), 200))
+
+    result = search_recent_producthunt(days_back=days_back, max_results=max_results)
+
+    if result.get("error"):
+        return jsonify({
+            "total_found": 0, "fetched": 0,
+            "new_saved": 0, "skipped": 0,
+            "error": result["error"],
+        }), 502
+
+    signals     = result["signals"]
+    total_found = result["total_found"]
+
+    user_id      = int(get_jwt_identity())
+    existing_fps = _load_existing_fps(user_id)
+
+    new_saved = 0
+    skipped   = 0
+
+    for sig in signals:
+        fp = _make_fingerprint("producthunt", sig["companyName"], sig["timestamp"])
+
+        if fp in existing_fps:
+            skipped += 1
+            continue
+
+        description = json.dumps({
+            "_type":        "signal",
+            "fp":           fp,
+            "company_name": sig["companyName"],
+            "signal_type":  "producthunt",
+            "category":     sig["category"],
+            "score_boost":  8,
+            "description":  sig["description"],
+            "url":          sig["url"],
+            "notes":        sig.get("notes", ""),
+            "timestamp":    sig["timestamp"],
+        }, separators=(",", ":"))
+
+        db.session.add(Item(
+            title=sig["companyName"],
+            description=description,
+            owner_id=user_id,
+        ))
+        existing_fps.add(fp)
+        new_saved += 1
+
+    if new_saved > 0:
+        db.session.commit()
+
+    return jsonify({
+        "total_found": total_found,
+        "fetched":     result["fetched"],
         "new_saved":   new_saved,
         "skipped":     skipped,
         "error":       None,
