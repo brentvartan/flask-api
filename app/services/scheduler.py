@@ -65,7 +65,6 @@ def run_scan_now(scan, user_id: int) -> dict:
     # ── 2. Load existing fingerprints (dedup) ─────────────────────────────────
     rows = (
         Item.query
-        .filter_by(owner_id=user_id)
         .filter(Item.description.contains('"fp"'))
         .with_entities(Item.description)
         .all()
@@ -198,6 +197,68 @@ def _run_all_scheduled(app):
                 logger.error("Scheduled scan %s failed: %s", scan.id, exc)
 
 
+def _send_weekly_digest(app):
+    """APScheduler job — every Monday 9:00 UTC. Sends top HOT/WARM signals from the past 7 days."""
+    from ..models.item import Item
+    from ..services.email import send_weekly_digest_email
+    from datetime import timedelta
+    import json
+
+    with app.app_context():
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
+        rows = Item.query.filter(
+            Item.description.contains('"enrichment"'),
+            Item.created_at >= week_ago,
+        ).all()
+
+        hot_signals  = []
+        warm_signals = []
+
+        for item in rows:
+            try:
+                meta = json.loads(item.description or "{}")
+                enrichment = meta.get("enrichment", {})
+                if not enrichment.get("enriched"):
+                    continue
+                watch_level = enrichment.get("watch_level")
+                if watch_level not in ("hot", "warm"):
+                    continue
+                entry = {
+                    "name":     meta.get("company_name", item.title),
+                    "category": meta.get("category", ""),
+                    "score":    enrichment.get("bullish_score"),
+                    "thesis":   enrichment.get("one_line_thesis", ""),
+                    "theme":    enrichment.get("cultural_theme", ""),
+                }
+                if watch_level == "hot":
+                    hot_signals.append(entry)
+                else:
+                    warm_signals.append(entry)
+            except Exception:
+                pass
+
+        if not hot_signals and not warm_signals:
+            logger.info("Weekly digest: no HOT/WARM signals this week — skipping send")
+            return
+
+        hot_signals.sort(key=lambda x: x.get("score") or 0, reverse=True)
+        warm_signals.sort(key=lambda x: x.get("score") or 0, reverse=True)
+
+        alert_emails = os.environ.get("ALERT_EMAILS", "").strip()
+        if not alert_emails:
+            logger.info("Weekly digest: ALERT_EMAILS not set — skipping send")
+            return
+
+        week_label = datetime.now(timezone.utc).strftime("%b %d, %Y")
+        for addr in [e.strip() for e in alert_emails.split(",") if e.strip()]:
+            try:
+                send_weekly_digest_email(addr, hot_signals[:5], warm_signals[:5], week_label)
+                logger.info("Weekly digest sent to %s", addr)
+            except Exception as exc:
+                logger.warning("Weekly digest email failed to %s: %s", addr, exc)
+
+
 def start_scheduler(app):
     """Start the APScheduler background scheduler (once per process)."""
     global _scheduler
@@ -217,7 +278,15 @@ def start_scheduler(app):
             replace_existing=True,
             misfire_grace_time=3600,
         )
+        _scheduler.add_job(
+            _send_weekly_digest,
+            trigger=CronTrigger(day_of_week="mon", hour=9, minute=0, timezone="UTC"),
+            args=[app],
+            id="weekly_digest",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
         _scheduler.start()
-        logger.info("Bullish scheduler started — daily scan fires at 06:00 UTC")
+        logger.info("Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC")
     except Exception as exc:
         logger.warning("Scheduler could not start: %s", exc)
