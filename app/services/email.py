@@ -96,6 +96,66 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
     })
 
 
+def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
+    """Send a team invite email via Resend."""
+    if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
+        return
+
+    from_address = _resend_client()
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
+      <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
+
+        <div style="padding:32px 40px 24px;border-bottom:1px solid #222;">
+          <div style="font-family:monospace;font-size:11px;color:#666;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">
+            Bullish Intelligence · Stealth Finder
+          </div>
+          <h1 style="margin:0;color:#fff;font-family:monospace;font-size:24px;font-weight:bold;letter-spacing:3px;">
+            YOU'RE INVITED
+          </h1>
+          <p style="margin:8px 0 0;color:#888;font-size:14px;">
+            {invited_by} has invited you to join the Bullish Stealth Finder team.
+          </p>
+        </div>
+
+        <div style="padding:32px 40px;">
+          <p style="color:#ccc;font-size:14px;line-height:1.6;">
+            Stealth Finder tracks early-stage consumer brand signals — trademark filings,
+            Delaware incorporations, and domain registrations — enriched with Bullish AI
+            to surface the next Bubble, Hu, or Nom Nom before anyone else.
+          </p>
+          <a href="{invite_url}"
+             style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
+                    padding:14px 28px;border-radius:6px;font-family:monospace;font-weight:bold;
+                    font-size:13px;letter-spacing:1px;text-transform:uppercase;margin-top:16px;">
+            Accept Invite &amp; Set Password →
+          </a>
+          <p style="color:#555;font-size:11px;margin-top:24px;">
+            This invite link expires in 7 days. If you weren't expecting this, you can ignore it.
+          </p>
+        </div>
+
+        <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
+          <p style="margin:0;color:#555;font-size:11px;">
+            Bullish Brand Fund III · Stealth Finder
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+    resend.Emails.send({
+        "from":    from_address,
+        "to":      [to_email],
+        "subject": f"You're invited to join Bullish Stealth Finder",
+        "html":    html,
+    })
+
+
 def send_password_reset_email(to_email: str, reset_url: str) -> None:
     """Send a password-reset email via Resend.
 

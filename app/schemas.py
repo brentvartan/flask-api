@@ -46,3 +46,14 @@ class ForgotPasswordSchema(Schema):
 class ResetPasswordSchema(Schema):
     token = fields.Str(required=True)
     password = fields.Str(required=True, validate=validate.Length(min=8))
+
+
+class InviteSchema(Schema):
+    email = fields.Email(required=True)
+
+
+class AcceptInviteSchema(Schema):
+    token = fields.Str(required=True)
+    first_name = fields.Str(required=True, validate=validate.Length(min=1, max=100))
+    last_name = fields.Str(required=True, validate=validate.Length(min=1, max=100))
+    password = fields.Str(required=True, validate=validate.Length(min=8))

@@ -13,13 +13,16 @@ from . import bp
 from ...extensions import db, bcrypt
 from ...models.user import User
 from ...models.token_blocklist import TokenBlocklist
-from ...schemas import LogoutSchema, ForgotPasswordSchema, ResetPasswordSchema
-from ...services.tokens import generate_reset_token, verify_reset_token
-from ...services.email import send_password_reset_email
+from ...schemas import LogoutSchema, ForgotPasswordSchema, ResetPasswordSchema, InviteSchema, AcceptInviteSchema
+from ...services.tokens import generate_reset_token, verify_reset_token, generate_invite_token, verify_invite_token
+from ...services.email import send_password_reset_email, send_invite_email
+from ...utils import db_get_user
 
 logout_schema = LogoutSchema()
 forgot_password_schema = ForgotPasswordSchema()
 reset_password_schema = ResetPasswordSchema()
+invite_schema = InviteSchema()
+accept_invite_schema = AcceptInviteSchema()
 
 
 @bp.route("/register", methods=["POST"])
@@ -162,3 +165,73 @@ def reset_password():
     user.set_password(data["password"])
     db.session.commit()
     return jsonify({"message": "Password reset successfully"}), 200
+
+
+@bp.route("/invite", methods=["POST"])
+@jwt_required()
+def invite():
+    """Send a team invite email (admin only)."""
+    current_user = db_get_user()
+    if not current_user or not current_user.is_admin():
+        return jsonify({"error": "Admin access required"}), 403
+
+    try:
+        data = invite_schema.load(request.get_json() or {})
+    except ValidationError as e:
+        return jsonify({"error": e.messages}), 422
+
+    email = data["email"].lower()
+
+    if User.query.filter_by(email=email).first():
+        return jsonify({"error": "An account with that email already exists"}), 409
+
+    token = generate_invite_token(current_app.config["SECRET_KEY"], email)
+    frontend_url = current_app.config.get("FRONTEND_URL", "http://localhost:5173")
+    invite_url = f"{frontend_url}/accept-invite?token={token}"
+    invited_by = f"{current_user.first_name} {current_user.last_name}"
+
+    try:
+        send_invite_email(email, invite_url, invited_by)
+    except Exception as e:
+        current_app.logger.error("Failed to send invite email: %s", str(e))
+        return jsonify({"error": "Email service unavailable"}), 500
+
+    return jsonify({"message": f"Invite sent to {email}"}), 200
+
+
+@bp.route("/accept-invite", methods=["POST"])
+def accept_invite():
+    """Accept a team invite — verify token, create account, return JWT."""
+    try:
+        data = accept_invite_schema.load(request.get_json() or {})
+    except ValidationError as e:
+        return jsonify({"error": e.messages}), 422
+
+    try:
+        email = verify_invite_token(current_app.config["SECRET_KEY"], data["token"])
+    except SignatureExpired:
+        return jsonify({"error": "Invite link has expired — ask your admin to resend"}), 400
+    except BadSignature:
+        return jsonify({"error": "Invalid invite link"}), 400
+
+    if User.query.filter_by(email=email).first():
+        return jsonify({"error": "An account with that email already exists. Try logging in."}), 409
+
+    user = User(
+        email=email,
+        first_name=data["first_name"],
+        last_name=data["last_name"],
+        role="user",
+    )
+    user.set_password(data["password"])
+    db.session.add(user)
+    db.session.commit()
+
+    access_token = create_access_token(identity=str(user.id))
+    refresh_token = create_refresh_token(identity=str(user.id))
+
+    return jsonify({
+        "user": user.to_dict(),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }), 201

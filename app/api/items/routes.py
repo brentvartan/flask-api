@@ -36,13 +36,12 @@ def list_items():
     except ValidationError as e:
         return jsonify({"error": e.messages}), 422
 
-    user_id = int(get_jwt_identity())
     page = params["page"]
     per_page = params["per_page"]
 
+    # Items are shared across all authenticated team members
     pagination = (
         Item.query
-        .filter_by(owner_id=user_id)
         .order_by(Item.created_at.desc())
         .paginate(page=page, per_page=per_page, error_out=False)
     )
@@ -112,12 +111,9 @@ def get_item(item_id):
       404:
         description: Not found
     """
-    user_id = int(get_jwt_identity())
     item = db.session.get(Item, item_id)
     if not item:
         return jsonify({"error": "Item not found"}), 404
-    if item.owner_id != user_id:
-        return jsonify({"error": "Forbidden"}), 403
     return jsonify({"item": item.to_dict()}), 200
 
 
@@ -143,12 +139,9 @@ def update_item(item_id):
     except ValidationError as e:
         return jsonify({"error": e.messages}), 422
 
-    user_id = int(get_jwt_identity())
     item = db.session.get(Item, item_id)
     if not item:
         return jsonify({"error": "Item not found"}), 404
-    if item.owner_id != user_id:
-        return jsonify({"error": "Forbidden"}), 403
 
     for field, value in data.items():
         setattr(item, field, value)
