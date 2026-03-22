@@ -100,7 +100,7 @@ def ask_bullish(messages: list) -> str:
     system = SYSTEM_PROMPT.replace("{manifest}", manifest)
 
     response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
+        model="claude-3-haiku-20240307",
         max_tokens=1000,
         system=system,
         messages=messages,
