@@ -112,6 +112,8 @@ def create_app(config_name=None):
     from .api.scans import bp as scans_bp
     from .api.enrich import bp as enrich_bp
     from .api.scheduled_scans import bp as scheduled_scans_bp
+    from .api.chat import bp as chat_bp
+    from .api.settings import bp as settings_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(items_bp, url_prefix="/api/items")
@@ -119,6 +121,8 @@ def create_app(config_name=None):
     app.register_blueprint(scans_bp, url_prefix="/api/scans")
     app.register_blueprint(enrich_bp, url_prefix="/api/enrich")
     app.register_blueprint(scheduled_scans_bp, url_prefix="/api/scheduled-scans")
+    app.register_blueprint(chat_bp, url_prefix="/api/chat")
+    app.register_blueprint(settings_bp, url_prefix="/api/settings")
 
     # Start background scheduler (skipped in test env)
     if config_name != "testing":

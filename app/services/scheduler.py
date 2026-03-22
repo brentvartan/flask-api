@@ -148,17 +148,37 @@ def run_scan_now(scan, user_id: int) -> dict:
     if new_item_ids:
         db.session.commit()
 
-    # ── 5. Send HOT alert email ───────────────────────────────────────────────
-    alert_emails = os.environ.get("ALERT_EMAILS", "").strip()
+    # ── 5. Send HOT alert email + Slack ──────────────────────────────────────
+    from ..services.slack import send_slack_hot_alert
+
+    # Read alert_emails from DB settings first, fall back to env var
+    alert_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
+    try:
+        from ..models.item import Item as _Item
+        _settings_item = _Item.query.filter_by(title="__bullish_settings__").first()
+        if _settings_item:
+            _settings = json.loads(_settings_item.description or "{}")
+            _emails_list = _settings.get("alert_emails", [])
+            if _emails_list:
+                alert_emails_str = ",".join(_emails_list)
+    except Exception:
+        pass
+
     alert_sent = False
 
-    if hot_brands and alert_emails:
-        for addr in [e.strip() for e in alert_emails.split(",") if e.strip()]:
+    if hot_brands and alert_emails_str:
+        for addr in [e.strip() for e in alert_emails_str.split(",") if e.strip()]:
             try:
                 send_hot_alert(addr, hot_brands, scan.name)
                 alert_sent = True
             except Exception as exc:
                 logger.warning("HOT alert email failed to %s: %s", addr, exc)
+
+    if hot_brands:
+        try:
+            send_slack_hot_alert(hot_brands, scan.name)
+        except Exception as exc:
+            logger.warning("Slack HOT alert failed: %s", exc)
 
     # ── 6. Update scan record ─────────────────────────────────────────────────
     scan.last_run_at  = datetime.now(timezone.utc)
@@ -246,6 +266,16 @@ def _send_weekly_digest(app):
         warm_signals.sort(key=lambda x: x.get("score") or 0, reverse=True)
 
         alert_emails = os.environ.get("ALERT_EMAILS", "").strip()
+        try:
+            from ..models.item import Item as _Item2
+            _s2 = _Item2.query.filter_by(title="__bullish_settings__").first()
+            if _s2:
+                _sd = json.loads(_s2.description or "{}")
+                _el = _sd.get("alert_emails", [])
+                if _el:
+                    alert_emails = ",".join(_el)
+        except Exception:
+            pass
         if not alert_emails:
             logger.info("Weekly digest: ALERT_EMAILS not set — skipping send")
             return
