@@ -52,10 +52,11 @@ class TestGetItem:
         assert resp.status_code == 200
 
     def test_get_other_users_item(self, client, user_token, admin_token):
+        # Items are shared across all authenticated team members — any user can read any item
         item_id = make_item(client, admin_token, "Admin item").get_json()["item"]["id"]
         resp = client.get(f"/api/items/{item_id}",
                           headers={"Authorization": f"Bearer {user_token}"})
-        assert resp.status_code == 403
+        assert resp.status_code == 200
 
     def test_get_nonexistent(self, client, user_token):
         resp = client.get("/api/items/99999",
@@ -72,10 +73,11 @@ class TestUpdateItem:
         assert resp.get_json()["item"]["title"] == "Updated"
 
     def test_update_other_users_item(self, client, user_token, admin_token):
+        # Items are shared across all authenticated team members — any user can update any item
         item_id = make_item(client, admin_token).get_json()["item"]["id"]
         resp = client.put(f"/api/items/{item_id}", json={"title": "Steal"},
                           headers={"Authorization": f"Bearer {user_token}"})
-        assert resp.status_code == 403
+        assert resp.status_code == 200
 
 
 class TestDeleteItem:
