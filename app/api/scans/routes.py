@@ -1,7 +1,9 @@
 import hashlib
 import json
+import logging
+import threading
 
-from flask import jsonify, request
+from flask import jsonify, request, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from . import bp
@@ -10,6 +12,55 @@ from ...models.item import Item
 from ...services.trademarks import search_recent_trademarks
 from ...services.delaware import search_recent_delaware_entities
 from ...services.producthunt import search_recent_producthunt
+
+logger = logging.getLogger(__name__)
+
+
+def _enrich_items_in_background(app, item_ids: list):
+    """
+    Background thread: enrich newly saved signals with Bullish AI immediately
+    after a manual scan completes. Mirrors what run_scan_now() does for scheduled scans.
+    """
+    from ...services.enrichment import enrich_signal
+
+    with app.app_context():
+        for item_id in item_ids:
+            try:
+                item = db.session.get(Item, item_id)
+                if not item:
+                    continue
+                meta = json.loads(item.description or "{}")
+                if meta.get("_type") != "signal":
+                    continue
+
+                # Extract owner name from USPTO notes if present
+                notes = meta.get("notes", "")
+                owner = ""
+                if notes.lower().startswith("owner:"):
+                    part = notes[6:].strip()
+                    dot = part.find(". ")
+                    owner = part[:dot].strip() if dot > 0 else part.strip()
+
+                enrichment = enrich_signal({
+                    "companyName": meta.get("company_name", item.title),
+                    "category":    meta.get("category", ""),
+                    "signal_type": meta.get("signal_type", "trademark"),
+                    "description": meta.get("description", ""),
+                    "notes":       notes,
+                    "owner":       owner,
+                })
+
+                if enrichment.get("enriched"):
+                    meta["enrichment"] = enrichment
+                    item.description = json.dumps(meta, separators=(",", ":"))
+                    db.session.commit()
+                    logger.info(
+                        "Auto-enriched %s (item %s) → %s / score %s",
+                        meta.get("company_name"), item_id,
+                        enrichment.get("watch_level"), enrichment.get("bullish_score"),
+                    )
+            except Exception as exc:
+                logger.warning("Background enrichment failed for item %s: %s", item_id, exc)
 
 
 def _make_fingerprint(signal_type: str, company_name: str, timestamp: str) -> str:
@@ -94,7 +145,7 @@ def run_trademark_scan():
     existing_fps = _load_existing_fps(user_id)
 
     # ── 3. Persist only new signals ───────────────────────────────────────────
-    new_saved = 0
+    new_items = []
     skipped = 0
 
     for sig in signals:
@@ -104,29 +155,34 @@ def run_trademark_scan():
             skipped += 1
             continue
 
-        description = json.dumps({
-            "_type":        "signal",
-            "fp":           fp,
-            "company_name": sig["companyName"],
-            "signal_type":  "trademark",
-            "category":     sig["category"],
-            "score_boost":  15,
-            "description":  sig["description"],
-            "url":          sig["url"],
-            "notes":        sig.get("notes", ""),
-            "timestamp":    sig["timestamp"],
-        }, separators=(",", ":"))   # compact — matches JS JSON.stringify output
-
-        db.session.add(Item(
+        item = Item(
             title=sig["companyName"],
-            description=description,
             owner_id=user_id,
-        ))
-        existing_fps.add(fp)   # guard against duplicates within this batch
-        new_saved += 1
+            description=json.dumps({
+                "_type":        "signal",
+                "fp":           fp,
+                "company_name": sig["companyName"],
+                "signal_type":  "trademark",
+                "category":     sig["category"],
+                "score_boost":  15,
+                "description":  sig["description"],
+                "url":          sig["url"],
+                "notes":        sig.get("notes", ""),
+                "timestamp":    sig["timestamp"],
+            }, separators=(",", ":")),
+        )
+        db.session.add(item)
+        new_items.append(item)
+        existing_fps.add(fp)
 
+    new_saved = len(new_items)
     if new_saved > 0:
         db.session.commit()
+        # Auto-enrich in background — no manual Re-Score needed
+        new_ids = [item.id for item in new_items]
+        app = current_app._get_current_object()
+        threading.Thread(target=_enrich_items_in_background, args=(app, new_ids), daemon=True).start()
+        logger.info("Trademark scan: %d new signals queued for background enrichment", new_saved)
 
     return jsonify({
         "total_found": total_found,
@@ -184,7 +240,7 @@ def run_delaware_scan():
     user_id      = int(get_jwt_identity())
     existing_fps = _load_existing_fps(user_id)
 
-    new_saved = 0
+    new_items = []
     skipped   = 0
 
     for sig in signals:
@@ -194,29 +250,33 @@ def run_delaware_scan():
             skipped += 1
             continue
 
-        description = json.dumps({
-            "_type":        "signal",
-            "fp":           fp,
-            "company_name": sig["companyName"],
-            "signal_type":  sig["signal_type"],
-            "category":     sig["category"],
-            "score_boost":  sig.get("score_boost", 5),
-            "description":  sig["description"],
-            "url":          sig["url"],
-            "notes":        sig.get("notes", ""),
-            "timestamp":    sig["timestamp"],
-        }, separators=(",", ":"))
-
-        db.session.add(Item(
+        item = Item(
             title=sig["companyName"],
-            description=description,
             owner_id=user_id,
-        ))
+            description=json.dumps({
+                "_type":        "signal",
+                "fp":           fp,
+                "company_name": sig["companyName"],
+                "signal_type":  sig["signal_type"],
+                "category":     sig["category"],
+                "score_boost":  sig.get("score_boost", 5),
+                "description":  sig["description"],
+                "url":          sig["url"],
+                "notes":        sig.get("notes", ""),
+                "timestamp":    sig["timestamp"],
+            }, separators=(",", ":")),
+        )
+        db.session.add(item)
+        new_items.append(item)
         existing_fps.add(fp)
-        new_saved += 1
 
+    new_saved = len(new_items)
     if new_saved > 0:
         db.session.commit()
+        new_ids = [item.id for item in new_items]
+        app = current_app._get_current_object()
+        threading.Thread(target=_enrich_items_in_background, args=(app, new_ids), daemon=True).start()
+        logger.info("Delaware scan: %d new signals queued for background enrichment", new_saved)
 
     return jsonify({
         "total_found": total_found,
@@ -262,7 +322,7 @@ def run_producthunt_scan():
     user_id      = int(get_jwt_identity())
     existing_fps = _load_existing_fps(user_id)
 
-    new_saved = 0
+    new_items = []
     skipped   = 0
 
     for sig in signals:
@@ -272,29 +332,33 @@ def run_producthunt_scan():
             skipped += 1
             continue
 
-        description = json.dumps({
-            "_type":        "signal",
-            "fp":           fp,
-            "company_name": sig["companyName"],
-            "signal_type":  "producthunt",
-            "category":     sig["category"],
-            "score_boost":  8,
-            "description":  sig["description"],
-            "url":          sig["url"],
-            "notes":        sig.get("notes", ""),
-            "timestamp":    sig["timestamp"],
-        }, separators=(",", ":"))
-
-        db.session.add(Item(
+        item = Item(
             title=sig["companyName"],
-            description=description,
             owner_id=user_id,
-        ))
+            description=json.dumps({
+                "_type":        "signal",
+                "fp":           fp,
+                "company_name": sig["companyName"],
+                "signal_type":  "producthunt",
+                "category":     sig["category"],
+                "score_boost":  8,
+                "description":  sig["description"],
+                "url":          sig["url"],
+                "notes":        sig.get("notes", ""),
+                "timestamp":    sig["timestamp"],
+            }, separators=(",", ":")),
+        )
+        db.session.add(item)
+        new_items.append(item)
         existing_fps.add(fp)
-        new_saved += 1
 
+    new_saved = len(new_items)
     if new_saved > 0:
         db.session.commit()
+        new_ids = [item.id for item in new_items]
+        app = current_app._get_current_object()
+        threading.Thread(target=_enrich_items_in_background, args=(app, new_ids), daemon=True).start()
+        logger.info("ProductHunt scan: %d new signals queued for background enrichment", new_saved)
 
     return jsonify({
         "total_found": total_found,
