@@ -104,6 +104,7 @@ Respond ONLY with a valid JSON object (no markdown, no explanation outside the J
   "advocacy_deficiency": "<brief: is there category whitespace? Are incumbents weak or generic?>",
   "remarkability_drivers": ["<which of the 7 Remarkability factors could be strong based on category and positioning>"],
   "one_line_thesis": "<if score >= 50: the Bullish investment thesis in one sentence; if score < 50: why this is a pass>",
+  "tension": "<exactly one of: 'wellness' | 'self' | 'individuals' — the single Bullish cultural tension this brand best fits. 'wellness' = Ubiquitous Wellness (health, longevity, GLP-1, functional food/bev, mental health, pet wellness, women's health, sleep, recovery). 'self' = Uncompromising Self (beauty, personal care, identity expression, fashion, grooming, fragrance, self-improvement, body confidence). 'individuals' = Individuals > Institutions (DTC disruption of corporate incumbents, community-led brands, indie/micro brands, creator economy, trust shift from institutions to people). Default to 'self' if uncertain.>",
   "red_flags": ["<specific concerns, or empty array>"],
   "comparable_portfolio": "<closest Bullish portfolio comp, e.g. 'Similar to Hu — clean food with dietary identity', or null>",
   "founder": {
