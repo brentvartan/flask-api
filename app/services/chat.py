@@ -23,7 +23,7 @@ def _load_signal_manifest() -> str:
     from ..models.item import Item
 
     rows = Item.query.filter(
-        Item.description.contains('"_type": "signal"')
+        Item.description.contains('"_type":"signal"')
     ).order_by(Item.created_at.desc()).limit(300).all()
 
     lines = []
