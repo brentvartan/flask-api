@@ -131,16 +131,41 @@ def enrich_signal(signal: dict) -> dict:
     except RuntimeError as e:
         return {"enriched": False, "error": str(e), "bullish_score": None}
 
+    owner = signal.get("owner", "").strip()
+    raw_notes = signal.get("notes", "Not available")
+
+    # Strip 'Owner: NAME.' prefix from notes if owner is passed separately
+    if owner and raw_notes.startswith(f"Owner: {owner}"):
+        remaining = raw_notes[len(f"Owner: {owner}"):].lstrip(". ").strip()
+        goods_services = remaining if remaining else "Not available"
+    else:
+        goods_services = raw_notes
+
     user_message = (
-        f"Evaluate this trademark filing as a potential Bullish investment signal:\n\n"
+        f"Evaluate this brand signal as a potential Bullish investment:\n\n"
         f"Brand Name: {signal.get('companyName', 'Unknown')}\n"
         f"Category: {signal.get('category', 'Unknown')}\n"
         f"Signal Type: {signal.get('signal_type', 'trademark')}\n"
         f"Description: {signal.get('description', '')}\n"
-        f"Goods & Services: {signal.get('notes', 'Not available')}\n\n"
-        f"Based on the brand name and goods/services description alone, assess the POTENTIAL "
+        f"Goods & Services: {goods_services}\n"
+    )
+
+    if owner:
+        user_message += (
+            f"Trademark Owner / Filer: {owner}\n\n"
+            f"FOUNDER RESEARCH PRIORITY: '{owner}' filed this trademark. "
+            f"If this looks like a person's name (not a generic 'Holdings LLC' entity), "
+            f"search your training data for this individual — prior companies, roles, "
+            f"why they have an innate advantage in this category. "
+            f"Return that in the founder object with confidence='known' or 'inferred'.\n\n"
+        )
+    else:
+        user_message += "\n"
+
+    user_message += (
+        f"Based on brand name, category, goods/services, and owner, assess the POTENTIAL "
         f"for this to be a Bullish-worthy consumer brand. Be appropriately uncertain — "
-        f"we're reading tea leaves here, not evaluating a pitch deck."
+        f"we are reading tea leaves at the earliest possible signal, not a pitch deck."
     )
 
     try:

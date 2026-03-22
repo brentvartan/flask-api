@@ -141,6 +141,7 @@ def run_scan_now(scan, user_id: int) -> dict:
                         "score":    enrichment.get("bullish_score"),
                         "thesis":   enrichment.get("one_line_thesis", ""),
                         "theme":    enrichment.get("cultural_theme", ""),
+                        "item_id":  item_id,
                     })
         except Exception as exc:
             logger.warning("Enrichment failed for item %s: %s", item_id, exc)

@@ -62,6 +62,16 @@ def send_slack_hot_alert(hot_brands: list, scan_name: str) -> bool:
             text += f"\n🎯 {theme}"
 
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
+        if b.get("item_id"):
+            blocks.append({
+                "type": "actions",
+                "elements": [{
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": f"View {name} →", "emoji": False},
+                    "url": f"{app_url}/signal/{b['item_id']}",
+                    "action_id": f"view_{b['item_id']}",
+                }],
+            })
         blocks.append({"type": "divider"})
 
     blocks.append({

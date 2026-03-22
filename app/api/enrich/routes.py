@@ -20,6 +20,18 @@ def _parse_meta(item):
     return None
 
 
+def _extract_owner(notes: str) -> str:
+    """Extract 'Owner: NAME' from USPTO notes field."""
+    if not notes:
+        return ""
+    s = notes.strip()
+    if s.lower().startswith("owner:"):
+        owner_part = s[6:].strip()
+        dot_idx = owner_part.find(". ")
+        return owner_part[:dot_idx].strip() if dot_idx > 0 else owner_part.strip()
+    return ""
+
+
 @bp.route("/signal/<int:item_id>", methods=["POST"])
 @jwt_required()
 def enrich_single(item_id):
@@ -42,6 +54,7 @@ def enrich_single(item_id):
         "signal_type":  meta.get("signal_type", "trademark"),
         "description":  meta.get("description", ""),
         "notes":        meta.get("notes", ""),
+        "owner":        _extract_owner(meta.get("notes", "")),
     })
 
     meta["enrichment"] = enrichment
@@ -102,6 +115,7 @@ def enrich_batch():
             "signal_type":  meta.get("signal_type", "trademark"),
             "description":  meta.get("description", ""),
             "notes":        meta.get("notes", ""),
+            "owner":        _extract_owner(meta.get("notes", "")),
         })
 
         if result.get("enriched"):
