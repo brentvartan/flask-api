@@ -91,10 +91,20 @@ def enrich_batch():
             .limit(limit)
             .all()
         )
+    elif data.get("rescore_all"):
+        # Re-score the most recent N signals regardless of existing enrichment
+        rows = (
+            Item.query
+            .filter_by(owner_id=user_id)
+            .filter(Item.description.contains('"_type":"signal"'))
+            .order_by(Item.created_at.desc())
+            .limit(limit)
+            .all()
+        )
     else:
         item_ids = data.get("item_ids", [])
         if not item_ids:
-            return jsonify({"error": "Provide item_ids or set unenriched_only: true"}), 400
+            return jsonify({"error": "Provide item_ids, set unenriched_only: true, or set rescore_all: true"}), 400
         rows = (
             Item.query
             .filter(Item.id.in_(item_ids[:limit]), Item.owner_id == user_id)
