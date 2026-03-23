@@ -177,7 +177,7 @@ def _enrich_layer_credits() -> dict:
         return {"available": None, "error": "PROXYCURL_API_KEY not set"}
     try:
         resp = requests.get(
-            "https://nubela.co/proxycurl/api/credit-balance",
+            "https://enrichlayer.com/api/v2/credit-balance",
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10,
         )
@@ -269,3 +269,34 @@ def get_spend():
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }), 200
+
+
+@bp.route("/users/<int:user_id>/send-reset", methods=["POST"])
+@admin_required()
+def send_reset_link(user_id):
+    """Send a password-reset link email to a user (admin only)."""
+    from flask import current_app
+    from flask_jwt_extended import get_jwt_identity
+    from ...services.tokens import generate_reset_token
+    from ...services.email import send_password_reset_email
+
+    # Guard: can't reset your own password via admin panel
+    current_user_id = int(get_jwt_identity())
+    if user_id == current_user_id:
+        return jsonify({"error": "Use the forgot-password flow to reset your own password"}), 403
+
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    token = generate_reset_token(current_app.config["SECRET_KEY"], user.id)
+    frontend_url = current_app.config.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
+    reset_url = f"{frontend_url}/reset-password?token={token}"
+
+    try:
+        send_password_reset_email(user.email, reset_url)
+    except Exception as e:
+        current_app.logger.error("Failed to send reset email for user %d: %s", user_id, str(e))
+        return jsonify({"error": "Email service unavailable"}), 500
+
+    return jsonify({"message": f"Reset link sent to {user.email}"}), 200

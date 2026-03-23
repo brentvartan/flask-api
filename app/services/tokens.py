@@ -19,19 +19,16 @@ def verify_reset_token(secret_key: str, token: str, max_age: int = 3600) -> int:
     return data["user_id"]
 
 
-def generate_invite_token(secret_key: str, email: str) -> str:
+def generate_invite_token(secret_key: str, email: str, role: str = "analyst") -> str:
     """Generate a signed, time-limited team invite token (7-day TTL)."""
     s = URLSafeTimedSerializer(secret_key)
-    return s.dumps({"email": email}, salt="team-invite")
+    return s.dumps({"email": email, "role": role}, salt="team-invite")
 
 
-def verify_invite_token(secret_key: str, token: str, max_age: int = 604800) -> str:
-    """Verify an invite token and return the invited email.
-
-    Raises:
-        SignatureExpired: if the token is older than 7 days.
-        BadSignature:     if the token is tampered with or otherwise invalid.
+def verify_invite_token(secret_key: str, token: str, max_age: int = 604800) -> dict:
+    """Verify an invite token. Returns {"email": ..., "role": ...}.
+    Backward-compatible: old tokens without role default to 'analyst'.
     """
     s = URLSafeTimedSerializer(secret_key)
     data = s.loads(token, salt="team-invite", max_age=max_age)
-    return data["email"]
+    return {"email": data["email"], "role": data.get("role", "analyst")}

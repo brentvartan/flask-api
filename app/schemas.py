@@ -52,7 +52,7 @@ class AdminUserUpdateSchema(Schema):
     """Flexible patch schema for admin user management — all fields optional."""
     first_name = fields.Str(validate=validate.Length(min=1, max=100))
     last_name  = fields.Str(validate=validate.Length(min=1, max=100))
-    role       = fields.Str(validate=validate.OneOf(['user', 'admin']))
+    role       = fields.Str(validate=validate.OneOf(['admin', 'managing_partner', 'investor', 'analyst']))
     is_active  = fields.Bool()
 
 
@@ -62,6 +62,7 @@ class AdminForcePasswordSchema(Schema):
 
 class InviteSchema(Schema):
     email = fields.Email(required=True)
+    role  = fields.Str(load_default='analyst', validate=validate.OneOf(['admin', 'managing_partner', 'investor', 'analyst']))
 
 
 class AcceptInviteSchema(Schema):

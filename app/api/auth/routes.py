@@ -188,7 +188,8 @@ def invite():
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "An account with that email already exists"}), 409
 
-    token = generate_invite_token(current_app.config["SECRET_KEY"], email)
+    role  = data.get("role", "analyst")
+    token = generate_invite_token(current_app.config["SECRET_KEY"], email, role)
     frontend_url = current_app.config.get("FRONTEND_URL", "http://localhost:5173")
     invite_url = f"{frontend_url}/accept-invite?token={token}"
     invited_by = f"{current_user.first_name} {current_user.last_name}"
@@ -211,7 +212,9 @@ def accept_invite():
         return jsonify({"error": e.messages}), 422
 
     try:
-        email = verify_invite_token(current_app.config["SECRET_KEY"], data["token"])
+        token_data = verify_invite_token(current_app.config["SECRET_KEY"], data["token"])
+        email = token_data["email"]
+        role  = token_data.get("role", "analyst")
     except SignatureExpired:
         return jsonify({"error": "Invite link has expired — ask your admin to resend"}), 400
     except BadSignature:
@@ -224,7 +227,7 @@ def accept_invite():
         email=email,
         first_name=data["first_name"],
         last_name=data["last_name"],
-        role="user",
+        role=role,
     )
     user.set_password(data["password"])
     db.session.add(user)
