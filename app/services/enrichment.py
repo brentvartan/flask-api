@@ -225,3 +225,138 @@ def enrich_signal(signal: dict) -> dict:
         return {"enriched": False, "error": f"JSON parse error: {e}", "bullish_score": None}
     except Exception as e:
         return {"enriched": False, "error": str(e), "bullish_score": None}
+
+
+_FOUNDER_RESCORE_PROMPT = """You are scoring a startup founder against Bullish's 5-signal Jockey model.
+You have been given real LinkedIn data for the founder. Use it to produce an accurate, grounded score.
+
+SCORING MODEL (100 points total):
+
+1. Chip-on-Shoulder (0-30): Does the founder have a personal, almost obsessive reason to build THIS brand?
+   Rubric: 23-30=lived the problem viscerally (health crisis, identity struggle, personal injustice) |
+   15-22=deep personal affinity with category | 8-14=professional proximity but no visible personal pull |
+   0-7=no detectable personal connection
+
+2. Category Proximity (0-25): Has the founder worked directly in or adjacent to this category?
+   Rubric: 20-25=senior role at employer in exact category | 15-19=founder IS the target customer |
+   10-14=prior company in same/adjacent category | 5-9=academic discipline aligns | 0-4=no detectable proximity
+
+3. Magnetic Signal (0-20): Is there evidence this founder can build an audience or community?
+   Rubric: 16-20=demonstrated following (LinkedIn 10k+, content creator, press coverage) |
+   11-15=moderate community signals | 6-10=some visibility | 0-5=no detectable signal
+
+4. Pedigree (0-15): Has the founder worked at or built a recognized brand, startup, or institution?
+   Rubric: 13-15=Tier 1 brand/startup (FAANG, top consumer brand, unicorn) |
+   9-12=Tier 2 recognized operator | 5-8=emerging brand or solid startup | 0-4=no recognizable pedigree
+
+5. Thesis Clarity (0-10): Does their background suggest they have a clear POV on the category?
+   Rubric: 8-10=career arc clearly leads to THIS brand | 5-7=reasonable fit | 0-4=unclear connection
+
+TIERS: ≥75=HIGH_PRIORITY | ≥50=WATCH_LIST | ≥25=WEAK_SIGNAL | <25=PASS
+
+Return ONLY valid JSON — no markdown, no explanation:
+{
+  "founder": {
+    "name": "<full name>",
+    "background": "<1-2 sentences: relevant experience and innate category advantage>",
+    "prior_companies": ["<company (role)>"],
+    "confidence": "known"
+  },
+  "founder_score": {
+    "gate_passed": true,
+    "total": <integer 0-100>,
+    "tier": "<HIGH_PRIORITY|WATCH_LIST|WEAK_SIGNAL|PASS>",
+    "action": "<recommended next action>",
+    "breakdown": {
+      "chip_on_shoulder":   { "score": <0-30>, "max": 30, "confidence": "<high|medium|low>", "flags": ["<observation>"] },
+      "category_proximity": { "score": <0-25>, "max": 25, "confidence": "<high|medium|low>", "flags": ["<observation>"] },
+      "magnetic_signal":    { "score": <0-20>, "max": 20, "confidence": "<high|medium|low>", "flags": ["<observation>"] },
+      "pedigree":           { "score": <0-15>, "max": 15, "confidence": "<high|medium|low>", "flags": ["<observation>"] },
+      "thesis_clarity":     { "score": <0-10>, "max": 10, "confidence": "<high|medium|low>", "flags": ["<observation>"] }
+    },
+    "human_review_flags": ["<anything needing human confirmation>"],
+    "linkedin_enriched": true
+  }
+}"""
+
+
+def rescore_founder_with_linkedin(
+    brand_name: str,
+    category: str,
+    one_line_thesis: str,
+    founder_name: str,
+    linkedin_context: dict,
+) -> dict:
+    """
+    Re-score the founder section of an enrichment using real LinkedIn data
+    from Proxycurl.  Makes a targeted Claude call (much cheaper than a full
+    enrichment re-run) and returns updated founder + founder_score dicts.
+
+    Returns {"founder": {...}, "founder_score": {...}, "linkedin_enriched": True}
+    or {"error": "...", "linkedin_enriched": False} on failure.
+    """
+    try:
+        client = _get_client()
+    except RuntimeError as e:
+        return {"error": str(e), "linkedin_enriched": False}
+
+    # Format LinkedIn data clearly for Claude
+    exp_lines = "\n".join(
+        f"  - {e.get('title', '?')} at {e.get('company', '?')} "
+        f"({e.get('start', '?')}–{e.get('end', '?')})"
+        for e in linkedin_context.get("experiences", [])
+    ) or "  (no work history found)"
+
+    edu_lines = "\n".join(
+        f"  - {e.get('school', '?')}: {e.get('degree', '')} {e.get('field', '')}".strip()
+        for e in linkedin_context.get("education", [])
+    ) or "  (no education found)"
+
+    follower_str = (
+        f"{linkedin_context['follower_count']:,}"
+        if linkedin_context.get("follower_count")
+        else "unknown"
+    )
+
+    user_message = f"""Score this founder against Bullish's 5-signal model using their real LinkedIn data.
+
+Brand: {brand_name}
+Category: {category}
+Thesis: {one_line_thesis or "Unknown"}
+
+FOUNDER LINKEDIN DATA:
+Name: {founder_name}
+Headline: {linkedin_context.get("headline") or "Not available"}
+LinkedIn followers: {follower_str}
+Summary: {linkedin_context.get("summary") or "Not available"}
+
+Work history:
+{exp_lines}
+
+Education:
+{edu_lines}
+
+Score this founder using the 5-signal model. Use the LinkedIn data as ground truth — this is real, not inferred."""
+
+    try:
+        message = client.messages.create(
+            model="claude-haiku-4-5",   # cheaper model — founder scoring only
+            max_tokens=800,
+            system=_FOUNDER_RESCORE_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+
+        text = message.content[0].text.strip()
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(text)
+        result["linkedin_enriched"] = True
+        return result
+
+    except json.JSONDecodeError as e:
+        return {"error": f"JSON parse error: {e}", "linkedin_enriched": False}
+    except Exception as e:
+        return {"error": str(e), "linkedin_enriched": False}

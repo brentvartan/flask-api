@@ -1,4 +1,5 @@
 import json
+import logging
 
 from flask import jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -6,7 +7,10 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from . import bp
 from ...extensions import db
 from ...models.item import Item
-from ...services.enrichment import enrich_signal
+from ...services.enrichment import enrich_signal, rescore_founder_with_linkedin
+from ...services.proxycurl import should_enrich_founder, enrich_founder
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_meta(item):
@@ -60,6 +64,10 @@ def enrich_single(item_id):
     meta["enrichment"] = enrichment
     item.description = json.dumps(meta, separators=(",", ":"))
     db.session.commit()
+
+    # Auto-trigger LinkedIn enrichment for WARM+ signals with a known founder
+    if should_enrich_founder(enrichment):
+        _run_linkedin_enrichment(item, meta, enrichment)
 
     return jsonify({"enrichment": enrichment, "item_id": item_id}), 200
 
@@ -146,4 +154,99 @@ def enrich_batch():
         "errors":          error_count,
         "total_processed": len(rows),
         "has_more":        len(rows) == limit,   # true if there may be more pages
+    }), 200
+
+
+# ─── Shared LinkedIn enrichment helper ────────────────────────────────────────
+
+def _run_linkedin_enrichment(item: "Item", meta: dict, enrichment: dict) -> bool:
+    """
+    Fetch LinkedIn data via Proxycurl and re-score the founder section.
+    Saves updated enrichment to the item in-place.
+    Returns True if LinkedIn data was found and founder was re-scored.
+    """
+    founder_name = (enrichment.get("founder") or {}).get("name")
+    brand_name   = meta.get("company_name", item.title)
+
+    if not founder_name:
+        return False
+
+    logger.info("Proxycurl: enriching founder '%s' for '%s'", founder_name, brand_name)
+    linkedin_ctx = enrich_founder(founder_name, brand_name)
+
+    if not linkedin_ctx.get("found"):
+        logger.info("Proxycurl: no LinkedIn match for '%s'", founder_name)
+        return False
+
+    rescore = rescore_founder_with_linkedin(
+        brand_name      = brand_name,
+        category        = meta.get("category", ""),
+        one_line_thesis = enrichment.get("one_line_thesis", ""),
+        founder_name    = founder_name,
+        linkedin_context= linkedin_ctx,
+    )
+
+    if rescore.get("linkedin_enriched"):
+        # Merge updated founder + founder_score back into enrichment
+        enrichment["founder"]       = rescore.get("founder",       enrichment["founder"])
+        enrichment["founder_score"] = rescore.get("founder_score", enrichment.get("founder_score"))
+        enrichment["linkedin_url"]  = linkedin_ctx.get("linkedin_url")
+        meta["enrichment"]          = enrichment
+        item.description            = json.dumps(meta, separators=(",", ":"))
+        db.session.commit()
+        logger.info(
+            "Proxycurl: re-scored '%s' founder → %s (%s)",
+            brand_name,
+            enrichment["founder_score"].get("total"),
+            enrichment["founder_score"].get("tier"),
+        )
+        return True
+
+    logger.warning("Proxycurl: re-score failed for '%s': %s", brand_name, rescore.get("error"))
+    return False
+
+
+# ─── Manual LinkedIn enrichment endpoint ──────────────────────────────────────
+
+@bp.route("/founder/<int:item_id>", methods=["POST"])
+@jwt_required()
+def enrich_founder_linkedin(item_id):
+    """
+    Manually trigger LinkedIn enrichment for a single signal.
+    Useful for signals that scored WARM+ but weren't auto-enriched
+    (e.g. enriched before Proxycurl was added, or API key wasn't set).
+    """
+    user_id = int(get_jwt_identity())
+    item    = db.session.get(Item, item_id)
+
+    if not item:
+        return jsonify({"error": "Item not found"}), 404
+    if item.owner_id != user_id:
+        return jsonify({"error": "Forbidden"}), 403
+
+    meta = _parse_meta(item)
+    if meta is None:
+        return jsonify({"error": "Item is not a signal"}), 422
+
+    enrichment = meta.get("enrichment")
+    if not enrichment:
+        return jsonify({"error": "Signal has not been enriched yet — run Score first"}), 422
+
+    founder_name = (enrichment.get("founder") or {}).get("name")
+    if not founder_name:
+        return jsonify({"error": "No founder name in enrichment — LinkedIn lookup not possible"}), 422
+
+    success = _run_linkedin_enrichment(item, meta, enrichment)
+
+    if success:
+        return jsonify({
+            "enriched":     True,
+            "founder":      enrichment.get("founder"),
+            "founder_score":enrichment.get("founder_score"),
+            "linkedin_url": enrichment.get("linkedin_url"),
+        }), 200
+
+    return jsonify({
+        "enriched": False,
+        "reason":   "No LinkedIn profile found for this founder",
     }), 200
