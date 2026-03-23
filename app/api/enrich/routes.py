@@ -78,7 +78,8 @@ def enrich_batch():
     user_id = int(get_jwt_identity())
     data = request.get_json(silent=True) or {}
 
-    limit = min(int(data.get("limit", 20)), 50)
+    limit  = min(int(data.get("limit",  20)), 50)
+    offset = max(int(data.get("offset",  0)),  0)
 
     if data.get("unenriched_only"):
         # Get all signal items for this user without enrichment data
@@ -88,16 +89,18 @@ def enrich_batch():
             .filter(Item.description.contains('"_type":"signal"'))
             .filter(~Item.description.contains('"enrichment"'))
             .order_by(Item.created_at.desc())
+            .offset(offset)
             .limit(limit)
             .all()
         )
     elif data.get("rescore_all"):
-        # Re-score the most recent N signals regardless of existing enrichment
+        # Re-score signals regardless of existing enrichment, with pagination support
         rows = (
             Item.query
             .filter_by(owner_id=user_id)
             .filter(Item.description.contains('"_type":"signal"'))
             .order_by(Item.created_at.desc())
+            .offset(offset)
             .limit(limit)
             .all()
         )
@@ -142,4 +145,5 @@ def enrich_batch():
         "enriched":        enriched_count,
         "errors":          error_count,
         "total_processed": len(rows),
+        "has_more":        len(rows) == limit,   # true if there may be more pages
     }), 200
