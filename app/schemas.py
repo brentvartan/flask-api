@@ -48,6 +48,18 @@ class ResetPasswordSchema(Schema):
     password = fields.Str(required=True, validate=validate.Length(min=8))
 
 
+class AdminUserUpdateSchema(Schema):
+    """Flexible patch schema for admin user management — all fields optional."""
+    first_name = fields.Str(validate=validate.Length(min=1, max=100))
+    last_name  = fields.Str(validate=validate.Length(min=1, max=100))
+    role       = fields.Str(validate=validate.OneOf(['user', 'admin']))
+    is_active  = fields.Bool()
+
+
+class AdminForcePasswordSchema(Schema):
+    password = fields.Str(required=True, validate=validate.Length(min=8))
+
+
 class InviteSchema(Schema):
     email = fields.Email(required=True)
 

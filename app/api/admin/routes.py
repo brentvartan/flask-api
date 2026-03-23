@@ -12,11 +12,12 @@ from . import bp
 from ...extensions import db
 from ...models.user import User
 from ...models.item import Item
-from ...schemas import UserUpdateSchema, PaginationSchema
+from ...schemas import AdminUserUpdateSchema, AdminForcePasswordSchema, PaginationSchema
 from ...utils import admin_required
 
-pagination_schema = PaginationSchema()
-user_update_schema = UserUpdateSchema()
+pagination_schema      = PaginationSchema()
+admin_user_update_schema = AdminUserUpdateSchema()
+admin_force_pwd_schema   = AdminForcePasswordSchema()
 
 
 @bp.route("/users", methods=["GET"])
@@ -63,7 +64,7 @@ def list_users():
 @bp.route("/users/<int:user_id>", methods=["PATCH"])
 @admin_required()
 def update_user(user_id):
-    """Activate or deactivate a user (admin only).
+    """Update a user's name, role, or active status (admin only).
     ---
     tags: [Admin]
     security:
@@ -78,15 +79,77 @@ def update_user(user_id):
       content:
         application/json:
           schema:
-            required: [is_active]
             properties:
-              is_active: {type: boolean}
+              first_name: {type: string}
+              last_name:  {type: string}
+              role:       {type: string, enum: [user, admin]}
+              is_active:  {type: boolean}
     responses:
       200:
         description: Updated user
     """
+    from flask_jwt_extended import get_jwt_identity
+    current_user_id = int(get_jwt_identity())
+
     try:
-        data = user_update_schema.load(request.get_json() or {})
+        data = admin_user_update_schema.load(request.get_json() or {})
+    except ValidationError as e:
+        return jsonify({"error": e.messages}), 422
+
+    if not data:
+        return jsonify({"error": "No fields provided"}), 400
+
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    # Guard: admins cannot change their own role or deactivate themselves
+    if user_id == current_user_id:
+        if "role" in data:
+            return jsonify({"error": "You cannot change your own role"}), 403
+        if "is_active" in data and not data["is_active"]:
+            return jsonify({"error": "You cannot deactivate your own account"}), 403
+
+    if "first_name" in data:
+        user.first_name = data["first_name"]
+    if "last_name" in data:
+        user.last_name = data["last_name"]
+    if "role" in data:
+        user.role = data["role"]
+    if "is_active" in data:
+        user.is_active = data["is_active"]
+
+    db.session.commit()
+    return jsonify({"user": user.to_dict()}), 200
+
+
+@bp.route("/users/<int:user_id>/force-reset", methods=["POST"])
+@admin_required()
+def force_reset_password(user_id):
+    """Force-set a user's password (admin only). Password is stored hashed — never returned.
+    ---
+    tags: [Admin]
+    security:
+      - Bearer: []
+    parameters:
+      - in: path
+        name: user_id
+        required: true
+        schema: {type: integer}
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            required: [password]
+            properties:
+              password: {type: string, minLength: 8}
+    responses:
+      200:
+        description: Password updated
+    """
+    try:
+        data = admin_force_pwd_schema.load(request.get_json() or {})
     except ValidationError as e:
         return jsonify({"error": e.messages}), 422
 
@@ -94,9 +157,9 @@ def update_user(user_id):
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    user.is_active = data["is_active"]
+    user.set_password(data["password"])
     db.session.commit()
-    return jsonify({"user": user.to_dict()}), 200
+    return jsonify({"message": f"Password updated for {user.email}"}), 200
 
 
 # ─── Spend / usage dashboard ──────────────────────────────────────────────────
