@@ -8,6 +8,6 @@ echo "Starting gunicorn on port $PORT..."
 exec gunicorn wsgi:application \
     --bind "0.0.0.0:$PORT" \
     --workers 1 \
-    --timeout 120 \
+    --timeout 300 \
     --access-logfile - \
     --error-logfile -
