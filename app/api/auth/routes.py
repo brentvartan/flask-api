@@ -34,6 +34,9 @@ def register():
     if missing:
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
+    if not data["email"].lower().endswith("@bullish.co"):
+        return jsonify({"error": "Access is restricted to @bullish.co email addresses"}), 403
+
     if User.query.filter_by(email=data["email"].lower()).first():
         return jsonify({"error": "Email already registered"}), 409
 
