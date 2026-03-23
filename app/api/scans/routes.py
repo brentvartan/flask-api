@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import os
 import threading
 
 from flask import jsonify, request, current_app
@@ -14,6 +15,45 @@ from ...services.delaware import search_recent_delaware_entities
 from ...services.producthunt import search_recent_producthunt
 
 logger = logging.getLogger(__name__)
+
+
+def _get_alert_emails() -> list:
+    """Return the list of alert email addresses from DB settings or env var."""
+    alert_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
+    try:
+        settings_item = Item.query.filter_by(title="__bullish_settings__").first()
+        if settings_item:
+            settings = json.loads(settings_item.description or "{}")
+            emails = settings.get("alert_emails", [])
+            if emails:
+                return [e.strip() for e in emails if e.strip()]
+    except Exception:
+        pass
+    return [e.strip() for e in alert_emails_str.split(",") if e.strip()]
+
+
+def _check_confluence_in_background(app, item_id: int, owner_id: int,
+                                     brand_name: str, signal_type: str,
+                                     source_url: str = None):
+    """Background thread: record signal event and fire confluence alert if triggered."""
+    from ...services.confluence import record_signal_and_check_confluence, send_confluence_alert_for_hit
+
+    with app.app_context():
+        try:
+            result = record_signal_and_check_confluence(
+                item_id=item_id,
+                owner_id=owner_id,
+                brand_name=brand_name,
+                signal_type=signal_type,
+                source_url=source_url,
+            )
+            if result["is_confluence"]:
+                alert_emails = _get_alert_emails()
+                if alert_emails and result.get("hit_id"):
+                    send_confluence_alert_for_hit(result["hit_id"], alert_emails)
+                    logger.info("Confluence alert sent for %s (%d signals)", brand_name, result["signal_count"])
+        except Exception as exc:
+            logger.warning("Confluence check failed for item %s: %s", item_id, exc)
 
 
 def _enrich_items_in_background(app, item_ids: list):
@@ -178,11 +218,18 @@ def run_trademark_scan():
     new_saved = len(new_items)
     if new_saved > 0:
         db.session.commit()
-        # Auto-enrich in background — no manual Re-Score needed
         new_ids = [item.id for item in new_items]
         app = current_app._get_current_object()
+        # Auto-enrich
         threading.Thread(target=_enrich_items_in_background, args=(app, new_ids), daemon=True).start()
-        logger.info("Trademark scan: %d new signals queued for background enrichment", new_saved)
+        # Confluence detection — check each new signal against the brand timeline
+        for item in new_items:
+            threading.Thread(
+                target=_check_confluence_in_background,
+                args=(app, item.id, user_id, item.title, "trademark", None),
+                daemon=True,
+            ).start()
+        logger.info("Trademark scan: %d new signals queued for enrichment + confluence check", new_saved)
 
     return jsonify({
         "total_found": total_found,
@@ -276,7 +323,14 @@ def run_delaware_scan():
         new_ids = [item.id for item in new_items]
         app = current_app._get_current_object()
         threading.Thread(target=_enrich_items_in_background, args=(app, new_ids), daemon=True).start()
-        logger.info("Delaware scan: %d new signals queued for background enrichment", new_saved)
+        for item in new_items:
+            meta = json.loads(item.description or "{}")
+            threading.Thread(
+                target=_check_confluence_in_background,
+                args=(app, item.id, user_id, item.title, meta.get("signal_type", "delaware"), meta.get("url")),
+                daemon=True,
+            ).start()
+        logger.info("Delaware scan: %d new signals queued for enrichment + confluence check", new_saved)
 
     return jsonify({
         "total_found": total_found,
@@ -358,7 +412,14 @@ def run_producthunt_scan():
         new_ids = [item.id for item in new_items]
         app = current_app._get_current_object()
         threading.Thread(target=_enrich_items_in_background, args=(app, new_ids), daemon=True).start()
-        logger.info("ProductHunt scan: %d new signals queued for background enrichment", new_saved)
+        for item in new_items:
+            meta = json.loads(item.description or "{}")
+            threading.Thread(
+                target=_check_confluence_in_background,
+                args=(app, item.id, user_id, item.title, "producthunt", meta.get("url")),
+                daemon=True,
+            ).start()
+        logger.info("ProductHunt scan: %d new signals queued for enrichment + confluence check", new_saved)
 
     return jsonify({
         "total_found": total_found,

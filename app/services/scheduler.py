@@ -149,7 +149,46 @@ def run_scan_now(scan, user_id: int) -> dict:
     if new_item_ids:
         db.session.commit()
 
-    # ── 5. Send HOT alert email + Slack ──────────────────────────────────────
+    # ── 5. Confluence detection for newly saved signals ───────────────────────
+    try:
+        from ..services.confluence import record_signal_and_check_confluence, send_confluence_alert_for_hit
+
+        confluence_alert_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
+        try:
+            _cse_item = Item.query.filter_by(title="__bullish_settings__").first()
+            if _cse_item:
+                _cse_settings = json.loads(_cse_item.description or "{}")
+                _cse_emails = _cse_settings.get("alert_emails", [])
+                if _cse_emails:
+                    confluence_alert_emails_str = ",".join(_cse_emails)
+        except Exception:
+            pass
+        confluence_alert_emails = [e.strip() for e in confluence_alert_emails_str.split(",") if e.strip()]
+
+        for item_id in new_item_ids:
+            item = db.session.get(Item, item_id)
+            if not item:
+                continue
+            try:
+                meta = json.loads(item.description or "{}")
+                enrichment = meta.get("enrichment") or {}
+                result = record_signal_and_check_confluence(
+                    item_id=item_id,
+                    owner_id=user_id,
+                    brand_name=meta.get("company_name", item.title),
+                    signal_type=meta.get("signal_type", "trademark"),
+                    source_url=meta.get("url"),
+                    enrichment=enrichment if enrichment.get("enriched") else None,
+                )
+                if result["is_confluence"] and result.get("hit_id") and confluence_alert_emails:
+                    send_confluence_alert_for_hit(result["hit_id"], confluence_alert_emails)
+                    logger.info("Confluence alert sent for %s", item.title)
+            except Exception as exc:
+                logger.warning("Confluence check failed for item %s: %s", item_id, exc)
+    except Exception as exc:
+        logger.warning("Confluence detection block failed: %s", exc)
+
+    # ── 6. Send HOT alert email + Slack ──────────────────────────────────────
     from ..services.slack import send_slack_hot_alert
 
     # Read alert_emails from DB settings first, fall back to env var
