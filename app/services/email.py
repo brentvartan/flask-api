@@ -16,6 +16,7 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
         return
 
     from_address = _resend_client()
+    from_with_name = f"Bullish <{from_address}>"
     app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
 
     count = len(hot_brands)
@@ -88,11 +89,22 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
     </html>
     """
 
+    plain_text = f"Bullish Stealth Finder — {count} HOT Signal{'s' if count != 1 else ''}\n\n"
+    for b in hot_brands:
+        plain_text += f"  {b.get('score', '—')}  {b.get('name', '').upper()}\n"
+        if b.get('thesis'):
+            plain_text += f"  {b['thesis']}\n"
+        if b.get('theme'):
+            plain_text += f"  Theme: {b['theme']}\n"
+        plain_text += "\n"
+    plain_text += f"View in Stealth Finder: {app_url}\n"
+
     resend.Emails.send({
-        "from":    from_address,
+        "from":    from_with_name,
         "to":      [to_email],
         "subject": subject,
         "html":    html,
+        "text":    plain_text,
     })
 
 
@@ -102,29 +114,21 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
         return
 
     from_address = _resend_client()
-    # Use a display name for better deliverability
     from_with_name = f"Bullish <{from_address}>"
+    reply_to = os.environ.get("MAIL_REPLY_TO", "brent@bullish.co")
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>You're invited to join Bullish Stealth Startup Finder</title>
+  <title>Your access to Bullish Stealth Startup Finder</title>
 </head>
 <body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
   <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
 
-    <!-- Logo / Wordmark lockup -->
+    <!-- Wordmark header — no SVG (improves spam score) -->
     <div style="padding:36px 40px 28px;border-bottom:1px solid #222;text-align:center;">
-      <!-- Bullish icon SVG -->
-      <svg width="28" height="28" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg"
-           style="display:block;margin:0 auto 14px;">
-        <rect x="1.5" y="1.5" width="33" height="33" stroke="rgba(255,255,255,0.5)" stroke-width="3"/>
-        <polygon points="8.5,10.5 18,10.5 17,13 8.5,13" fill="rgba(255,255,255,0.5)"/>
-        <polygon points="8.5,22 27,22 26,25 8.5,25" fill="rgba(255,255,255,0.5)"/>
-      </svg>
-      <!-- Wordmark -->
       <div style="font-family:Georgia,serif;font-style:italic;color:#fff;font-size:22px;
                   letter-spacing:2px;line-height:1.3;margin-bottom:6px;">
         Bullish Stealth Startup Finder
@@ -135,14 +139,14 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
       </div>
     </div>
 
-    <!-- YOU'RE INVITED heading -->
+    <!-- Heading -->
     <div style="padding:32px 40px 0;">
       <h1 style="margin:0 0 8px;color:#fff;font-family:monospace;font-size:24px;
                  font-weight:bold;letter-spacing:3px;text-transform:uppercase;">
-        YOU'RE INVITED
+        ACCESS GRANTED
       </h1>
       <p style="margin:0;color:#888;font-size:14px;">
-        {invited_by} has invited you to join the Bullish Stealth Startup Finder team.
+        {invited_by} has added you to the Bullish Stealth Startup Finder team.
       </p>
     </div>
 
@@ -157,33 +161,33 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
          style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
                 padding:14px 28px;border-radius:6px;font-family:monospace;font-weight:bold;
                 font-size:13px;letter-spacing:1px;text-transform:uppercase;">
-        Accept Invite &amp; Set Password →
+        Create Your Account
       </a>
       <p style="color:#555;font-size:11px;margin:20px 0 0;">
-        This invite link expires in 7 days. If you weren't expecting this, you can safely ignore it.
+        This link expires in 7 days. If you were not expecting this, you can safely ignore it.
       </p>
     </div>
 
     <!-- Footer -->
     <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
       <p style="margin:0;color:#444;font-size:11px;">
-        Bullish Brand Fund III · Stealth Startup Finder
+        Bullish Brand Fund III &middot; Stealth Startup Finder
       </p>
     </div>
   </div>
 </body>
 </html>"""
 
-    plain_text = f"""You're invited to join Bullish Stealth Startup Finder
+    plain_text = f"""Bullish Stealth Startup Finder — Team Access
 
-{invited_by} has invited you to join the Bullish Stealth Startup Finder team.
+{invited_by} has added you to the Bullish Stealth Startup Finder team.
 
 Stealth Startup Finder tracks early-stage consumer brand signals — trademark filings, EDGAR incorporations, and domain registrations — enriched with Bullish AI to surface the next Bubble, Hu, or Nom Nom before anyone else.
 
-Accept your invite and set your password here:
+Create your account here:
 {invite_url}
 
-This invite link expires in 7 days. If you weren't expecting this, you can safely ignore it.
+This link expires in 7 days. If you were not expecting this, you can safely ignore it.
 
 —
 Bullish Brand Fund III · Stealth Startup Finder
@@ -192,9 +196,13 @@ Bullish Brand Fund III · Stealth Startup Finder
     resend.Emails.send({
         "from":    from_with_name,
         "to":      [to_email],
-        "subject": "You're invited to join Bullish Stealth Startup Finder",
+        "reply_to": reply_to,
+        "subject": "Your access to Bullish Stealth Startup Finder",
         "html":    html,
         "text":    plain_text,
+        "headers": {
+            "List-Unsubscribe": f"<mailto:{from_address}?subject=unsubscribe>",
+        },
     })
 
 
@@ -204,6 +212,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
         return
 
     from_address = _resend_client()
+    from_with_name = f"Bullish <{from_address}>"
     app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
 
     def brand_card(b, is_hot):
@@ -289,11 +298,23 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
     </html>
     """
 
+    digest_plain = f"Stealth Finder Weekly — {week_label}\n\n"
+    if hot_signals:
+        digest_plain += "HOT\n"
+        for b in hot_signals:
+            digest_plain += f"  {b.get('score','—')}  {b.get('name','').upper()}\n"
+    if warm_signals:
+        digest_plain += "\nWARM\n"
+        for b in warm_signals:
+            digest_plain += f"  {b.get('score','—')}  {b.get('name','').upper()}\n"
+    digest_plain += f"\nView in Stealth Finder: {app_url}\n"
+
     resend.Emails.send({
-        "from":    from_address,
+        "from":    from_with_name,
         "to":      [to_email],
         "subject": f"Stealth Finder Weekly — {len(hot_signals)} HOT, {len(warm_signals)} WARM · {week_label}",
         "html":    html,
+        "text":    digest_plain,
     })
 
 
@@ -461,21 +482,75 @@ def send_password_reset_email(to_email: str, reset_url: str) -> None:
     if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
         return
 
-    api_key = os.environ.get("RESEND_API_KEY")
-    if not api_key:
-        raise RuntimeError("RESEND_API_KEY environment variable is not set")
+    from_address = _resend_client()
+    from_with_name = f"Bullish <{from_address}>"
+    reply_to = os.environ.get("MAIL_REPLY_TO", "brent@bullish.co")
 
-    resend.api_key = api_key
-    from_address = os.environ.get("MAIL_FROM", "noreply@yourdomain.com")
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset your password</title>
+</head>
+<body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
+    <div style="padding:32px 40px 24px;border-bottom:1px solid #222;text-align:center;">
+      <div style="font-family:Georgia,serif;font-style:italic;color:#fff;font-size:20px;
+                  letter-spacing:2px;">
+        Bullish Stealth Startup Finder
+      </div>
+    </div>
+    <div style="padding:32px 40px;">
+      <h1 style="margin:0 0 12px;color:#fff;font-family:monospace;font-size:22px;
+                 font-weight:bold;letter-spacing:2px;text-transform:uppercase;">
+        Password Reset
+      </h1>
+      <p style="color:#ccc;font-size:14px;line-height:1.7;margin:0 0 24px;">
+        We received a request to reset the password for your account.
+        Click the button below to choose a new password.
+      </p>
+      <a href="{reset_url}"
+         style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
+                padding:14px 28px;border-radius:6px;font-family:monospace;font-weight:bold;
+                font-size:13px;letter-spacing:1px;text-transform:uppercase;">
+        Reset Password
+      </a>
+      <p style="color:#555;font-size:11px;margin:20px 0 0;">
+        This link expires in 1 hour. If you did not request a password reset,
+        you can safely ignore this email.
+      </p>
+    </div>
+    <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
+      <p style="margin:0;color:#444;font-size:11px;">
+        Bullish Brand Fund III &middot; Stealth Startup Finder
+      </p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    plain_text = f"""Bullish Stealth Startup Finder — Password Reset
+
+We received a request to reset the password for your account.
+
+Reset your password here:
+{reset_url}
+
+This link expires in 1 hour. If you did not request a password reset, you can safely ignore this email.
+
+—
+Bullish Brand Fund III · Stealth Startup Finder
+"""
 
     resend.Emails.send({
-        "from": from_address,
-        "to": [to_email],
-        "subject": "Reset your password",
-        "html": (
-            f"<p>You requested a password reset for your account.</p>"
-            f"<p><a href='{reset_url}'>Click here to reset your password</a></p>"
-            f"<p>This link expires in 1 hour. If you didn't request this, "
-            f"you can safely ignore this email.</p>"
-        ),
+        "from":     from_with_name,
+        "to":       [to_email],
+        "reply_to": reply_to,
+        "subject":  "Reset your Bullish Stealth Startup Finder password",
+        "html":     html,
+        "text":     plain_text,
+        "headers": {
+            "List-Unsubscribe": f"<mailto:{from_address}?subject=unsubscribe>",
+        },
     })
