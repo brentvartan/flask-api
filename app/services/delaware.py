@@ -1,12 +1,16 @@
 """
-Delaware stealth fundraise signals via SEC EDGAR Form D.
+Stealth fundraise signals via SEC EDGAR Form D — all 50 states.
 
 Form D is filed when a company raises its first outside capital under
-Regulation D — before any public announcement.  Filtering for Delaware-
-incorporated entities gives us stealth consumer brands that are:
-  • Committed enough to incorporate in Delaware
-  • Actively raising seed/pre-seed money
-  • Not yet public
+Regulation D — before any public announcement.  This covers every US state
+because Form D is a federal SEC filing, not a state filing.  Catching all
+states means we see scrappy founders who incorporated in Texas, Florida,
+California, etc. before converting to Delaware for a VC round.
+
+Stealth consumer brands caught here are:
+  • Taking their first friends-and-family or angel money
+  • Pre-announcement — not yet on Crunchbase or AngelList
+  • Building before any VC has seen the deck
 
 EDGAR's search API is completely free with no API key required.
 """
@@ -208,17 +212,21 @@ def search_recent_delaware_entities(
     check_domains: bool = True,
 ) -> dict:
     """
-    Fetch recent Form D filings from Delaware-incorporated companies via
-    SEC EDGAR (free, no API key required).
+    Fetch recent Form D filings from consumer-keyword-matched companies via
+    SEC EDGAR (free, no API key required) — all 50 US states.
 
-    Form D = first outside capital raise, pre-announcement — the earliest
-    verifiable signal that a stealth brand is becoming real.
+    Form D = first outside capital raise (friends/family, angels, pre-seed) —
+    filed within 15 days of first securities sale, before any public announcement.
+    This is the earliest verifiable signal a stealth brand is becoming real.
+
+    Previously filtered to Delaware-incorporated entities only; now catches all
+    states so we see founders who haven't yet converted to Delaware for VC.
 
     Returns:
         {
             "signals":      list of signal dicts,
             "total_found":  int,
-            "fetched":      int,   # DE entities
+            "fetched":      int,   # consumer brand Form D filings found
             "domain_hits":  int,   # companion domain signals
             "error":        str | None,
         }
@@ -277,10 +285,11 @@ def search_recent_delaware_entities(
         for hit in raw_hits:
             src = hit.get("_source", {})
 
-            # Filter: only Delaware-incorporated companies
+            # Accept all US states — Form D is a federal filing, not state-specific.
+            # Delaware incorporation is a proxy for VC-track intent but many early
+            # founders incorporate in their home state first and convert later.
             inc_states = [s.upper() for s in (src.get("inc_states") or [])]
-            if "DE" not in inc_states:
-                continue
+            inc_state  = inc_states[0] if inc_states else "US"
 
             # Extract name (EDGAR returns a list like ["BRAND LLC  (CIK 0001234)"])
             display_names = src.get("display_names") or []
@@ -314,14 +323,15 @@ def search_recent_delaware_entities(
                 "category":    category,
                 "score_boost": 5,
                 "description": (
-                    f"{name} — Delaware Corp/LLC — Form D filed {file_date}"
+                    f"{name} — {inc_state} Corp/LLC — Form D filed {file_date}"
                     + (f" — {biz_loc}" if biz_loc else "")
                 ),
                 "url":         edgar_url,
                 "notes":       (
-                    f"Pre-raise stealth signal. {name} filed Form D (Reg D exemption) "
-                    f"on {file_date}. Incorporated in Delaware."
+                    f"Angel/pre-seed signal. {name} filed Form D (Reg D exemption) "
+                    f"on {file_date}. Incorporated in {inc_state}."
                     + (f" Operating from {biz_loc}." if biz_loc else "")
+                    + (" (Not yet Delaware — likely pre-VC stage.)" if inc_state != "DE" else "")
                 ),
                 "timestamp":   file_date + "T00:00:00",
             })
@@ -359,11 +369,11 @@ def search_recent_delaware_entities(
 
         time.sleep(0.5)   # be polite to EDGAR
 
-    de_count = len([s for s in signals if s["signal_type"] == "delaware"])
+    formd_count = len([s for s in signals if s["signal_type"] == "delaware"])
     return {
         "signals":     signals,
         "total_found": total_found,
-        "fetched":     de_count,
+        "fetched":     formd_count,
         "domain_hits": domain_hits,
         "error":       None,
     }
