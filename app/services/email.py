@@ -102,57 +102,99 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
         return
 
     from_address = _resend_client()
+    # Use a display name for better deliverability
+    from_with_name = f"Bullish <{from_address}>"
 
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
-      <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>You're invited to join Bullish Stealth Startup Finder</title>
+</head>
+<body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
 
-        <div style="padding:32px 40px 24px;border-bottom:1px solid #222;">
-          <div style="font-family:monospace;font-size:11px;color:#666;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">
-            Bullish Intelligence · Stealth Finder
-          </div>
-          <h1 style="margin:0;color:#fff;font-family:monospace;font-size:24px;font-weight:bold;letter-spacing:3px;">
-            YOU'RE INVITED
-          </h1>
-          <p style="margin:8px 0 0;color:#888;font-size:14px;">
-            {invited_by} has invited you to join the Bullish Stealth Finder team.
-          </p>
-        </div>
-
-        <div style="padding:32px 40px;">
-          <p style="color:#ccc;font-size:14px;line-height:1.6;">
-            Stealth Finder tracks early-stage consumer brand signals — trademark filings,
-            Delaware incorporations, and domain registrations — enriched with Bullish AI
-            to surface the next Bubble, Hu, or Nom Nom before anyone else.
-          </p>
-          <a href="{invite_url}"
-             style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
-                    padding:14px 28px;border-radius:6px;font-family:monospace;font-weight:bold;
-                    font-size:13px;letter-spacing:1px;text-transform:uppercase;margin-top:16px;">
-            Accept Invite &amp; Set Password →
-          </a>
-          <p style="color:#555;font-size:11px;margin-top:24px;">
-            This invite link expires in 7 days. If you weren't expecting this, you can ignore it.
-          </p>
-        </div>
-
-        <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
-          <p style="margin:0;color:#555;font-size:11px;">
-            Bullish Brand Fund III · Stealth Finder
-          </p>
-        </div>
+    <!-- Logo / Wordmark lockup -->
+    <div style="padding:36px 40px 28px;border-bottom:1px solid #222;text-align:center;">
+      <!-- Bullish icon SVG -->
+      <svg width="28" height="28" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg"
+           style="display:block;margin:0 auto 14px;">
+        <rect x="1.5" y="1.5" width="33" height="33" stroke="rgba(255,255,255,0.5)" stroke-width="3"/>
+        <polygon points="8.5,10.5 18,10.5 17,13 8.5,13" fill="rgba(255,255,255,0.5)"/>
+        <polygon points="8.5,22 27,22 26,25 8.5,25" fill="rgba(255,255,255,0.5)"/>
+      </svg>
+      <!-- Wordmark -->
+      <div style="font-family:Georgia,serif;font-style:italic;color:#fff;font-size:22px;
+                  letter-spacing:2px;line-height:1.3;margin-bottom:6px;">
+        Bullish Stealth Startup Finder
       </div>
-    </body>
-    </html>
-    """
+      <div style="font-family:monospace;font-size:10px;color:#555;letter-spacing:3px;
+                  text-transform:uppercase;">
+        Bullish Brand Fund III
+      </div>
+    </div>
+
+    <!-- YOU'RE INVITED heading -->
+    <div style="padding:32px 40px 0;">
+      <h1 style="margin:0 0 8px;color:#fff;font-family:monospace;font-size:24px;
+                 font-weight:bold;letter-spacing:3px;text-transform:uppercase;">
+        YOU'RE INVITED
+      </h1>
+      <p style="margin:0;color:#888;font-size:14px;">
+        {invited_by} has invited you to join the Bullish Stealth Startup Finder team.
+      </p>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:24px 40px 32px;">
+      <p style="color:#ccc;font-size:14px;line-height:1.7;margin:0 0 24px;">
+        Stealth Startup Finder tracks early-stage consumer brand signals — trademark filings,
+        EDGAR incorporations, and domain registrations — enriched with Bullish AI
+        to surface the next Bubble, Hu, or Nom Nom before anyone else.
+      </p>
+      <a href="{invite_url}"
+         style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
+                padding:14px 28px;border-radius:6px;font-family:monospace;font-weight:bold;
+                font-size:13px;letter-spacing:1px;text-transform:uppercase;">
+        Accept Invite &amp; Set Password →
+      </a>
+      <p style="color:#555;font-size:11px;margin:20px 0 0;">
+        This invite link expires in 7 days. If you weren't expecting this, you can safely ignore it.
+      </p>
+    </div>
+
+    <!-- Footer -->
+    <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
+      <p style="margin:0;color:#444;font-size:11px;">
+        Bullish Brand Fund III · Stealth Startup Finder
+      </p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    plain_text = f"""You're invited to join Bullish Stealth Startup Finder
+
+{invited_by} has invited you to join the Bullish Stealth Startup Finder team.
+
+Stealth Startup Finder tracks early-stage consumer brand signals — trademark filings, EDGAR incorporations, and domain registrations — enriched with Bullish AI to surface the next Bubble, Hu, or Nom Nom before anyone else.
+
+Accept your invite and set your password here:
+{invite_url}
+
+This invite link expires in 7 days. If you weren't expecting this, you can safely ignore it.
+
+—
+Bullish Brand Fund III · Stealth Startup Finder
+"""
 
     resend.Emails.send({
-        "from":    from_address,
+        "from":    from_with_name,
         "to":      [to_email],
-        "subject": f"You're invited to join Bullish Stealth Finder",
+        "subject": "You're invited to join Bullish Stealth Startup Finder",
         "html":    html,
+        "text":    plain_text,
     })
 
 
