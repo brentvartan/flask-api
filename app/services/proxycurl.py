@@ -23,7 +23,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_BASE      = "https://nubela.co/proxycurl/api"
+_BASE      = "https://enrichlayer.com/api/v2"    # Proxycurl rebranded to Enrich Layer
 _TIMEOUT   = 20
 
 
@@ -64,33 +64,36 @@ def search_person(founder_name: str, brand_name: str) -> str | None:
 
     try:
         resp = requests.get(
-            f"{_BASE}/search/person",
+            f"{_BASE}/profile/resolve",
             params={
-                "first_name":    first_name,
-                "last_name":     last_name,
-                "company_name":  brand_name,
-                "page_size":     1,
-                "enrich_profile": "skip",   # save credits — we fetch separately
+                "first_name":     first_name,
+                "last_name":      last_name,
+                "company_name":   brand_name,
+                "enrich_profile": "skip",   # save credits — we fetch separately if found
             },
             headers={"Authorization": f"Bearer {key}"},
             timeout=_TIMEOUT,
         )
     except requests.RequestException as exc:
-        logger.warning("Proxycurl search request failed for %s: %s", founder_name, exc)
+        logger.warning("Enrich Layer search request failed for %s: %s", founder_name, exc)
         return None
 
     if resp.status_code == 402:
-        logger.warning("Proxycurl: insufficient credits")
+        logger.warning("Enrich Layer: insufficient credits")
         return None
+    if resp.status_code == 404:
+        return None   # not found — normal, not an error
     if resp.status_code != 200:
-        logger.warning("Proxycurl search %s → HTTP %d", founder_name, resp.status_code)
+        logger.warning("Enrich Layer search %s → HTTP %d", founder_name, resp.status_code)
         return None
 
-    results = resp.json().get("results") or []
-    if not results:
+    data = resp.json()
+    # /profile/resolve returns { url: "/publicidentifier", profile: {...} }
+    public_id = data.get("url", "").lstrip("/")
+    if not public_id:
         return None
 
-    return results[0].get("linkedin_profile_url")
+    return f"https://linkedin.com/in/{public_id}"
 
 
 def get_profile(linkedin_url: str) -> dict | None:
@@ -104,17 +107,17 @@ def get_profile(linkedin_url: str) -> dict | None:
 
     try:
         resp = requests.get(
-            f"{_BASE}/v2/linkedin",
-            params={"url": linkedin_url, "use_cache": "if-present"},
+            f"{_BASE}/profile",
+            params={"profile_url": linkedin_url, "use_cache": "if-present"},
             headers={"Authorization": f"Bearer {key}"},
             timeout=_TIMEOUT,
         )
     except requests.RequestException as exc:
-        logger.warning("Proxycurl profile fetch failed for %s: %s", linkedin_url, exc)
+        logger.warning("Enrich Layer profile fetch failed for %s: %s", linkedin_url, exc)
         return None
 
     if resp.status_code != 200:
-        logger.warning("Proxycurl profile %s → HTTP %d", linkedin_url, resp.status_code)
+        logger.warning("Enrich Layer profile %s → HTTP %d", linkedin_url, resp.status_code)
         return None
 
     return resp.json()
