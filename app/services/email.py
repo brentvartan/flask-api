@@ -473,6 +473,204 @@ def send_confluence_alert(
     })
 
 
+def send_founder_alert(
+    to_email: str,
+    brand_name: str,
+    founder_name: str,
+    founder_score: int,
+    founder_tier: str,
+    brand_score: int = None,
+    watch_level: str = None,
+    linkedin_url: str = None,
+    breakdown: dict = None,
+) -> None:
+    """
+    Send a founder enrichment alert email when a HOT founder is detected.
+
+    Shows brand + watch-level badge, brand score / founder score side-by-side,
+    founder tier badge, LinkedIn link, and top breakdown items.
+    """
+    if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
+        return
+
+    from_address = _resend_client()
+    app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
+
+    # Watch level badge
+    level_color = "#052EF0" if (watch_level or "").lower() == "hot" else "#333"
+    level_label = (watch_level or "unknown").upper()
+
+    # Brand score block
+    brand_score_html = ""
+    if brand_score is not None:
+        brand_score_html = f"""
+        <div style="flex:1;background:#0a0a0a;border-radius:6px;padding:16px;text-align:center;border:1px solid #222;">
+          <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;
+                      text-transform:uppercase;margin-bottom:6px;">Brand Score</div>
+          <div style="color:#fff;font-family:monospace;font-weight:bold;font-size:28px;">
+            {brand_score}
+          </div>
+          <div style="background:{level_color};color:#fff;border-radius:4px;padding:3px 8px;
+                      font-family:monospace;font-size:10px;font-weight:bold;
+                      letter-spacing:1px;display:inline-block;margin-top:6px;">
+            {level_label}
+          </div>
+        </div>
+        """
+
+    # Founder score tier color
+    tier_color = "#052EF0" if founder_tier in ("HIGH_PRIORITY",) else (
+        "#555" if founder_tier == "WATCH_LIST" else "#333"
+    )
+    tier_label = (founder_tier or "UNKNOWN").replace("_", " ")
+
+    founder_score_html = f"""
+    <div style="flex:1;background:#0a0a0a;border-radius:6px;padding:16px;text-align:center;border:1px solid #222;">
+      <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;
+                  text-transform:uppercase;margin-bottom:6px;">Founder Score</div>
+      <div style="color:#052EF0;font-family:monospace;font-weight:bold;font-size:28px;">
+        {founder_score}
+      </div>
+      <div style="background:{tier_color};color:#fff;border-radius:4px;padding:3px 8px;
+                  font-family:monospace;font-size:10px;font-weight:bold;
+                  letter-spacing:1px;display:inline-block;margin-top:6px;">
+        {tier_label}
+      </div>
+    </div>
+    """
+
+    # LinkedIn link block
+    linkedin_html = ""
+    if linkedin_url:
+        linkedin_html = f"""
+        <div style="margin-top:16px;">
+          <a href="{linkedin_url}"
+             style="color:#052EF0;font-family:monospace;font-size:12px;
+                    text-decoration:none;font-weight:600;">
+            ↗ View LinkedIn Profile
+          </a>
+        </div>
+        """
+
+    # Breakdown chips (top 2-3 items)
+    breakdown_html = ""
+    if breakdown:
+        priority_keys = ["chip_on_shoulder", "category_proximity", "magnetic_signal"]
+        chips = ""
+        for key in priority_keys:
+            item = breakdown.get(key)
+            if not item:
+                continue
+            score_val = item.get("score", 0)
+            max_val   = item.get("max", 0)
+            label     = key.replace("_", " ").title()
+            flags     = item.get("flags", [])
+            flag_text = flags[0] if flags else ""
+            chips += f"""
+            <div style="background:#111;border-radius:6px;padding:10px 14px;margin:6px 0;
+                        border-left:3px solid #052EF0;">
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <span style="color:#fff;font-family:monospace;font-size:11px;
+                             font-weight:bold;letter-spacing:1px;">{label}</span>
+                <span style="color:#052EF0;font-family:monospace;font-size:13px;
+                             font-weight:bold;">{score_val}<span style="color:#444;font-size:10px;">/{max_val}</span></span>
+              </div>
+              {f'<div style="color:#888;font-size:11px;margin-top:4px;">{flag_text}</div>' if flag_text else ''}
+            </div>
+            """
+        if chips:
+            breakdown_html = f"""
+            <div style="margin-top:20px;">
+              <div style="font-family:monospace;font-size:10px;color:#666;letter-spacing:2px;
+                          text-transform:uppercase;margin-bottom:8px;">Score Breakdown</div>
+              {chips}
+            </div>
+            """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
+      <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
+
+        <!-- Header -->
+        <div style="padding:28px 36px 20px;border-bottom:1px solid #222;">
+          <div style="font-family:monospace;font-size:10px;color:#666;letter-spacing:2px;
+                      text-transform:uppercase;margin-bottom:6px;">
+            Bullish Intelligence · Stealth Finder
+          </div>
+          <h1 style="margin:0;color:#052EF0;font-family:monospace;font-size:26px;
+                     font-weight:bold;letter-spacing:3px;">
+            🔵 FOUNDER SIGNAL
+          </h1>
+          <p style="margin:6px 0 0;color:#888;font-size:13px;">
+            High-conviction founder identified · LinkedIn enriched
+          </p>
+        </div>
+
+        <!-- Brand + Founder -->
+        <div style="padding:24px 36px 0;">
+          <div style="font-family:monospace;font-weight:bold;font-size:24px;
+                      letter-spacing:3px;text-transform:uppercase;color:#fff;margin-bottom:2px;">
+            {brand_name}
+          </div>
+          <div style="font-size:14px;color:#ccc;margin-bottom:20px;">
+            Founder: <strong style="color:#fff;">{founder_name}</strong>
+          </div>
+
+          <!-- Score cards side by side -->
+          <div style="display:flex;gap:12px;margin-bottom:0;">
+            {brand_score_html}
+            {founder_score_html}
+          </div>
+
+          {linkedin_html}
+          {breakdown_html}
+        </div>
+
+        <!-- CTA -->
+        <div style="padding:24px 36px 28px;">
+          <a href="{app_url}"
+             style="display:inline-block;background:#052EF0;color:#fff;
+                    text-decoration:none;padding:12px 24px;border-radius:6px;
+                    font-family:monospace;font-weight:bold;font-size:12px;
+                    letter-spacing:1px;text-transform:uppercase;">
+            View Signal →
+          </a>
+        </div>
+
+        <!-- Footer -->
+        <div style="padding:14px 36px;border-top:1px solid #222;text-align:center;">
+          <p style="margin:0;color:#555;font-size:10px;">
+            Bullish Brand Fund III · Stealth Finder · Founder Intelligence
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+    plain_text = (
+        f"Bullish Stealth Finder — Founder Signal\n\n"
+        f"Brand: {brand_name} ({level_label})\n"
+        f"Founder: {founder_name}\n"
+        f"Founder Score: {founder_score} ({tier_label})\n"
+    )
+    if brand_score is not None:
+        plain_text += f"Brand Score: {brand_score}\n"
+    if linkedin_url:
+        plain_text += f"LinkedIn: {linkedin_url}\n"
+    plain_text += f"\nView in Stealth Finder: {app_url}\n"
+
+    resend.Emails.send({
+        "from":    from_address,
+        "to":      [to_email],
+        "subject": f"🔵 {founder_name} · {brand_name} Founder — Score {founder_score} · Stealth Finder",
+        "html":    html,
+        "text":    plain_text,
+    })
+
+
 def send_password_reset_email(to_email: str, reset_url: str) -> None:
     """Send a password-reset email via Resend.
 

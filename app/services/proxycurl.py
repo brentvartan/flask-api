@@ -190,3 +190,35 @@ def enrich_founder(founder_name: str, brand_name: str) -> dict:
         len(ctx.get("education", [])),
     )
     return ctx
+
+
+# ── Convenience aliases used by founder_enrichment.py ─────────────────────────
+
+def find_linkedin_url(name: str, brand_name: str = None) -> str | None:
+    """
+    Resolve a LinkedIn profile URL for a person by name.
+    Thin wrapper around search_person() that returns None (not empty dict) on failure.
+    """
+    return search_person(name, brand_name or "")
+
+
+def fetch_linkedin_profile(linkedin_url: str) -> dict | None:
+    """
+    Fetch a LinkedIn profile and return it formatted for rescore_founder_with_linkedin().
+
+    Returns a dict with the fields Claude needs (headline, follower_count, summary,
+    experiences, education, linkedin_url, full_name) or None on failure.
+    """
+    profile = get_profile(linkedin_url)
+    if not profile:
+        return None
+
+    ctx = build_context(profile)
+    ctx["linkedin_url"] = linkedin_url
+
+    # Derive full_name from the raw profile if available
+    first = profile.get("first_name") or ""
+    last  = profile.get("last_name") or ""
+    ctx["full_name"] = f"{first} {last}".strip() or profile.get("full_name") or ""
+
+    return ctx

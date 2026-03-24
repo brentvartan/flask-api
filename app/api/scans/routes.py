@@ -62,6 +62,7 @@ def _enrich_items_in_background(app, item_ids: list):
     after a manual scan completes. Mirrors what run_scan_now() does for scheduled scans.
     """
     from ...services.enrichment import enrich_signal
+    from ...services.founder_enrichment import run_founder_enrichment_in_background
 
     with app.app_context():
         for item_id in item_ids:
@@ -99,6 +100,31 @@ def _enrich_items_in_background(app, item_ids: list):
                         meta.get("company_name"), item_id,
                         enrichment.get("watch_level"), enrichment.get("bullish_score"),
                     )
+
+                    # Spawn founder enrichment for HOT brands with no founder identified yet
+                    if (
+                        enrichment.get("bullish_score", 0) >= 70
+                        and enrichment.get("founder", {}).get("confidence") == "unknown"
+                    ):
+                        alert_emails = _get_alert_emails()
+                        brand_name = meta.get("company_name", item.title)
+                        category = meta.get("category", "")
+                        one_line_thesis = enrichment.get("one_line_thesis", "")
+                        filer_name = owner or None
+                        logger.info(
+                            "Triggering founder enrichment for HOT brand '%s' (item %s)",
+                            brand_name, item_id,
+                        )
+                        run_founder_enrichment_in_background(
+                            app=app,
+                            item_id=item_id,
+                            brand_name=brand_name,
+                            category=category,
+                            one_line_thesis=one_line_thesis,
+                            filer_name=filer_name,
+                            alert_emails=alert_emails,
+                        )
+
             except Exception as exc:
                 logger.warning("Background enrichment failed for item %s: %s", item_id, exc)
 
