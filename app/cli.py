@@ -19,8 +19,12 @@ def register_commands(app):
         from .services.enrichment import enrich_signal
 
         rows = Item.query.filter(
-            Item.description.contains('"_type":"signal"')
+            Item.description.contains('_type')
+        ).filter(
+            Item.description.contains('signal')
         ).order_by(Item.created_at.desc()).all()
+        # Filter in Python to handle both "key":"val" and "key": "val" JSON formats
+        rows = [r for r in rows if '"_type"' in (r.description or '') and 'signal' in (r.description or '')]
 
         if limit:
             rows = rows[:limit]
