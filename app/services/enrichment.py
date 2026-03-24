@@ -78,17 +78,25 @@ BULLISH'S 2026 CULTURAL INVESTMENT THEMES (highest conviction areas):
 - Climate-Positive Consumer: sustainable performance materials, clean formulas, packaging innovation without sacrifice
 - AI-Personalized Care: products that adapt to individual biology, habit, or preference over time
 
-CALIBRATION (use these to anchor your scoring):
-- Bubble (IC 003, Beauty): ~90 — GenZ skincare, advocacy deficiency vs clinical incumbents, natural repeat, magnetic founder
-- Hu Chocolate (IC 030, CPG): ~85 — Clean paleo chocolate, dietary identity tribe, repeat consumable, strong brand
-- Nom Nom (IC 031, CPG): ~80 — Fresh pet food subscription, wellness cultural tension, CLV via subscription
-- care/of (IC 005, Health): ~80 — Personalized vitamin subscription, customization at scale, natural repeat
-- Harry's (IC 003, Beauty): ~70 — DTC men's grooming, advocacy deficiency vs Gillette, repeat by nature
+TWO SEPARATE SCORES — READ THIS CAREFULLY:
+`bullish_score` (0-100) measures BRAND + CATEGORY + CULTURAL TENSION FIT ONLY. It answers the question: "If a great founder built this brand, how excited would Bullish be?" Score it purely on: consumer brand clarity, cultural tension strength, repeat potential, advocacy deficiency, category fit, and 2026 theme alignment.
+
+When the founder is unknown (the default for trademark filings), DO NOT penalize `bullish_score`. Assume a competent average founder. The `founder_score` object is a separate evaluation that handles jockey quality independently. Blending founder uncertainty into `bullish_score` produces artificially low scores that hide genuinely interesting brands.
+
+CALIBRATION for `bullish_score` (brand-only — assume competent founder in all cases):
+- Bubble (IC 003, Beauty): ~90 — GenZ skincare, strong cultural tension vs clinical incumbents, high repeat, clear advocacy deficiency
+- Hu Chocolate (IC 030, CPG): ~85 — Clean paleo CPG, dietary identity tribe, consumable, clear category whitespace
+- Nom Nom (IC 031, CPG): ~80 — Premium pet food subscription, wellness cultural tension, CLV via subscription
+- care/of (IC 005, Health): ~80 — Personalized vitamin subscription, customization at scale, repeat by nature
+- Harry's (IC 003, Beauty): ~72 — DTC men's grooming, advocacy deficiency vs Gillette, natural repeat
+- Strong cultural tension + high repeat + clear advocacy deficiency, founder unknown: 70–80
+- Moderate cultural tension + some repeat potential, founder unknown: 55–65
+- Weak thesis fit or thin category signal: 30–50
 - Generic supplement brand, no differentiation: ~25
 - Holding company trademark: ~5
 - B2B software trademark: 0
 
-IMPORTANT: You are evaluating a TRADEMARK FILING or DELAWARE INCORPORATION — one of the earliest possible signals a brand is being built. You can see the brand name, product category, and goods/services description — but typically NOT the founder or any traction. Be appropriately uncertain. Use the goods/services text to infer what this brand might be. Lean toward consumer brand assessment; most filers are building something real.
+IMPORTANT: You are evaluating a TRADEMARK FILING or DELAWARE INCORPORATION — one of the earliest possible signals a brand is being built. You can see the brand name, product category, and goods/services description — but typically NOT the founder or any traction. Use the goods/services text to infer what this brand might be. Lean toward consumer brand assessment; most filers are building something real.
 
 FOUNDER RESEARCH: Also attempt to identify the founder of this brand. Use your training data to check if this brand name is associated with known founders. For truly stealth brands you won't know — return null for all founder fields. This is valuable: if you don't know the founder, it confirms the brand is early and not yet public.
 
