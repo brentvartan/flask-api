@@ -9,12 +9,12 @@ from .models.user import User
 def register_commands(app):
 
     @app.cli.command("re-enrich")
-    @click.option("--batch-size", default=10, show_default=True, help="Signals per batch")
-    @click.option("--delay", default=1.5, show_default=True, help="Seconds between API calls")
     @click.option("--dry-run", is_flag=True, default=False, help="Preview without writing")
     @click.option("--limit", default=0, show_default=True, help="Max signals to process (0 = all)")
-    def re_enrich(batch_size, delay, dry_run, limit):
+    @click.option("--workers", default=5, show_default=True, help="Parallel API workers")
+    def re_enrich(dry_run, limit, workers):
         """Re-run AI enrichment on all existing signals using the current prompt."""
+        import threading
         from .models.item import Item
         from .services.enrichment import enrich_signal
 
@@ -26,69 +26,86 @@ def register_commands(app):
             rows = rows[:limit]
 
         total = len(rows)
-        click.echo(f"{'[DRY RUN] ' if dry_run else ''}Found {total} signals to re-enrich.")
+        click.echo(f"{'[DRY RUN] ' if dry_run else ''}Found {total} signals to re-enrich with {workers} workers.")
 
-        updated = skipped = errors = 0
+        counters = {"updated": 0, "skipped": 0, "errors": 0}
+        lock = threading.Lock()
+        semaphore = threading.Semaphore(workers)
 
+        from flask import current_app
+        flask_app = current_app._get_current_object()
+
+        def process(i, item):
+            with semaphore:
+                try:
+                    meta = json.loads(item.description or "{}")
+                except Exception:
+                    with lock:
+                        click.echo(f"  [{i}/{total}] SKIP id={item.id} — bad JSON")
+                        counters["skipped"] += 1
+                    return
+
+                if meta.get("_type") != "signal":
+                    with lock:
+                        counters["skipped"] += 1
+                    return
+
+                company = meta.get("company_name") or item.title
+                category = meta.get("category", "Unknown")
+
+                if dry_run:
+                    with lock:
+                        click.echo(f"  [{i}/{total}] {company} ({category}) [dry run]")
+                    return
+
+                try:
+                    enrichment = enrich_signal({
+                        "companyName": company,
+                        "category": category,
+                        "signal_type": meta.get("signal_type", "trademark"),
+                        "description": meta.get("description", ""),
+                        "notes": meta.get("notes", ""),
+                        "owner": meta.get("owner", ""),
+                    })
+
+                    if not enrichment.get("enriched"):
+                        with lock:
+                            click.echo(f"  [{i}/{total}] {company} ERROR: {enrichment.get('error', 'unknown')}")
+                            counters["errors"] += 1
+                        return
+
+                    meta["enrichment"] = enrichment
+                    new_desc = json.dumps(meta)
+
+                    with flask_app.app_context():
+                        from .models.item import Item as _Item
+                        from .extensions import db as _db
+                        obj = _db.session.get(_Item, item.id)
+                        if obj:
+                            obj.description = new_desc
+                            _db.session.commit()
+
+                    score = enrichment.get("bullish_score", "?")
+                    level = (enrichment.get("watch_level") or "?").upper()
+                    with lock:
+                        click.echo(f"  [{i}/{total}] {company} → {level} {score}")
+                        counters["updated"] += 1
+
+                except Exception as e:
+                    with lock:
+                        click.echo(f"  [{i}/{total}] {company} EXCEPTION: {e}")
+                        counters["errors"] += 1
+
+        threads = []
         for i, item in enumerate(rows, 1):
-            try:
-                meta = json.loads(item.description or "{}")
-            except Exception:
-                click.echo(f"  [{i}/{total}] SKIP  id={item.id} — bad JSON")
-                skipped += 1
-                continue
+            t = threading.Thread(target=process, args=(i, item))
+            t.start()
+            threads.append(t)
 
-            if meta.get("_type") != "signal":
-                skipped += 1
-                continue
+        for t in threads:
+            t.join()
 
-            company = meta.get("company_name") or item.title
-            category = meta.get("category", "Unknown")
-            signal_type = meta.get("signal_type", "trademark")
-            description = meta.get("description", "")
-            notes = meta.get("notes", "")
-            owner = meta.get("owner", "")
-
-            click.echo(f"  [{i}/{total}] {company} ({category}) ...", nl=False)
-
-            if dry_run:
-                click.echo(" [skip — dry run]")
-                continue
-
-            try:
-                enrichment = enrich_signal({
-                    "companyName": company,
-                    "category": category,
-                    "signal_type": signal_type,
-                    "description": description,
-                    "notes": notes,
-                    "owner": owner,
-                })
-
-                if not enrichment.get("enriched"):
-                    click.echo(f" ERROR: {enrichment.get('error', 'unknown')}")
-                    errors += 1
-                    continue
-
-                meta["enrichment"] = enrichment
-                item.description = json.dumps(meta)
-                db.session.commit()
-
-                score = enrichment.get("bullish_score", "?")
-                level = enrichment.get("watch_level", "?").upper()
-                click.echo(f" {level} {score}")
-                updated += 1
-
-            except Exception as e:
-                db.session.rollback()
-                click.echo(f" EXCEPTION: {e}")
-                errors += 1
-
-            if i % batch_size == 0:
-                click.echo(f"  --- batch {i // batch_size} done, sleeping {delay}s ---")
-            time.sleep(delay)
-
-        click.echo(f"\nDone. updated={updated} skipped={skipped} errors={errors}")
+        click.echo(f"\nDone. updated={counters['updated']} skipped={counters['skipped']} errors={counters['errors']}")
 
     @app.cli.command("create-admin")
     @click.option("--email", prompt=True, help="Admin email address")
