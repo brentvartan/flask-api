@@ -317,6 +317,42 @@ def get_spend():
     }), 200
 
 
+@bp.route("/users/<int:user_id>", methods=["DELETE"])
+@admin_required()
+def delete_user(user_id):
+    """Permanently delete a user account (admin only). Cannot delete yourself.
+    ---
+    tags: [Admin]
+    security:
+      - Bearer: []
+    parameters:
+      - in: path
+        name: user_id
+        required: true
+        schema: {type: integer}
+    responses:
+      200:
+        description: User deleted
+      403:
+        description: Cannot delete yourself
+      404:
+        description: User not found
+    """
+    from flask_jwt_extended import get_jwt_identity
+    current_user_id = int(get_jwt_identity())
+
+    if user_id == current_user_id:
+        return jsonify({"error": "You cannot delete your own account"}), 403
+
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({"message": f"User {user.email} deleted"}), 200
+
+
 @bp.route("/users/<int:user_id>/send-reset", methods=["POST"])
 @admin_required()
 def send_reset_link(user_id):
