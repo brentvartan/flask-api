@@ -18,15 +18,21 @@ def _get_client():
 
 
 def _load_signal_manifest() -> str:
-    """Build a compact text summary of all enriched signals from the DB."""
+    """Build a compact text summary of all enriched signals from the DB.
+
+    Fetches ALL signal items, sorts HOT→WARM→COLD by score descending,
+    then caps at 300 lines so the most interesting brands are always included.
+    """
     from ..extensions import db
     from ..models.item import Item
 
     rows = Item.query.filter(
         Item.description.contains('"_type":"signal"')
-    ).order_by(Item.created_at.desc()).limit(300).all()
+    ).all()
 
-    lines = []
+    LEVEL_ORDER = {'hot': 0, 'warm': 1, 'cold': 2}
+    enriched = []
+
     for item in rows:
         try:
             meta = json.loads(item.description or "{}")
@@ -37,34 +43,49 @@ def _load_signal_manifest() -> str:
                 continue
 
             founder = e.get("founder") or {}
-            founder_str = founder.get("name") if founder.get("confidence") != "unknown" and founder.get("name") else "Unknown (stealth)"
+            founder_str = (
+                founder.get("name")
+                if founder.get("confidence") != "unknown" and founder.get("name")
+                else "Unknown (stealth)"
+            )
 
-            signals = meta.get("signal_type", "unknown")
+            signal_type = meta.get("signal_type", "unknown")
             notes = meta.get("team_notes", "")
+            watch_level = (e.get("watch_level") or "cold").lower()
+            score = e.get("bullish_score") or 0
 
             line = (
                 f"- {meta.get('company_name', item.title)} | "
                 f"{meta.get('category', '')} | "
-                f"{e.get('watch_level', '?').upper()} | "
-                f"Score: {e.get('bullish_score', '?')} | "
+                f"{watch_level.upper()} | "
+                f"Score: {score} | "
                 f"Theme: {e.get('cultural_theme') or 'None'} | "
                 f"Founder: {founder_str} | "
-                f"Signal: {signals} | "
+                f"Signal: {signal_type} | "
                 f"Filed: {(meta.get('timestamp') or '')[:10]} | "
                 f"Thesis: {e.get('one_line_thesis', '')}"
             )
             if notes:
                 line += f" | Team Note: {notes}"
-            lines.append(line)
+
+            enriched.append((LEVEL_ORDER.get(watch_level, 2), -score, line))
         except Exception:
             pass
 
-    if not lines:
+    if not enriched:
         return "No enriched signals in the database yet."
-    # Cap at 100 signals to stay well within API token limits
-    manifest = "\n".join(lines[:100])
+
+    # Sort HOT first, then WARM, then COLD; within each tier, highest score first
+    enriched.sort(key=lambda x: (x[0], x[1]))
+    lines = [row[2] for row in enriched]
+
+    # Cap at 300 to stay within token budget (~75k chars ≈ 19k tokens)
+    manifest = "\n".join(lines[:300])
     import logging
-    logging.getLogger(__name__).info("manifest size: %d chars, %d signals", len(manifest), len(lines[:100]))
+    logging.getLogger(__name__).info(
+        "manifest: %d total enriched, %d sent to Claude, %d chars",
+        len(lines), min(len(lines), 300), len(manifest)
+    )
     return manifest
 
 
