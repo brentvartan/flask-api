@@ -128,7 +128,7 @@ TIERS: ≥75=HIGH_PRIORITY ("Move to first meeting quickly") | ≥50=WATCH_LIST 
 Respond ONLY with a valid JSON object (no markdown, no explanation outside the JSON):
 {
   "bullish_score": <integer 0-100>,
-  "watch_level": "<hot|warm|cold>",
+  "watch_level": "<hot if bullish_score >= 70 | warm if bullish_score 50-69 | cold if bullish_score < 50>",
   "consumer_brand": <true|false>,
   "consumer_brand_reason": "<one concise sentence>",
   "repeat_potential": "<high|medium|low>",
