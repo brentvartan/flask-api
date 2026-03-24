@@ -40,8 +40,11 @@ def run_scan_now(scan, user_id: int) -> dict:
 
     signals = []
     scan_type = getattr(scan, 'scan_type', 'full') or 'full'
+    sources_ran = []
+    errors = []
 
     if scan_type in ('full', 'trademark'):
+        sources_ran.append('trademark')
         tm_result = search_recent_trademarks(
             days_back=scan.days_back,
             max_results=scan.max_results,
@@ -50,8 +53,10 @@ def run_scan_now(scan, user_id: int) -> dict:
             signals.extend(tm_result["signals"])
         else:
             logger.warning("USPTO scan error: %s", tm_result["error"])
+            errors.append(f"USPTO: {tm_result['error']}")
 
     if scan_type in ('full', 'delaware'):
+        sources_ran.append('delaware')
         de_result = search_recent_delaware_entities(
             days_back=scan.days_back,
             max_results=150,
@@ -61,8 +66,10 @@ def run_scan_now(scan, user_id: int) -> dict:
             signals.extend(de_result["signals"])
         else:
             logger.warning("Delaware scan error: %s", de_result["error"])
+            errors.append(f"Delaware: {de_result['error']}")
 
     if scan_type == 'producthunt':
+        sources_ran.append('producthunt')
         try:
             from ..services.producthunt import search_recent_producthunt
             ph_result = search_recent_producthunt(
@@ -73,11 +80,16 @@ def run_scan_now(scan, user_id: int) -> dict:
                 signals.extend(ph_result["signals"])
             else:
                 logger.warning("Product Hunt scan error: %s", ph_result["error"])
+                errors.append(f"ProductHunt: {ph_result['error']}")
         except Exception as exc:
             logger.warning("Product Hunt import/scan failed: %s", exc)
+            errors.append(f"ProductHunt: {exc}")
+
+    sources_ran_str = ",".join(sources_ran)
 
     if not signals:
-        return {"error": "All signal sources failed", "new_saved": 0, "hot_found": 0}
+        error_msg = "; ".join(errors) if errors else "All signal sources failed"
+        return {"error": "All signal sources failed", "new_saved": 0, "hot_found": 0, "sources_ran": sources_ran_str, "error_message": error_msg}
 
     # ── 2. Load existing fingerprints (dedup) ─────────────────────────────────
     rows = (
@@ -137,6 +149,7 @@ def run_scan_now(scan, user_id: int) -> dict:
     hot_count  = 0
     warm_count = 0
     cold_count = 0
+    founders_queued = 0
 
     for item_id in new_item_ids:
         item = db.session.get(Item, item_id)
@@ -165,6 +178,13 @@ def run_scan_now(scan, user_id: int) -> dict:
                         "theme":    enrichment.get("cultural_theme", ""),
                         "item_id":  item_id,
                     })
+                    # Trigger founder enrichment in background for HOT brands
+                    try:
+                        from ..services.founder_enrichment import run_founder_enrichment_in_background
+                        run_founder_enrichment_in_background(item_id)
+                        founders_queued += 1
+                    except Exception as fe:
+                        logger.warning("Founder enrichment trigger failed for item %s: %s", item_id, fe)
                 elif level == "warm":
                     warm_count += 1
                 else:
@@ -246,21 +266,48 @@ def run_scan_now(scan, user_id: int) -> dict:
         except Exception as exc:
             logger.warning("Slack HOT alert failed: %s", exc)
 
-    # ── 6. Update scan record ─────────────────────────────────────────────────
+    # ── 7. Update scan record ─────────────────────────────────────────────────
     scan.last_run_at   = datetime.now(timezone.utc)
     scan.last_run_new  = new_saved
     scan.last_run_hot  = hot_count
     scan.last_run_warm = warm_count
     scan.last_run_cold = cold_count
+    scan.total_signals        = (scan.total_signals or 0) + new_saved
+    scan.total_hot            = (scan.total_hot or 0) + hot_count
+    scan.total_warm           = (scan.total_warm or 0) + warm_count
+    scan.last_alert_sent      = alert_sent
+    scan.last_alert_emails    = alert_emails_str if alert_sent else None
+    scan.last_founders_queued = founders_queued
+
+    # ── 8. Persist ScanRun history record ────────────────────────────────────
+    from ..models.scan_run import ScanRun
+    run = ScanRun(
+        scan_id=scan.id,
+        owner_id=user_id,
+        ran_at=datetime.now(timezone.utc),
+        new_saved=new_saved,
+        hot_found=hot_count,
+        warm_found=warm_count,
+        cold_found=cold_count,
+        founders_queued=founders_queued,
+        alert_sent=alert_sent,
+        alert_emails=alert_emails_str if alert_sent else None,
+        sources_ran=sources_ran_str,
+        error_message="; ".join(errors) if errors else None,
+    )
+    db.session.add(run)
     db.session.commit()
 
     return {
-        "new_saved":     new_saved,
-        "hot_found":     len(hot_brands),
-        "warm_found":    warm_count,
-        "cold_found":    cold_count,
-        "total_fetched": len(signals),
-        "alert_sent":    alert_sent,
+        "new_saved":      new_saved,
+        "hot_found":      len(hot_brands),
+        "warm_found":     warm_count,
+        "cold_found":     cold_count,
+        "total_fetched":  len(signals),
+        "alert_sent":     alert_sent,
+        "founders_queued": founders_queued,
+        "sources_ran":    sources_ran_str,
+        "error_message":  "; ".join(errors) if errors else None,
     }
 
 

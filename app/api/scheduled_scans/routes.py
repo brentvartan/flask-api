@@ -109,3 +109,18 @@ def run_scan(scan_id):
 
     result = run_scan_now(scan, user_id)
     return jsonify({**result, "scan": scan.to_dict()}), 200
+
+
+@bp.route("/<int:scan_id>/runs", methods=["GET"])
+@jwt_required()
+def get_scan_runs(scan_id):
+    """Return last 10 runs for a scan."""
+    from ...models.scan_run import ScanRun
+    user_id = int(get_jwt_identity())
+    scan = ScheduledScan.query.filter_by(id=scan_id, owner_id=user_id).first_or_404()
+    runs = (ScanRun.query
+            .filter_by(scan_id=scan_id)
+            .order_by(ScanRun.ran_at.desc())
+            .limit(10)
+            .all())
+    return jsonify([r.to_dict() for r in runs]), 200

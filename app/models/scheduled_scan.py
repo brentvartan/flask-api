@@ -18,6 +18,12 @@ class ScheduledScan(db.Model):
     last_run_hot  = db.Column(db.Integer,     default=0)
     last_run_warm = db.Column(db.Integer,     default=0)
     last_run_cold = db.Column(db.Integer,     default=0)
+    total_signals         = db.Column(db.Integer, default=0)
+    total_hot             = db.Column(db.Integer, default=0)
+    total_warm            = db.Column(db.Integer, default=0)
+    last_alert_sent       = db.Column(db.Boolean, default=False)
+    last_alert_emails     = db.Column(db.String(500), nullable=True)
+    last_founders_queued  = db.Column(db.Integer, default=0)
     created_at  = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -37,6 +43,12 @@ class ScheduledScan(db.Model):
             "last_run_hot":  self.last_run_hot  or 0,
             "last_run_warm": self.last_run_warm or 0,
             "last_run_cold": self.last_run_cold or 0,
+            "total_signals":        self.total_signals or 0,
+            "total_hot":            self.total_hot or 0,
+            "total_warm":           self.total_warm or 0,
+            "last_alert_sent":      self.last_alert_sent or False,
+            "last_alert_emails":    self.last_alert_emails or "",
+            "last_founders_queued": self.last_founders_queued or 0,
             "created_at":   self.created_at.isoformat(),
         }
 

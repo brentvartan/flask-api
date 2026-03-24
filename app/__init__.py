@@ -55,6 +55,9 @@ def create_app(config_name=None):
     bcrypt.init_app(app)
     limiter.init_app(app)
 
+    # Register models with SQLAlchemy
+    from .models.scan_run import ScanRun  # noqa — registers with SQLAlchemy
+
     # JWT token blocklist
     from .models.token_blocklist import TokenBlocklist
 
