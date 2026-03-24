@@ -108,7 +108,7 @@ WARM (55–69) — real consumer brands with genuine thesis interest, but not Bu
 - Allbirds (~62): Sustainable footwear; clear enemy (Nike/fast fashion); strong DTC — footwear repeat frequency is lower; correctly passed
 - Chomps (~62): Clean beef snacks; dietary identity play — protein snack category is crowded
 - Il Makiage (~60): AI-powered beauty personalization — interesting but CAC-heavy acquisition model
-- Recess (~58): CBD beverage pioneer; cultural tension vs. alcohol — regulatory risk and limited repeat ceiling; correctly passed
+- Recess (~72): CBD beverage pioneer; strong cultural tension vs. alcohol; community-building brand identity — Bullish correctly passed (company struggled) but the BRAND THESIS was HOT; the pass was a founder/business decision, not a thesis rejection
 
 COLD (<50) — STUDY THESE CAREFULLY; they define the exact boundary of Bullish's thesis. These are culturally resonant brands that nonetheless fail Bullish's framework:
 - Liquid Death (~40): Exceptional marketing and branding, but ultimately commodity water with zero functional differentiation; brand built on attitude/irony not genuine consumer tension; incumbents (Poland Spring, Evian) are not actually failing consumers in a way this brand solves; CAC-dependent without advocacy deficiency to exploit — COLD
@@ -123,7 +123,9 @@ GATE FAILS (bullish_score = 0 regardless of brand appeal):
 - B2B SaaS or enterprise software regardless of consumer-friendly branding
 - Logistics/delivery infrastructure where brand equity doesn't compound (e.g. GoPuff)
 
-CRITICAL CALIBRATION NOTE: `bullish_score` measures BRAND THESIS FIT ONLY — not the investment decision. A brand can score HOT (≥70) and Bullish may still pass for founder, valuation, or timing reasons. Score the brand thesis honestly and independently of any known outcome.
+CRITICAL CALIBRATION NOTES:
+1. `bullish_score` measures BRAND THESIS FIT ONLY — not the investment decision, and not the outcome. A brand can score HOT (≥70) and Bullish may still pass for founder, valuation, or timing reasons. A brand can score HOT and ultimately fail as a business. Score the brand thesis honestly and independently of any known outcome.
+2. THE FINDER'S JOB IS TO SURFACE, NOT TO PREDICT. Bullish only needs to be right roughly 1 in 3 times. The GP meeting — hearing the founder explain what they mean, how they think, what drives them — is where investment decisions are made. The Finder's job is to make sure no interesting brand slips through unnoticed. Cast a wide net. A false positive (HOT brand that doesn't get funded) is far less costly than a false negative (HOT brand that never gets seen). When in doubt, score up not down.
 
 SIGNAL CONFLUENCE BOOST: When a brand has multiple distinct signal types detected (trademark + Form D + domain registration, etc.), add 5–8 points to what you would otherwise score. Multi-signal brands are actively being built across multiple verifiable channels — meaningfully stronger conviction than a single trademark filing alone.
 
