@@ -13,7 +13,11 @@ class ScheduledScan(db.Model):
     frequency   = db.Column(db.String(20), default="daily")   # daily | weekly
     enabled     = db.Column(db.Boolean,  default=True)
     last_run_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    last_run_new = db.Column(db.Integer, default=0)   # new signals from last run
+    last_run_new  = db.Column(db.Integer,     default=0)   # new signals from last run
+    scan_type     = db.Column(db.String(50),  default='full')
+    last_run_hot  = db.Column(db.Integer,     default=0)
+    last_run_warm = db.Column(db.Integer,     default=0)
+    last_run_cold = db.Column(db.Integer,     default=0)
     created_at  = db.Column(
         db.DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -28,7 +32,11 @@ class ScheduledScan(db.Model):
             "frequency":    self.frequency,
             "enabled":      self.enabled,
             "last_run_at":  self.last_run_at.isoformat() if self.last_run_at else None,
-            "last_run_new": self.last_run_new,
+            "last_run_new":  self.last_run_new,
+            "scan_type":     self.scan_type or "full",
+            "last_run_hot":  self.last_run_hot  or 0,
+            "last_run_warm": self.last_run_warm or 0,
+            "last_run_cold": self.last_run_cold or 0,
             "created_at":   self.created_at.isoformat(),
         }
 

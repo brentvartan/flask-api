@@ -35,29 +35,46 @@ def run_scan_now(scan, user_id: int) -> dict:
     from ..services.email import send_hot_alert
     from ..extensions import db
 
-    # ── 1. Fetch signals from all live sources ────────────────────────────────
+    # ── 1. Fetch signals based on scan_type ───────────────────────────────────
     from ..services.delaware import search_recent_delaware_entities
 
     signals = []
+    scan_type = getattr(scan, 'scan_type', 'full') or 'full'
 
-    tm_result = search_recent_trademarks(
-        days_back=scan.days_back,
-        max_results=scan.max_results,
-    )
-    if not tm_result.get("error"):
-        signals.extend(tm_result["signals"])
-    else:
-        logger.warning("USPTO scan error: %s", tm_result["error"])
+    if scan_type in ('full', 'trademark'):
+        tm_result = search_recent_trademarks(
+            days_back=scan.days_back,
+            max_results=scan.max_results,
+        )
+        if not tm_result.get("error"):
+            signals.extend(tm_result["signals"])
+        else:
+            logger.warning("USPTO scan error: %s", tm_result["error"])
 
-    de_result = search_recent_delaware_entities(
-        days_back=scan.days_back,
-        max_results=150,
-        check_domains=True,
-    )
-    if not de_result.get("error"):
-        signals.extend(de_result["signals"])
-    else:
-        logger.warning("Delaware scan error: %s", de_result["error"])
+    if scan_type in ('full', 'delaware'):
+        de_result = search_recent_delaware_entities(
+            days_back=scan.days_back,
+            max_results=150,
+            check_domains=True,
+        )
+        if not de_result.get("error"):
+            signals.extend(de_result["signals"])
+        else:
+            logger.warning("Delaware scan error: %s", de_result["error"])
+
+    if scan_type == 'producthunt':
+        try:
+            from ..services.producthunt import search_recent_producthunt
+            ph_result = search_recent_producthunt(
+                days_back=scan.days_back,
+                max_results=scan.max_results,
+            )
+            if not ph_result.get("error"):
+                signals.extend(ph_result["signals"])
+            else:
+                logger.warning("Product Hunt scan error: %s", ph_result["error"])
+        except Exception as exc:
+            logger.warning("Product Hunt import/scan failed: %s", exc)
 
     if not signals:
         return {"error": "All signal sources failed", "new_saved": 0, "hot_found": 0}
@@ -117,6 +134,9 @@ def run_scan_now(scan, user_id: int) -> dict:
 
     # ── 4. Enrich new signals with Bullish AI ─────────────────────────────────
     hot_brands = []
+    hot_count  = 0
+    warm_count = 0
+    cold_count = 0
 
     for item_id in new_item_ids:
         item = db.session.get(Item, item_id)
@@ -134,7 +154,9 @@ def run_scan_now(scan, user_id: int) -> dict:
             if enrichment.get("enriched"):
                 meta["enrichment"] = enrichment
                 item.description = json.dumps(meta, separators=(",", ":"))
-                if enrichment.get("watch_level") == "hot":
+                level = enrichment.get("watch_level")
+                if level == "hot":
+                    hot_count += 1
                     hot_brands.append({
                         "name":     meta.get("company_name", item.title),
                         "category": meta.get("category", ""),
@@ -143,6 +165,10 @@ def run_scan_now(scan, user_id: int) -> dict:
                         "theme":    enrichment.get("cultural_theme", ""),
                         "item_id":  item_id,
                     })
+                elif level == "warm":
+                    warm_count += 1
+                else:
+                    cold_count += 1
         except Exception as exc:
             logger.warning("Enrichment failed for item %s: %s", item_id, exc)
 
@@ -221,13 +247,18 @@ def run_scan_now(scan, user_id: int) -> dict:
             logger.warning("Slack HOT alert failed: %s", exc)
 
     # ── 6. Update scan record ─────────────────────────────────────────────────
-    scan.last_run_at  = datetime.now(timezone.utc)
-    scan.last_run_new = new_saved
+    scan.last_run_at   = datetime.now(timezone.utc)
+    scan.last_run_new  = new_saved
+    scan.last_run_hot  = hot_count
+    scan.last_run_warm = warm_count
+    scan.last_run_cold = cold_count
     db.session.commit()
 
     return {
         "new_saved":     new_saved,
         "hot_found":     len(hot_brands),
+        "warm_found":    warm_count,
+        "cold_found":    cold_count,
         "total_fetched": len(signals),
         "alert_sent":    alert_sent,
     }
