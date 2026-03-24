@@ -23,7 +23,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_BASE      = "https://enrichlayer.com/api/v2"    # Proxycurl rebranded to Enrich Layer
+_BASE      = "https://nubela.co/proxycurl/api/v2"
 _TIMEOUT   = 20
 
 
@@ -75,16 +75,16 @@ def search_person(founder_name: str, brand_name: str) -> str | None:
             timeout=_TIMEOUT,
         )
     except requests.RequestException as exc:
-        logger.warning("Enrich Layer search request failed for %s: %s", founder_name, exc)
+        logger.warning("Proxycurl search request failed for %s: %s", founder_name, exc)
         return None
 
     if resp.status_code == 402:
-        logger.warning("Enrich Layer: insufficient credits")
+        logger.warning("Proxycurl: insufficient credits")
         return None
     if resp.status_code == 404:
         return None   # not found — normal, not an error
     if resp.status_code != 200:
-        logger.warning("Enrich Layer search %s → HTTP %d", founder_name, resp.status_code)
+        logger.warning("Proxycurl search %s → HTTP %d", founder_name, resp.status_code)
         return None
 
     data = resp.json()
@@ -113,11 +113,11 @@ def get_profile(linkedin_url: str) -> dict | None:
             timeout=_TIMEOUT,
         )
     except requests.RequestException as exc:
-        logger.warning("Enrich Layer profile fetch failed for %s: %s", linkedin_url, exc)
+        logger.warning("Proxycurl profile fetch failed for %s: %s", linkedin_url, exc)
         return None
 
     if resp.status_code != 200:
-        logger.warning("Enrich Layer profile %s → HTTP %d", linkedin_url, resp.status_code)
+        logger.warning("Proxycurl profile %s → HTTP %d", linkedin_url, resp.status_code)
         return None
 
     return resp.json()

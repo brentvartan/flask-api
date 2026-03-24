@@ -165,19 +165,20 @@ def force_reset_password(user_id):
 # ─── Spend / usage dashboard ──────────────────────────────────────────────────
 
 # Cost constants (update if pricing changes)
-_ENRICH_LAYER_COST_PER_LOOKUP = 0.04   # search + profile = ~4 credits @ $0.01/credit
-_ANTHROPIC_COST_PER_SIGNAL    = 0.03   # claude-sonnet avg per enrichment call
-_ANTHROPIC_HAIKU_PER_RESCORE  = 0.005  # claude-haiku founder re-score call
+_PROXYCURL_COST_PER_LOOKUP = 0.01    # ~1 credit per profile fetch @ $0.01/credit
+_SERPAPI_COST_PER_SEARCH   = 0.00    # free plan (250/mo); paid plan ~$0.01/search
+_ANTHROPIC_COST_PER_SIGNAL = 0.03    # claude-sonnet avg per enrichment call
+_ANTHROPIC_HAIKU_PER_RESCORE = 0.005 # claude-haiku founder re-score call
 
 
-def _enrich_layer_credits() -> dict:
-    """Fetch live credit balance from Enrich Layer API."""
+def _proxycurl_credits() -> dict:
+    """Fetch live credit balance from Proxycurl (NinjaPear) API."""
     api_key = os.environ.get("PROXYCURL_API_KEY")
     if not api_key:
         return {"available": None, "error": "PROXYCURL_API_KEY not set"}
     try:
         resp = requests.get(
-            "https://enrichlayer.com/api/v2/credit-balance",
+            "https://nubela.co/proxycurl/api/credit-balance",
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10,
         )
@@ -187,6 +188,31 @@ def _enrich_layer_credits() -> dict:
         return {"available": None, "error": f"HTTP {resp.status_code}"}
     except Exception as exc:
         return {"available": None, "error": str(exc)}
+
+
+def _serpapi_stats() -> dict:
+    """Fetch SerpAPI account stats (searches remaining, plan)."""
+    api_key = os.environ.get("SERPAPI_API_KEY")
+    if not api_key:
+        return {"searches_left": None, "searches_per_month": None, "this_month_usage": None, "error": "SERPAPI_API_KEY not set"}
+    try:
+        resp = requests.get(
+            "https://serpapi.com/account",
+            params={"api_key": api_key},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "searches_left":      data.get("plan_searches_left"),
+                "searches_per_month": data.get("searches_per_month"),
+                "this_month_usage":   data.get("this_month_usage"),
+                "plan_name":          data.get("plan_name", "Free"),
+                "error": None,
+            }
+        return {"searches_left": None, "searches_per_month": None, "this_month_usage": None, "error": f"HTTP {resp.status_code}"}
+    except Exception as exc:
+        return {"searches_left": None, "searches_per_month": None, "this_month_usage": None, "error": str(exc)}
 
 
 def _count_signals_this_month(field_check: str) -> int:
@@ -220,20 +246,29 @@ def _count_signals_all_time(field_check: str) -> int:
 def get_spend():
     """Admin-only spend and usage dashboard."""
 
-    # Live credit balance from Enrich Layer
-    enrich_layer = _enrich_layer_credits()
+    # Live balances from external APIs
+    proxycurl = _proxycurl_credits()
+    serpapi   = _serpapi_stats()
 
-    # LinkedIn enrichment counts
-    linkedin_month    = _count_signals_this_month('"linkedin_enriched":true')
-    linkedin_alltime  = _count_signals_all_time('"linkedin_enriched":true')
+    # LinkedIn (Proxycurl) enrichment counts
+    linkedin_month   = _count_signals_this_month('"linkedin_enriched":true')
+    linkedin_alltime = _count_signals_all_time('"linkedin_enriched":true')
+
+    # SerpAPI search counts (founder discovery — stored as founder_discovered)
+    serpapi_month   = _count_signals_this_month('"founder_discovered":true')
+    serpapi_alltime = _count_signals_all_time('"founder_discovered":true')
 
     # Anthropic enrichment counts
     anthropic_month   = _count_signals_this_month('"enriched":true')
     anthropic_alltime = _count_signals_all_time('"enriched":true')
 
     # Cost estimates
-    linkedin_cost_month    = round(linkedin_month   * _ENRICH_LAYER_COST_PER_LOOKUP, 2)
-    linkedin_cost_alltime  = round(linkedin_alltime * _ENRICH_LAYER_COST_PER_LOOKUP, 2)
+    proxycurl_cost_month   = round(linkedin_month   * _PROXYCURL_COST_PER_LOOKUP, 2)
+    proxycurl_cost_alltime = round(linkedin_alltime * _PROXYCURL_COST_PER_LOOKUP, 2)
+
+    serpapi_cost_month   = round(serpapi_month   * _SERPAPI_COST_PER_SEARCH, 2)
+    serpapi_cost_alltime = round(serpapi_alltime * _SERPAPI_COST_PER_SEARCH, 2)
+
     anthropic_cost_month   = round(
         (anthropic_month * _ANTHROPIC_COST_PER_SIGNAL) +
         (linkedin_month  * _ANTHROPIC_HAIKU_PER_RESCORE), 2
@@ -243,22 +278,33 @@ def get_spend():
         (linkedin_alltime  * _ANTHROPIC_HAIKU_PER_RESCORE), 2
     )
 
-    total_cost_month   = round(linkedin_cost_month   + anthropic_cost_month,   2)
-    total_cost_alltime = round(linkedin_cost_alltime + anthropic_cost_alltime, 2)
+    total_cost_month   = round(proxycurl_cost_month   + serpapi_cost_month   + anthropic_cost_month,   2)
+    total_cost_alltime = round(proxycurl_cost_alltime + serpapi_cost_alltime + anthropic_cost_alltime, 2)
 
     return jsonify({
-        "enrich_layer": {
-            "credits_available": enrich_layer["available"],
-            "error":             enrich_layer["error"],
-            "lookups_this_month": linkedin_month,
-            "lookups_all_time":   linkedin_alltime,
-            "estimated_cost_this_month": linkedin_cost_month,
-            "estimated_cost_all_time":   linkedin_cost_alltime,
-            "cost_per_lookup":           _ENRICH_LAYER_COST_PER_LOOKUP,
+        "proxycurl": {
+            "credits_available":         proxycurl["available"],
+            "error":                     proxycurl["error"],
+            "lookups_this_month":        linkedin_month,
+            "lookups_all_time":          linkedin_alltime,
+            "estimated_cost_this_month": proxycurl_cost_month,
+            "estimated_cost_all_time":   proxycurl_cost_alltime,
+            "cost_per_lookup":           _PROXYCURL_COST_PER_LOOKUP,
+        },
+        "serpapi": {
+            "searches_left":             serpapi["searches_left"],
+            "searches_per_month":        serpapi["searches_per_month"],
+            "this_month_usage":          serpapi["this_month_usage"],
+            "plan_name":                 serpapi.get("plan_name", "Free"),
+            "searches_this_month":       serpapi_month,
+            "searches_all_time":         serpapi_alltime,
+            "estimated_cost_this_month": serpapi_cost_month,
+            "estimated_cost_all_time":   serpapi_cost_alltime,
+            "error":                     serpapi["error"],
         },
         "anthropic": {
-            "enrichments_this_month": anthropic_month,
-            "enrichments_all_time":   anthropic_alltime,
+            "enrichments_this_month":    anthropic_month,
+            "enrichments_all_time":      anthropic_alltime,
             "estimated_cost_this_month": anthropic_cost_month,
             "estimated_cost_all_time":   anthropic_cost_alltime,
             "cost_per_enrichment":       _ANTHROPIC_COST_PER_SIGNAL,
