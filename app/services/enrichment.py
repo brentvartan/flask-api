@@ -103,8 +103,9 @@ HOT (70–92) — Bullish portfolio brands; all scored HOT at seed stage; use as
 - Dirty Labs (Home, ~72): Clean laundry science; sustainability tension; laundry = one of the highest natural repeat categories
 Additional confirmed HOT at seed stage (same scoring bar): Primary, MatchaBar, Clare, Revtown, Sunday Lawn, Aloha, Birchbox, Casper, HoneyLove, CUUP, Rae, Winx Health, Autumn, Omorpho, Hally Hair, Cob Foods, Singing Pastures, Bandit Running, Daisy, BloxSnacks, Captain Experiences, CLEO, Goodhood, Thousand, Ours, Cake, Exponent, KiwiCo, Darby Smart
 
+- Poppi (~75): Prebiotic soda; strong cultural tension vs. Coca-Cola/Diet Coke; GLP-1/gut health tailwind; high repeat — Bullish passed (founders non-conforming to Bullish's jockey model) but the BRAND THESIS was HOT; another example of HOT brand + pass decision
+
 WARM (55–69) — real consumer brands with genuine thesis interest, but not Bullish's highest conviction:
-- Olipop (~65): Functional soda; cultural tension vs. Coca-Cola; strong brand — functional bev increasingly crowded
 - Allbirds (~62): Sustainable footwear; clear enemy (Nike/fast fashion); strong DTC — footwear repeat frequency is lower; correctly passed
 - Chomps (~62): Clean beef snacks; dietary identity play — protein snack category is crowded
 - Il Makiage (~60): AI-powered beauty personalization — interesting but CAC-heavy acquisition model
