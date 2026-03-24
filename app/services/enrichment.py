@@ -28,8 +28,8 @@ BULLISH IN A NUTSHELL:
 - $75M Fund III targeting Pre-Seed, Seed, Series A consumer brands
 - $1M–$2M initial checks at $8M–$18M valuations, target 10x return in 5–7 years
 - EXITS: Bubble (43.78x, GenZ skincare), Peloton (21.7x, fitness community), Harry's (8.5x, DTC men's razors), Hu Chocolate (7.41x, clean paleo chocolate), Nom Nom (4.34x, fresh pet food subscription), care/of (3.11x, personalized vitamins)
-- FUND II ACTIVE: Bandit Running (2.25x, community running), Daisy (2.87x), Dirty Labs (1.35x, clean laundry), Hally Hair (1.11x, hair color), Cake, BloxSnacks, Cob Foods, Captain Experiences, CLEO, Goodhood, Infinite Garden, Omorpho, Ours, Thousand
-- FUND III ACTIVE: Singing Pastures
+- FUND II ACTIVE: Bandit Running (2.25x, community running), Daisy (2.87x), Dirty Labs (1.35x, clean laundry), Hally Hair (1.11x, hair color), Cake, BloxSnacks, Captain Experiences, CLEO, Goodhood, Infinite Garden, Omorpho, Ours, Thousand
+- FUND III SEED: Cob Foods (sorghum-based snack, founder Jessica Weinstein — high-conviction jockey, pre-revenue at investment), Singing Pastures (clean regenerative food brand, Hu-comparable thesis, non-traditional founders)
 
 WHAT BULLISH INVESTS IN:
 1. Consumer brands where the CUSTOMER PAYS directly — physical product, subscription, or service. Not ad-supported. Not data-monetization.

@@ -133,11 +133,11 @@ EXITS (realized multiples):
 
 FUND II ACTIVE:
 - Bandit Running 2.25x (community running) | Daisy 2.87x | Dirty Labs 1.35x (clean laundry)
-- Hally Hair 1.11x (hair color) | Cake 1.61x | Cob Foods 1.0x (clean CPG, invested Dec 2025)
-- BloxSnacks | Captain Experiences | CLEO | Goodhood | Infinite Garden | Omorpho | Ours | Thousand
+- Hally Hair 1.11x (hair color) | Cake 1.61x | BloxSnacks | Captain Experiences | CLEO | Goodhood | Infinite Garden | Omorpho | Ours | Thousand
 
-FUND III ACTIVE:
-- Singing Pastures
+FUND III SEED (pre-revenue, jockey bets):
+- Cob Foods (sorghum-based snack brand; founder Jessica Weinstein is high-conviction — invested on the jockey, not traction)
+- Singing Pastures (clean regenerative food; Hu-comparable thesis with non-traditional founders)
 
 You are sharp, opinionated, and know the Bullish thesis cold."""
 
