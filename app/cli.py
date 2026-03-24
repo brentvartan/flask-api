@@ -30,80 +30,94 @@ def register_commands(app):
 
         counters = {"updated": 0, "skipped": 0, "errors": 0}
         lock = threading.Lock()
-        semaphore = threading.Semaphore(workers)
 
         from flask import current_app
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         flask_app = current_app._get_current_object()
 
         def process(i, item):
-            with semaphore:
-                try:
-                    meta = json.loads(item.description or "{}")
-                except Exception:
-                    with lock:
-                        click.echo(f"  [{i}/{total}] SKIP id={item.id} — bad JSON")
-                        counters["skipped"] += 1
-                    return
+            try:
+                meta = json.loads(item.description or "{}")
+            except Exception:
+                with lock:
+                    click.echo(f"  [{i}/{total}] SKIP id={item.id} — bad JSON")
+                    counters["skipped"] += 1
+                return
 
-                if meta.get("_type") != "signal":
-                    with lock:
-                        counters["skipped"] += 1
-                    return
+            if meta.get("_type") != "signal":
+                with lock:
+                    counters["skipped"] += 1
+                return
 
-                company = meta.get("company_name") or item.title
-                category = meta.get("category", "Unknown")
+            company = meta.get("company_name") or item.title
+            category = meta.get("category", "Unknown")
 
-                if dry_run:
-                    with lock:
-                        click.echo(f"  [{i}/{total}] {company} ({category}) [dry run]")
-                    return
+            if dry_run:
+                with lock:
+                    click.echo(f"  [{i}/{total}] {company} ({category}) [dry run]")
+                return
 
-                try:
-                    enrichment = enrich_signal({
-                        "companyName": company,
-                        "category": category,
-                        "signal_type": meta.get("signal_type", "trademark"),
-                        "description": meta.get("description", ""),
-                        "notes": meta.get("notes", ""),
-                        "owner": meta.get("owner", ""),
-                    })
-
-                    if not enrichment.get("enriched"):
-                        with lock:
-                            click.echo(f"  [{i}/{total}] {company} ERROR: {enrichment.get('error', 'unknown')}")
-                            counters["errors"] += 1
-                        return
-
-                    meta["enrichment"] = enrichment
-                    new_desc = json.dumps(meta)
-
+            try:
+                # Look up confluence data for this brand
+                from .services.confluence import normalize_brand
+                from .models.signal_event import SignalEvent
+                brand_key = normalize_brand(company)
+                signal_count = 1
+                signal_types_list = []
+                if brand_key:
                     with flask_app.app_context():
-                        from .models.item import Item as _Item
-                        from .extensions import db as _db
-                        obj = _db.session.get(_Item, item.id)
-                        if obj:
-                            obj.description = new_desc
-                            _db.session.commit()
+                        events = (
+                            SignalEvent.query
+                            .filter_by(brand_key=brand_key)
+                            .with_entities(SignalEvent.signal_type)
+                            .all()
+                        )
+                        signal_types_list = list({e.signal_type for e in events})
+                        signal_count = max(len(signal_types_list), 1)
 
-                    score = enrichment.get("bullish_score", "?")
-                    level = (enrichment.get("watch_level") or "?").upper()
-                    with lock:
-                        click.echo(f"  [{i}/{total}] {company} → {level} {score}")
-                        counters["updated"] += 1
+                enrichment = enrich_signal({
+                    "companyName": company,
+                    "category": category,
+                    "signal_type": meta.get("signal_type", "trademark"),
+                    "description": meta.get("description", ""),
+                    "notes": meta.get("notes", ""),
+                    "owner": meta.get("owner", ""),
+                    "signal_count": signal_count,
+                    "signal_types": signal_types_list,
+                })
 
-                except Exception as e:
+                if not enrichment.get("enriched"):
                     with lock:
-                        click.echo(f"  [{i}/{total}] {company} EXCEPTION: {e}")
+                        click.echo(f"  [{i}/{total}] {company} ERROR: {enrichment.get('error', 'unknown')}")
                         counters["errors"] += 1
+                    return
 
-        threads = []
-        for i, item in enumerate(rows, 1):
-            t = threading.Thread(target=process, args=(i, item))
-            t.start()
-            threads.append(t)
+                meta["enrichment"] = enrichment
+                new_desc = json.dumps(meta)
 
-        for t in threads:
-            t.join()
+                with flask_app.app_context():
+                    from .models.item import Item as _Item
+                    from .extensions import db as _db
+                    obj = _db.session.get(_Item, item.id)
+                    if obj:
+                        obj.description = new_desc
+                        _db.session.commit()
+
+                score = enrichment.get("bullish_score", "?")
+                level = (enrichment.get("watch_level") or "?").upper()
+                with lock:
+                    click.echo(f"  [{i}/{total}] {company} → {level} {score}")
+                    counters["updated"] += 1
+
+            except Exception as e:
+                with lock:
+                    click.echo(f"  [{i}/{total}] {company} EXCEPTION: {e}")
+                    counters["errors"] += 1
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(process, i, item): item for i, item in enumerate(rows, 1)}
+            for future in as_completed(futures):
+                pass  # results logged inside process()
 
         click.echo(f"\nDone. updated={counters['updated']} skipped={counters['skipped']} errors={counters['errors']}")
 
