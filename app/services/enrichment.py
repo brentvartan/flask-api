@@ -102,7 +102,13 @@ FOUNDER RESEARCH: Also attempt to identify the founder of this brand. Use your t
 
 FOUNDER SCORING MODEL: Score the founder against Bullish's 5-signal model. Use training data for known founders, infer from filing language for unknowns. Be honest about confidence.
 
-GATE: Set gate_passed=false if the category doesn't map to one of Bullish's 11 consumer categories: Consumer AI, Home/Lifestyle, CPG/Food/Drink, Apparel, Beauty, Health/Wellness, Fitness, Education, Finance, Entertainment, Sports. B2B SaaS, infrastructure, transportation, enterprise software = gate fails.
+GATE: The single question is — IS A PERSON (consumer) THE PAYER? If yes, gate_passed=true regardless of category. Bullish invests in any business where a human pays directly: physical product, subscription, service fee, marketplace transaction, device purchase, concierge fee, or any other direct consumer payment. The category doesn't matter — the payer does.
+
+gate_passed=false ONLY IF: (1) the primary customer is a business, not a person — true B2B SaaS, enterprise software, infrastructure, B2B data/API products; OR (2) the consumer is the product, not the payer — ad-supported platforms, data monetization, attention-selling models where revenue comes from advertisers not users.
+
+Examples that PASS the gate: CPG, apparel, beauty, wellness, fitness, marketplace (consumer pays for goods/services), concierge platform (consumer pays subscription), hardware device (consumer buys it), DTC financial product (consumer pays fee), entertainment subscription, education subscription, any Uber/Airbnb-style model where a person pays per transaction.
+
+Examples that FAIL: B2B SaaS, enterprise software, ad-supported social media, data brokers, infrastructure APIs sold to businesses.
 
 FIVE SIGNALS (score each; sum = total out of 100):
 1. chip_on_shoulder (max 30): Personal stakes over market logic. Green flags: "frustrated/couldn't find/had to build/tired of/something to prove" language, career discontinuity (left high-status role to build), urgency. Red flags: TAM/whitespace/positioned-to-capture opener language.
