@@ -1,5 +1,13 @@
 import os
+import re
 import resend
+
+
+def _strip_year(theme):
+    """Strip leading year prefix like '2026 ' or '2026 Theme: ' from a theme string."""
+    if not theme:
+        return theme
+    return re.sub(r'^\d{4}\s*(Theme:?\s*)?', '', theme, flags=re.IGNORECASE).strip()
 
 
 def _resend_client():
@@ -8,6 +16,19 @@ def _resend_client():
         raise RuntimeError("RESEND_API_KEY environment variable is not set")
     resend.api_key = api_key
     return os.environ.get("MAIL_FROM", "noreply@mail.bullish.co")
+
+
+_LOGO_LOCKUP = """<!-- Logo lockup — table-based for email client compatibility -->
+<table cellpadding="0" cellspacing="0" border="0" style="margin-bottom:10px;">
+  <tr>
+    <td style="width:30px;height:30px;border:2.5px solid #052EF0;text-align:center;vertical-align:middle;">
+      <span style="font-family:Arial Black,Arial,sans-serif;font-size:15px;font-weight:900;color:#052EF0;line-height:1;">B</span>
+    </td>
+    <td style="padding-left:10px;vertical-align:middle;">
+      <span style="font-family:Arial,sans-serif;font-size:11px;font-weight:800;letter-spacing:0.15em;color:#fff;text-transform:uppercase;">STEALTH STARTUP FINDER</span>
+    </td>
+  </tr>
+</table>"""
 
 
 def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
@@ -20,7 +41,7 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
     app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
 
     count = len(hot_brands)
-    subject = f"🔵 {count} HOT Signal{'s' if count != 1 else ''} — Stealth Finder"
+    subject = f"🔵 {count} HOT Signal{'s' if count != 1 else ''} — Stealth Startup Finder"
 
     brand_cards = ""
     for b in hot_brands:
@@ -40,7 +61,7 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
             </div>
           </div>
           {f'<p style="font-style:italic;color:#333;margin:8px 0;border-left:3px solid #052EF0;padding-left:12px;">{b["thesis"]}</p>' if b.get('thesis') else ''}
-          {f'<p style="font-size:12px;color:#052EF0;font-weight:600;margin:8px 0;">2026 Theme: {b["theme"]}</p>' if b.get('theme') else ''}
+          {f'<p style="font-size:12px;color:#052EF0;font-weight:600;margin:8px 0;">Theme: {_strip_year(b["theme"])}</p>' if b.get('theme') else ''}
         </div>
         """
 
@@ -52,9 +73,7 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
 
         <!-- Header -->
         <div style="padding:32px 40px 24px;border-bottom:1px solid #222;">
-          <div style="font-family:monospace;font-size:11px;color:#666;letter-spacing:2px;text-transform:uppercase;margin-bottom:8px;">
-            Bullish Intelligence · Stealth Finder
-          </div>
+          {_LOGO_LOCKUP}
           <h1 style="margin:0;color:#052EF0;font-family:monospace;font-size:28px;font-weight:bold;letter-spacing:3px;">
             🔵 HOT SIGNAL{('S' if count != 1 else '')}
           </h1>
@@ -74,14 +93,14 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
              style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
                     padding:14px 28px;border-radius:6px;font-family:monospace;font-weight:bold;
                     font-size:13px;letter-spacing:1px;text-transform:uppercase;">
-            View in Stealth Finder →
+            View in Stealth Startup Finder →
           </a>
         </div>
 
         <!-- Footer -->
         <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
           <p style="margin:0;color:#555;font-size:11px;">
-            Bullish Brand Fund III · Stealth Finder · Automated Signal Detection
+            Bullish Brand Fund III · Stealth Startup Finder · Automated Signal Detection
           </p>
         </div>
       </div>
@@ -89,15 +108,15 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
     </html>
     """
 
-    plain_text = f"Bullish Stealth Finder — {count} HOT Signal{'s' if count != 1 else ''}\n\n"
+    plain_text = f"Bullish Stealth Startup Finder — {count} HOT Signal{'s' if count != 1 else ''}\n\n"
     for b in hot_brands:
         plain_text += f"  {b.get('score', '—')}  {b.get('name', '').upper()}\n"
         if b.get('thesis'):
             plain_text += f"  {b['thesis']}\n"
         if b.get('theme'):
-            plain_text += f"  Theme: {b['theme']}\n"
+            plain_text += f"  Theme: {_strip_year(b['theme'])}\n"
         plain_text += "\n"
-    plain_text += f"View in Stealth Finder: {app_url}\n"
+    plain_text += f"View in Stealth Startup Finder: {app_url}\n"
 
     resend.Emails.send({
         "from":    from_with_name,
@@ -235,7 +254,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
             </div>
           </div>
           {f'<p style="font-style:italic;color:#444;margin:6px 0;border-left:3px solid {border};padding-left:10px;font-size:13px;">{b["thesis"]}</p>' if b.get('thesis') else ''}
-          {f'<p style="font-size:11px;color:{border};font-weight:600;margin:4px 0;">Theme: {b["theme"]}</p>' if b.get('theme') else ''}
+          {f'<p style="font-size:11px;color:{border};font-weight:600;margin:4px 0;">Theme: {_strip_year(b["theme"])}</p>' if b.get('theme') else ''}
         </div>
         """
 
@@ -274,7 +293,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
             WEEK OF {week_label.upper()}
           </h1>
           <p style="margin:6px 0 0;color:#888;font-size:13px;">
-            {total} HOT/WARM signal{'' if total == 1 else 's'} this week · Stealth Finder
+            {total} HOT/WARM signal{'' if total == 1 else 's'} this week · Stealth Startup Finder
           </p>
         </div>
         <div style="padding:20px 36px;">
@@ -285,12 +304,12 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
              style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
                     padding:12px 24px;border-radius:6px;font-family:monospace;font-weight:bold;
                     font-size:12px;letter-spacing:1px;text-transform:uppercase;">
-            View in Stealth Finder →
+            View in Stealth Startup Finder →
           </a>
         </div>
         <div style="padding:14px 36px;border-top:1px solid #222;text-align:center;">
           <p style="margin:0;color:#555;font-size:10px;">
-            Bullish Brand Fund III · Stealth Finder · Weekly Signal Digest
+            Bullish Brand Fund III · Stealth Startup Finder · Weekly Signal Digest
           </p>
         </div>
       </div>
@@ -298,7 +317,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
     </html>
     """
 
-    digest_plain = f"Stealth Finder Weekly — {week_label}\n\n"
+    digest_plain = f"Stealth Startup Finder Weekly — {week_label}\n\n"
     if hot_signals:
         digest_plain += "HOT\n"
         for b in hot_signals:
@@ -307,12 +326,12 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
         digest_plain += "\nWARM\n"
         for b in warm_signals:
             digest_plain += f"  {b.get('score','—')}  {b.get('name','').upper()}\n"
-    digest_plain += f"\nView in Stealth Finder: {app_url}\n"
+    digest_plain += f"\nView in Stealth Startup Finder: {app_url}\n"
 
     resend.Emails.send({
         "from":    from_with_name,
         "to":      [to_email],
-        "subject": f"Stealth Finder Weekly — {len(hot_signals)} HOT, {len(warm_signals)} WARM · {week_label}",
+        "subject": f"Stealth Startup Finder Weekly — {len(hot_signals)} HOT, {len(warm_signals)} WARM · {week_label}",
         "html":    html,
         "text":    digest_plain,
     })
@@ -410,10 +429,7 @@ def send_confluence_alert(
 
         <!-- Header -->
         <div style="padding:28px 36px 20px;border-bottom:1px solid #222;">
-          <div style="font-family:monospace;font-size:10px;color:#666;letter-spacing:2px;
-                      text-transform:uppercase;margin-bottom:6px;">
-            Bullish Intelligence · Stealth Finder
-          </div>
+          {_LOGO_LOCKUP}
           <h1 style="margin:0;color:#052EF0;font-family:monospace;font-size:26px;
                      font-weight:bold;letter-spacing:3px;">
             ⚡ SIGNAL CONFLUENCE
@@ -450,14 +466,14 @@ def send_confluence_alert(
                     text-decoration:none;padding:12px 24px;border-radius:6px;
                     font-family:monospace;font-weight:bold;font-size:12px;
                     letter-spacing:1px;text-transform:uppercase;">
-            Open in Stealth Finder →
+            Open in Stealth Startup Finder →
           </a>
         </div>
 
         <!-- Footer -->
         <div style="padding:14px 36px;border-top:1px solid #222;text-align:center;">
           <p style="margin:0;color:#555;font-size:10px;">
-            Bullish Brand Fund III · Stealth Finder · Confluence Detection
+            Bullish Brand Fund III · Stealth Startup Finder · Confluence Detection
           </p>
         </div>
       </div>
@@ -468,7 +484,7 @@ def send_confluence_alert(
     resend.Emails.send({
         "from":    from_address,
         "to":      [to_email],
-        "subject": f"⚡ {brand_name} — {signal_count} signals in {span_days}d · Stealth Finder",
+        "subject": f"⚡ {brand_name} — {signal_count} signals in {span_days}d · Stealth Startup Finder",
         "html":    html,
     })
 
@@ -595,10 +611,7 @@ def send_founder_alert(
 
         <!-- Header -->
         <div style="padding:28px 36px 20px;border-bottom:1px solid #222;">
-          <div style="font-family:monospace;font-size:10px;color:#666;letter-spacing:2px;
-                      text-transform:uppercase;margin-bottom:6px;">
-            Bullish Intelligence · Stealth Finder
-          </div>
+          {_LOGO_LOCKUP}
           <h1 style="margin:0;color:#052EF0;font-family:monospace;font-size:26px;
                      font-weight:bold;letter-spacing:3px;">
             🔵 FOUNDER SIGNAL
@@ -642,7 +655,7 @@ def send_founder_alert(
         <!-- Footer -->
         <div style="padding:14px 36px;border-top:1px solid #222;text-align:center;">
           <p style="margin:0;color:#555;font-size:10px;">
-            Bullish Brand Fund III · Stealth Finder · Founder Intelligence
+            Bullish Brand Fund III · Stealth Startup Finder · Founder Intelligence
           </p>
         </div>
       </div>
@@ -651,7 +664,7 @@ def send_founder_alert(
     """
 
     plain_text = (
-        f"Bullish Stealth Finder — Founder Signal\n\n"
+        f"Bullish Stealth Startup Finder — Founder Signal\n\n"
         f"Brand: {brand_name} ({level_label})\n"
         f"Founder: {founder_name}\n"
         f"Founder Score: {founder_score} ({tier_label})\n"
@@ -660,12 +673,12 @@ def send_founder_alert(
         plain_text += f"Brand Score: {brand_score}\n"
     if linkedin_url:
         plain_text += f"LinkedIn: {linkedin_url}\n"
-    plain_text += f"\nView in Stealth Finder: {app_url}\n"
+    plain_text += f"\nView in Stealth Startup Finder: {app_url}\n"
 
     resend.Emails.send({
         "from":    from_address,
         "to":      [to_email],
-        "subject": f"🔵 {founder_name} · {brand_name} Founder — Score {founder_score} · Stealth Finder",
+        "subject": f"🔵 {founder_name} · {brand_name} Founder — Score {founder_score} · Stealth Startup Finder",
         "html":    html,
         "text":    plain_text,
     })
