@@ -5,6 +5,7 @@ Ties together:
   - founder_discovery  → identify who the founder is
   - proxycurl          → fetch their LinkedIn profile
   - enrichment         → rescore_founder_with_linkedin (Claude Haiku)
+  - crunchbase         → optional company data (if CRUNCHBASE_API_KEY is set)
   - DB update          → persist results to item.meta["enrichment"]["founder"]
 
 Entry points:
@@ -29,10 +30,11 @@ def run_founder_enrichment(
     Full founder enrichment pipeline for a single signal item.
 
     Flow:
-      1. discover_founder  → who is the founder?
-      2. proxycurl.enrich_founder  → fetch LinkedIn profile
-      3. rescore_founder_with_linkedin  → score via Claude Haiku
-      4. Persist results to DB
+      1. discover_founder  → who is the founder? (includes exit background search)
+      2. proxycurl: use linkedin_url_hint if available, else search → fetch LinkedIn profile
+      3. Inject exit background + Crunchbase data into profile text
+      4. rescore_founder_with_linkedin  → score via Claude Haiku
+      5. Persist results to DB
 
     Returns a result dict:
       {"enriched": True,  "founder_name": str, "founder_score": int,
@@ -45,6 +47,7 @@ def run_founder_enrichment(
     from .founder_discovery import discover_founder
     from . import proxycurl
     from .enrichment import rescore_founder_with_linkedin
+    from .crunchbase import lookup_company, is_available as crunchbase_available
 
     # ── 1. Discover founder ───────────────────────────────────────────────────
     discovery = discover_founder(brand_name, filer_name, category)
@@ -63,7 +66,23 @@ def run_founder_enrichment(
     )
 
     # ── 2. Fetch LinkedIn profile ─────────────────────────────────────────────
-    linkedin_data = proxycurl.enrich_founder(founder_name, brand_name)
+    linkedin_url_hint = discovery.get("linkedin_url_hint")
+    linkedin_data = None
+
+    if linkedin_url_hint:
+        # Use the hint directly — saves a Proxycurl search credit
+        logger.info(
+            "Founder enrichment: using linkedin_url_hint for '%s': %s",
+            founder_name, linkedin_url_hint,
+        )
+        profile_raw = proxycurl.fetch_linkedin_profile(linkedin_url_hint)
+        if profile_raw:
+            linkedin_data = profile_raw
+            linkedin_data["found"] = True
+
+    if not linkedin_data or not linkedin_data.get("found"):
+        # Fall back to full Proxycurl search
+        linkedin_data = proxycurl.enrich_founder(founder_name, brand_name)
 
     # enrich_founder returns {"found": False} if nothing was found
     if not linkedin_data or not linkedin_data.get("found"):
@@ -77,15 +96,44 @@ def run_founder_enrichment(
             "founder_name":  founder_name,
         }
 
-    linkedin_url = linkedin_data.get("linkedin_url") or ""
+    linkedin_url = linkedin_data.get("linkedin_url") or linkedin_url_hint or ""
 
-    # ── 3. Rescore with Claude ────────────────────────────────────────────────
+    # ── 3. Build augmented profile text with exit background + Crunchbase ─────
+    # Pass a modified linkedin_context that includes exit background and Crunchbase
+    # We use a shallow copy and inject extra fields for rescore_founder_with_linkedin
+    augmented_context = dict(linkedin_data)
+
+    # Exit background from discovery
+    exit_info = discovery.get("exit_background", {})
+    if exit_info.get("has_exit_background") and exit_info.get("details"):
+        augmented_context["_exit_background_text"] = f"BRAND EXIT BACKGROUND: {exit_info['details']}"
+    else:
+        augmented_context["_exit_background_text"] = "BRAND EXIT BACKGROUND: No prior exit background found."
+
+    # Crunchbase data (optional)
+    crunchbase_text = ""
+    if crunchbase_available():
+        try:
+            cb_data = lookup_company(brand_name)
+            if cb_data:
+                crunchbase_text = f"\n\nCRUNCHBASE: {cb_data.get('description', '')}. "
+                if cb_data.get("total_funding"):
+                    crunchbase_text += f"Total funding: ${cb_data['total_funding']:,.0f}. "
+                if cb_data.get("last_funding_type"):
+                    crunchbase_text += f"Last round: {cb_data['last_funding_type']}."
+        except Exception as exc:
+            logger.warning("Crunchbase enrichment failed for '%s': %s", brand_name, exc)
+
+    augmented_context["_crunchbase_text"] = crunchbase_text
+
+    # ── 4. Rescore with Claude ────────────────────────────────────────────────
     rescore = rescore_founder_with_linkedin(
         brand_name=brand_name,
         category=category,
         one_line_thesis=one_line_thesis,
         founder_name=founder_name,
-        linkedin_context=linkedin_data,
+        linkedin_context=augmented_context,
+        discovery_result=discovery,
     )
 
     if not rescore.get("linkedin_enriched"):
@@ -110,7 +158,7 @@ def run_founder_enrichment(
         founder_name, total, tier, brand_name, item_id,
     )
 
-    # ── 4. Persist to DB ──────────────────────────────────────────────────────
+    # ── 5. Persist to DB ──────────────────────────────────────────────────────
     try:
         item = db.session.get(Item, item_id)
         if item:
@@ -125,6 +173,7 @@ def run_founder_enrichment(
                 "confidence":  "known",
                 "linkedin_url": linkedin_url,
                 "discovery_source": discovery.get("source"),
+                "exit_background": exit_info,
             }
             meta["enrichment"]["founder_score"] = score_section
 

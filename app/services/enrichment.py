@@ -313,6 +313,29 @@ SCORING MODEL (100 points total):
 
 TIERS: ≥75=HIGH_PRIORITY | ≥50=WATCH_LIST | ≥25=WEAK_SIGNAL | <25=PASS
 
+ADDITIONAL SCORING SIGNALS (apply as score adjustments on top of the 5-signal model above):
+
+BRAND EXIT BACKGROUND (critical signal — add to pedigree and chip_on_shoulder scores):
+- Founder previously worked at (not necessarily founded) a consumer brand that was later acquired or had a notable exit: +12 to +15 points total. This is a top-tier signal — they have seen how it is done from the inside. Add primarily to pedigree (+8) and chip_on_shoulder (+5).
+- Founder personally founded and exited (sold) a company: add another +8 to +10 points on top of the above. Add primarily to chip_on_shoulder (+5) and pedigree (+4).
+- Example: someone who was head of marketing at Rx Bar before Kellogg's acquired it = +12 total. Someone who founded and sold their own brand = +18 to +20 combined.
+- No exit background found: 0 adjustment.
+
+CATEGORY EXPERTISE (apply to category_proximity score):
+- 3+ years working in the exact same category (e.g., launching a pet food brand after running operations at a pet food company): +10 to +12 points to category_proximity.
+- Adjacent category experience (F&B brand launching into wellness): +5 to +7 points to category_proximity.
+- No relevant category experience: 0 adjustment.
+
+CO-FOUNDER / TEAM (apply as a holistic adjustment to total):
+- Strong 2–3 person founding team with complementary skills (operator + creative, or brand + tech): +5 to +8 points to total.
+- Solo founder with strong background: neutral (0).
+- Solo founder with limited background: –5 points to total.
+
+BULLISH PORTFOLIO FIT (apply to thesis_clarity score):
+- Background mirrors successful Bullish portfolio founders (scrappy, brand-obsessed, category insiders): +5 points to thesis_clarity.
+
+NOTE: The 5-signal model caps are soft when exit background or strong category expertise is present. A pedigree score can exceed its nominal max of 15 if the evidence is exceptional — cap the individual signal scores at their max values, but reflect the strength in total and flags.
+
 Return ONLY valid JSON — no markdown, no explanation:
 {
   "founder": {
@@ -345,11 +368,15 @@ def rescore_founder_with_linkedin(
     one_line_thesis: str,
     founder_name: str,
     linkedin_context: dict,
+    discovery_result: dict = None,
 ) -> dict:
     """
     Re-score the founder section of an enrichment using real LinkedIn data
     from Proxycurl.  Makes a targeted Claude call (much cheaper than a full
     enrichment re-run) and returns updated founder + founder_score dicts.
+
+    Also incorporates exit background data from discovery_result and any
+    Crunchbase / pre-injected text fields from linkedin_context.
 
     Returns {"founder": {...}, "founder_score": {...}, "linkedin_enriched": True}
     or {"error": "...", "linkedin_enriched": False} on failure.
@@ -377,7 +404,8 @@ def rescore_founder_with_linkedin(
         else "unknown"
     )
 
-    user_message = f"""Score this founder against Bullish's 5-signal model using their real LinkedIn data.
+    # Build augmented profile text with exit background
+    profile_text = f"""Score this founder against Bullish's 5-signal model using their real LinkedIn data.
 
 Brand: {brand_name}
 Category: {category}
@@ -393,9 +421,29 @@ Work history:
 {exp_lines}
 
 Education:
-{edu_lines}
+{edu_lines}"""
 
-Score this founder using the 5-signal model. Use the LinkedIn data as ground truth — this is real, not inferred."""
+    # Append exit background — from pre-injected field or discovery_result
+    exit_bg_text = linkedin_context.get("_exit_background_text")
+    if exit_bg_text:
+        profile_text += f"\n\n{exit_bg_text}"
+    elif discovery_result:
+        exit_info = discovery_result.get("exit_background", {})
+        if exit_info.get("has_exit_background") and exit_info.get("details"):
+            profile_text += f"\n\nBRAND EXIT BACKGROUND: {exit_info['details']}"
+        else:
+            profile_text += "\n\nBRAND EXIT BACKGROUND: No prior exit background found."
+    else:
+        profile_text += "\n\nBRAND EXIT BACKGROUND: No prior exit background found."
+
+    # Append Crunchbase data if available
+    crunchbase_text = linkedin_context.get("_crunchbase_text", "")
+    if crunchbase_text:
+        profile_text += crunchbase_text
+
+    profile_text += "\n\nScore this founder using the 5-signal model. Use the LinkedIn data as ground truth — this is real, not inferred."
+
+    user_message = profile_text
 
     try:
         message = client.messages.create(
