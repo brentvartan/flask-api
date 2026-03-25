@@ -165,10 +165,12 @@ def force_reset_password(user_id):
 # ─── Spend / usage dashboard ──────────────────────────────────────────────────
 
 # Cost constants (update if pricing changes)
-_PROXYCURL_COST_PER_LOOKUP = 0.01    # ~1 credit per profile fetch @ $0.01/credit
-_SERPAPI_COST_PER_SEARCH   = 0.00    # free plan (250/mo); paid plan ~$0.01/search
-_ANTHROPIC_COST_PER_SIGNAL = 0.03    # claude-sonnet avg per enrichment call
-_ANTHROPIC_HAIKU_PER_RESCORE = 0.005 # claude-haiku founder re-score call
+_PROXYCURL_COST_PER_LOOKUP   = 0.01    # ~1 credit per profile fetch @ $0.01/credit
+_SERPAPI_COST_PER_SEARCH     = 0.00    # free plan (250/mo); paid plan ~$0.01/search
+_ANTHROPIC_COST_PER_SIGNAL   = 0.03    # claude-sonnet avg per enrichment call
+_ANTHROPIC_HAIKU_PER_RESCORE = 0.005   # claude-haiku founder re-score call
+_CRUNCHBASE_COST_PER_LOOKUP  = 0.0    # TBD — depends on plan tier; update when known
+_RESEND_COST_PER_EMAIL       = 0.0    # Free tier: 3,000/mo; update if upgraded
 
 
 def _proxycurl_credits() -> dict:
@@ -241,6 +243,22 @@ def _count_signals_all_time(field_check: str) -> int:
     )
 
 
+def _resend_email_stats():
+    """Count HOT alert emails sent this month and all-time from scan_runs."""
+    try:
+        from ...models.scan_run import ScanRun
+        from datetime import datetime, timezone, timedelta
+        month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        this_month = ScanRun.query.filter(
+            ScanRun.alert_sent == True,
+            ScanRun.ran_at >= month_start,
+        ).count()
+        all_time = ScanRun.query.filter(ScanRun.alert_sent == True).count()
+        return {"emails_this_month": this_month, "emails_all_time": all_time, "error": None}
+    except Exception as e:
+        return {"emails_this_month": 0, "emails_all_time": 0, "error": str(e)}
+
+
 @bp.route("/spend", methods=["GET"])
 @admin_required()
 def get_spend():
@@ -262,6 +280,13 @@ def get_spend():
     anthropic_month   = _count_signals_this_month('"enriched":true')
     anthropic_alltime = _count_signals_all_time('"enriched":true')
 
+    # Crunchbase enrichment counts
+    crunchbase_month   = _count_signals_this_month('"crunchbase_enriched":true')
+    crunchbase_alltime = _count_signals_all_time('"crunchbase_enriched":true')
+
+    # Resend email counts
+    resend = _resend_email_stats()
+
     # Cost estimates
     proxycurl_cost_month   = round(linkedin_month   * _PROXYCURL_COST_PER_LOOKUP, 2)
     proxycurl_cost_alltime = round(linkedin_alltime * _PROXYCURL_COST_PER_LOOKUP, 2)
@@ -278,8 +303,14 @@ def get_spend():
         (linkedin_alltime  * _ANTHROPIC_HAIKU_PER_RESCORE), 2
     )
 
-    total_cost_month   = round(proxycurl_cost_month   + serpapi_cost_month   + anthropic_cost_month,   2)
-    total_cost_alltime = round(proxycurl_cost_alltime + serpapi_cost_alltime + anthropic_cost_alltime, 2)
+    crunchbase_cost_month   = round(crunchbase_month   * _CRUNCHBASE_COST_PER_LOOKUP, 2)
+    crunchbase_cost_alltime = round(crunchbase_alltime * _CRUNCHBASE_COST_PER_LOOKUP, 2)
+
+    resend_cost_month   = round(resend["emails_this_month"] * _RESEND_COST_PER_EMAIL, 2)
+    resend_cost_alltime = round(resend["emails_all_time"]   * _RESEND_COST_PER_EMAIL, 2)
+
+    total_cost_month   = round(proxycurl_cost_month   + serpapi_cost_month   + anthropic_cost_month   + crunchbase_cost_month   + resend_cost_month,   2)
+    total_cost_alltime = round(proxycurl_cost_alltime + serpapi_cost_alltime + anthropic_cost_alltime + crunchbase_cost_alltime + resend_cost_alltime, 2)
 
     return jsonify({
         "proxycurl": {
@@ -308,6 +339,22 @@ def get_spend():
             "estimated_cost_this_month": anthropic_cost_month,
             "estimated_cost_all_time":   anthropic_cost_alltime,
             "cost_per_enrichment":       _ANTHROPIC_COST_PER_SIGNAL,
+        },
+        "crunchbase": {
+            "lookups_this_month":        crunchbase_month,
+            "lookups_all_time":          crunchbase_alltime,
+            "estimated_cost_this_month": crunchbase_cost_month,
+            "estimated_cost_all_time":   crunchbase_cost_alltime,
+            "cost_per_lookup":           _CRUNCHBASE_COST_PER_LOOKUP,
+            "active":                    bool(os.environ.get("CRUNCHBASE_API_KEY")),
+        },
+        "resend": {
+            "emails_this_month":         resend["emails_this_month"],
+            "emails_all_time":           resend["emails_all_time"],
+            "estimated_cost_this_month": resend_cost_month,
+            "estimated_cost_all_time":   resend_cost_alltime,
+            "error":                     resend["error"],
+            "plan":                      "Free (3,000/mo)",
         },
         "totals": {
             "estimated_cost_this_month": total_cost_month,

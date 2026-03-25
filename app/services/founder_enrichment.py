@@ -112,10 +112,12 @@ def run_founder_enrichment(
 
     # Crunchbase data (optional)
     crunchbase_text = ""
+    _crunchbase_enriched = False
     if crunchbase_available():
         try:
             cb_data = lookup_company(brand_name)
             if cb_data:
+                _crunchbase_enriched = True
                 crunchbase_text = f"\n\nCRUNCHBASE: {cb_data.get('description', '')}. "
                 if cb_data.get("total_funding"):
                     crunchbase_text += f"Total funding: ${cb_data['total_funding']:,.0f}. "
@@ -165,6 +167,9 @@ def run_founder_enrichment(
             meta = json.loads(item.description or "{}")
             if "enrichment" not in meta:
                 meta["enrichment"] = {}
+
+            if _crunchbase_enriched:
+                meta["crunchbase_enriched"] = True
 
             # Merge the founder data into meta.enrichment
             meta["enrichment"]["founder"] = {

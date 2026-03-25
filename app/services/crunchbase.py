@@ -50,6 +50,7 @@ def lookup_company(brand_name: str) -> dict | None:
         props = entities[0].get("properties", {})
         founders = [f.get("value", "") for f in props.get("founder_identifiers", [])]
         return {
+            "_crunchbase_hit": True,
             "name": props.get("identifier", {}).get("value", brand_name),
             "founders": founders,
             "total_funding": props.get("funding_total", {}).get("value_usd"),
