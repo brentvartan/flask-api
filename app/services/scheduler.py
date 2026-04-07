@@ -70,7 +70,7 @@ def run_scan_now(scan, user_id: int) -> dict:
             logger.warning("Delaware scan error: %s", de_result["error"])
             errors.append(f"Delaware: {de_result['error']}")
 
-    if scan_type == 'producthunt':
+    if scan_type in ('full', 'producthunt'):
         sources_ran.append('producthunt')
         try:
             from ..services.producthunt import search_recent_producthunt
@@ -86,6 +86,23 @@ def run_scan_now(scan, user_id: int) -> dict:
         except Exception as exc:
             logger.warning("Product Hunt import/scan failed: %s", exc)
             errors.append(f"ProductHunt: {exc}")
+
+    if scan_type in ('full', 'app_store'):
+        sources_ran.append('app_store')
+        try:
+            from ..services.app_store import search_recent_app_store
+            as_result = search_recent_app_store(
+                days_back=scan.days_back,
+                max_results=scan.max_results,
+            )
+            if not as_result.get("error"):
+                signals.extend(as_result["signals"])
+            else:
+                logger.warning("App Store scan error: %s", as_result["error"])
+                errors.append(f"AppStore: {as_result['error']}")
+        except Exception as exc:
+            logger.warning("App Store import/scan failed: %s", exc)
+            errors.append(f"AppStore: {exc}")
 
     sources_ran_str = ",".join(sources_ran)
 

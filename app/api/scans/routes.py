@@ -13,6 +13,7 @@ from ...models.item import Item
 from ...services.trademarks import search_recent_trademarks
 from ...services.delaware import search_recent_delaware_entities
 from ...services.producthunt import search_recent_producthunt
+from ...services.app_store import search_recent_app_store
 
 logger = logging.getLogger(__name__)
 
@@ -492,6 +493,105 @@ def run_producthunt_scan():
     return jsonify({
         "total_found": total_found,
         "fetched":     result["fetched"],
+        "new_saved":   new_saved,
+        "skipped":     skipped,
+        "error":       None,
+    }), 200
+
+
+@bp.route("/app-store", methods=["POST"])
+@jwt_required()
+@limiter.limit("10 per minute")
+def run_app_store_scan():
+    """
+    Scan the App Store for recent consumer app launches.
+
+    Uses the iTunes Search API (free, no API key required).
+    Surfaces consumer apps updated within the last N days across
+    Health/Wellness, Beauty, CPG/Food/Drink, Fitness, and related categories.
+
+    Request body (all optional):
+        days_back   int   Days of activity to surface (7–90, default 30)
+        max_results int   Max results to process (1–200, default 100)
+    """
+    import re as _re
+    import hashlib as _hl
+
+    data        = request.get_json(silent=True) or {}
+    user_id     = int(get_jwt_identity())
+    days_back   = max(7, min(int(data.get("days_back",   30)), 90))
+    max_results = max(1, min(int(data.get("max_results", 100)), 200))
+
+    result = search_recent_app_store(days_back=days_back, max_results=max_results)
+
+    if result.get("error"):
+        return jsonify({
+            "total_found": 0, "fetched": 0,
+            "new_saved": 0,   "skipped": 0,
+            "error": result["error"],
+        }), 502
+
+    signals = result.get("signals", [])
+    if not signals:
+        return jsonify({"total_found": 0, "fetched": 0, "new_saved": 0, "skipped": 0, "error": None}), 200
+
+    existing_fps = _load_existing_fps(user_id)
+    new_items = []
+    skipped   = 0
+
+    for sig in signals:
+        _norm = _re.sub(r'\s+', ' ', sig["companyName"].upper().strip())
+        key = f"app_store:{_norm}:{sig.get('app_id', '')}"
+        fp  = _hl.sha256(key.encode()).hexdigest()[:16]
+
+        if fp in existing_fps:
+            skipped += 1
+            continue
+
+        item = Item(
+            title=sig["companyName"],
+            owner_id=user_id,
+            item_type="signal",
+            description=json.dumps({
+                "_type":        "signal",
+                "fp":           fp,
+                "company_name": sig["companyName"],
+                "signal_type":  "app_store",
+                "category":     sig["category"],
+                "score_boost":  sig.get("score_boost", 8),
+                "description":  sig["description"],
+                "url":          sig["url"],
+                "notes":        sig.get("notes", ""),
+                "timestamp":    sig["timestamp"],
+                "app_id":       sig.get("app_id"),
+                "developer":    sig.get("developer", ""),
+                "rating":       sig.get("rating", 0),
+                "rating_count": sig.get("rating_count", 0),
+                "icon_url":     sig.get("icon_url", ""),
+            }, separators=(",", ":")),
+        )
+        db.session.add(item)
+        new_items.append(item)
+        existing_fps.add(fp)
+
+    new_saved = len(new_items)
+    if new_saved > 0:
+        db.session.commit()
+        new_ids = [item.id for item in new_items]
+        app = current_app._get_current_object()
+        threading.Thread(target=_enrich_items_in_background, args=(app, new_ids), daemon=True).start()
+        for item in new_items:
+            meta = json.loads(item.description or "{}")
+            threading.Thread(
+                target=_check_confluence_in_background,
+                args=(app, item.id, user_id, item.title, "app_store", meta.get("url")),
+                daemon=True,
+            ).start()
+        logger.info("App Store scan: %d new signals queued for enrichment", new_saved)
+
+    return jsonify({
+        "total_found": result["total_found"],
+        "fetched":     len(signals),
         "new_saved":   new_saved,
         "skipped":     skipped,
         "error":       None,
