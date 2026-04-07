@@ -124,6 +124,7 @@ def run_scan_now(scan, user_id: int) -> dict:
         item = Item(
             title=sig["companyName"],
             owner_id=user_id,
+            item_type="signal",
             description=json.dumps({
                 "_type":        "signal",
                 "fp":           fp,
@@ -393,6 +394,7 @@ def _send_weekly_digest(app):
         week_ago = datetime.now(timezone.utc) - timedelta(days=7)
 
         rows = Item.query.filter(
+            Item.item_type == 'signal',
             Item.description.contains('"enrichment"'),
             Item.created_at >= week_ago,
         ).all()
@@ -472,14 +474,14 @@ def _check_founder_news(app):
     with app.app_context():
         # Load all watchlist items with a founder name
         rows = Item.query.filter(
-            Item.description.contains('"_type"')
+            Item.item_type == 'watchlist'
         ).all()
 
         watchlist_items = []
         for row in rows:
             try:
                 meta = json.loads(row.description or '{}')
-                if meta.get('_type') == 'watchlist' and meta.get('name'):
+                if meta.get('name'):
                     watchlist_items.append((row, meta))
             except Exception:
                 pass

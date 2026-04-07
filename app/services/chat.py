@@ -29,7 +29,7 @@ def _load_signal_manifest() -> str:
     from ..models.item import Item
 
     rows = Item.query.filter(
-        Item.description.contains('"_type":"signal"')
+        Item.item_type == 'signal'
     ).all()
 
     LEVEL_ORDER = {'hot': 0, 'warm': 1, 'cold': 2}

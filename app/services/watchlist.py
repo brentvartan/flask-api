@@ -33,18 +33,13 @@ def auto_add_to_watchlist(
             brand_key = brand_name.upper().strip()
             existing = Item.query.filter(
                 Item.owner_id == owner_id,
-                Item.description.contains('"_type": "watchlist"'),
-            ).all()
-            # Also check without space (both formats)
-            existing += Item.query.filter(
-                Item.owner_id == owner_id,
-                Item.description.contains('"_type":"watchlist"'),
+                Item.item_type == 'watchlist',
             ).all()
 
             for ex in existing:
                 try:
                     meta = json.loads(ex.description or '{}')
-                    if meta.get('_type') == 'watchlist':
+                    if True:
                         existing_company = (meta.get('company') or ex.title or '').upper().strip()
                         if existing_company == brand_key:
                             # Already on watchlist — update signal_types if new type
@@ -89,6 +84,7 @@ def auto_add_to_watchlist(
             item = Item(
                 title=brand_name,
                 owner_id=owner_id,
+                item_type="watchlist",
                 description=json.dumps(meta),
             )
             db.session.add(item)
@@ -114,14 +110,17 @@ def trigger_rescore_if_watchlisted(app_context, brand_name: str, new_signal_type
         with app_context:
             try:
                 brand_key = brand_name.upper().strip()
-                # Find watchlist entry
-                rows = Item.query.filter(Item.owner_id == owner_id).all()
+                # Find watchlist entry using indexed item_type column
+                rows = Item.query.filter(
+                    Item.owner_id == owner_id,
+                    Item.item_type == 'watchlist',
+                ).all()
                 wl_item = None
                 wl_meta = None
                 for row in rows:
                     try:
                         m = json.loads(row.description or '{}')
-                        if m.get('_type') == 'watchlist' and (m.get('company') or '').upper().strip() == brand_key:
+                        if (m.get('company') or '').upper().strip() == brand_key:
                             wl_item = row
                             wl_meta = m
                             break

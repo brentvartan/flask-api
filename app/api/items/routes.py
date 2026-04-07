@@ -86,7 +86,14 @@ def create_item():
         return jsonify({"error": e.messages}), 422
 
     user_id = int(get_jwt_identity())
-    item = Item(title=data["title"], description=data.get("description"), owner_id=user_id)
+    # Derive item_type from JSON description if present (watchlist, signal, etc.)
+    raw_desc = data.get("description") or ""
+    try:
+        import json as _json
+        _parsed_type = _json.loads(raw_desc).get("_type") if raw_desc else None
+    except Exception:
+        _parsed_type = None
+    item = Item(title=data["title"], description=raw_desc, item_type=_parsed_type, owner_id=user_id)
     db.session.add(item)
     db.session.commit()
     return jsonify({"item": item.to_dict()}), 201

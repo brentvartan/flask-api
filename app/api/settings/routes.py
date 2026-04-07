@@ -63,7 +63,7 @@ def update_settings():
     if item:
         item.description = json.dumps(current)
     else:
-        item = Item(title=SETTINGS_TITLE, owner_id=user.id, description=json.dumps(current))
+        item = Item(title=SETTINGS_TITLE, owner_id=user.id, item_type="settings", description=json.dumps(current))
         db.session.add(item)
 
     db.session.commit()

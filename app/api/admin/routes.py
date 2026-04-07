@@ -227,7 +227,7 @@ def _count_signals_this_month(field_check: str) -> int:
     return (
         Item.query
         .filter(
-            Item.description.contains('"_type":"signal"'),
+            Item.item_type == 'signal',
             Item.description.contains(field_check),
             Item.created_at >= start,
         )
@@ -239,7 +239,7 @@ def _count_signals_all_time(field_check: str) -> int:
     return (
         Item.query
         .filter(
-            Item.description.contains('"_type":"signal"'),
+            Item.item_type == 'signal',
             Item.description.contains(field_check),
         )
         .count()

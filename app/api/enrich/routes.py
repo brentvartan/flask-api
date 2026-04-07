@@ -94,7 +94,7 @@ def enrich_batch():
         rows = (
             Item.query
             .filter_by(owner_id=user_id)
-            .filter(Item.description.contains('"_type":"signal"'))
+            .filter(Item.item_type == 'signal')
             .filter(~Item.description.contains('"enrichment"'))
             .order_by(Item.created_at.desc())
             .offset(offset)
@@ -106,7 +106,7 @@ def enrich_batch():
         rows = (
             Item.query
             .filter_by(owner_id=user_id)
-            .filter(Item.description.contains('"_type":"signal"'))
+            .filter(Item.item_type == 'signal')
             .order_by(Item.created_at.desc())
             .offset(offset)
             .limit(limit)

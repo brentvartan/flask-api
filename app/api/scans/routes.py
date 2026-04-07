@@ -253,6 +253,7 @@ def run_trademark_scan():
         item = Item(
             title=sig["companyName"],
             owner_id=user_id,
+            item_type="signal",
             description=json.dumps({
                 "_type":        "signal",
                 "fp":           fp,
@@ -355,6 +356,7 @@ def run_delaware_scan():
         item = Item(
             title=sig["companyName"],
             owner_id=user_id,
+            item_type="signal",
             description=json.dumps({
                 "_type":        "signal",
                 "fp":           fp,
@@ -444,6 +446,7 @@ def run_producthunt_scan():
         item = Item(
             title=sig["companyName"],
             owner_id=user_id,
+            item_type="signal",
             description=json.dumps({
                 "_type":        "signal",
                 "fp":           fp,
