@@ -9,7 +9,7 @@ import json
 import hashlib
 import logging
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +249,19 @@ def run_scan_now(scan, user_id: int) -> dict:
                 alert_emails_str = ",".join(_emails_list)
     except Exception:
         pass
+
+    # ── Dedup: within this run, same brand may appear via trademark + Delaware ───
+    # Keep the highest-scored entry per brand name so one brand = one email card.
+    seen_keys: dict = {}
+    deduped_hot: list = []
+    for b in hot_brands:
+        key = b["name"].upper().strip()
+        if key not in seen_keys:
+            seen_keys[key] = len(deduped_hot)
+            deduped_hot.append(b)
+        elif (b.get("score") or 0) > (deduped_hot[seen_keys[key]].get("score") or 0):
+            deduped_hot[seen_keys[key]] = b  # replace with higher-scored version
+    hot_brands = deduped_hot
 
     alert_sent = False
 

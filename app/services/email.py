@@ -21,8 +21,8 @@ def _resend_client():
 _LOGO_LOCKUP = """<!-- Logo lockup — table-based for email client compatibility -->
 <table cellpadding="0" cellspacing="0" border="0" style="margin-bottom:10px;">
   <tr>
-    <td style="width:30px;height:30px;border:2.5px solid #052EF0;text-align:center;vertical-align:middle;">
-      <span style="font-family:Arial Black,Arial,sans-serif;font-size:15px;font-weight:900;color:#052EF0;line-height:1;">B</span>
+    <td style="width:30px;height:30px;background:#052EF0;text-align:center;vertical-align:middle;">
+      <span style="font-family:Arial Black,Arial,sans-serif;font-size:15px;font-weight:900;color:#fff;line-height:1;">B</span>
     </td>
     <td style="padding-left:10px;vertical-align:middle;">
       <span style="font-family:Arial,sans-serif;font-size:11px;font-weight:800;letter-spacing:0.15em;color:#fff;text-transform:uppercase;">STEALTH STARTUP FINDER</span>
