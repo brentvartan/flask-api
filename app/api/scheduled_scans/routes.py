@@ -2,7 +2,7 @@ from flask import jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from . import bp
-from ...extensions import db
+from ...extensions import db, limiter
 from ...models.scheduled_scan import ScheduledScan
 from ...services.scheduler import run_scan_now
 
@@ -98,6 +98,7 @@ def delete_scan(scan_id):
 
 @bp.route("/<int:scan_id>/run", methods=["POST"])
 @jwt_required()
+@limiter.limit("5 per minute")
 def run_scan(scan_id):
     """Manually trigger a scheduled scan right now."""
     user_id = int(get_jwt_identity())

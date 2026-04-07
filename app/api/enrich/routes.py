@@ -5,7 +5,7 @@ from flask import jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from . import bp
-from ...extensions import db
+from ...extensions import db, limiter
 from ...models.item import Item
 from ...services.enrichment import enrich_signal, rescore_founder_with_linkedin
 from ...services.proxycurl import should_enrich_founder, enrich_founder
@@ -38,6 +38,7 @@ def _extract_owner(notes: str) -> str:
 
 @bp.route("/signal/<int:item_id>", methods=["POST"])
 @jwt_required()
+@limiter.limit("30 per minute")
 def enrich_single(item_id):
     """Enrich a single signal item with Bullish AI analysis."""
     user_id = int(get_jwt_identity())
@@ -74,6 +75,7 @@ def enrich_single(item_id):
 
 @bp.route("/batch", methods=["POST"])
 @jwt_required()
+@limiter.limit("5 per minute")
 def enrich_batch():
     """
     Enrich multiple signal items with Bullish AI analysis.

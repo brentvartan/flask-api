@@ -18,4 +18,4 @@ def ask():
         return jsonify({"reply": reply}), 200
     except Exception as e:
         logger.error("ask_bullish failed: %s", repr(e), exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "AI service temporarily unavailable. Please try again."}), 500

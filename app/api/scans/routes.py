@@ -8,7 +8,7 @@ from flask import jsonify, request, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from . import bp
-from ...extensions import db
+from ...extensions import db, limiter
 from ...models.item import Item
 from ...services.trademarks import search_recent_trademarks
 from ...services.delaware import search_recent_delaware_entities
@@ -159,8 +159,15 @@ def _enrich_items_in_background(app, item_ids: list):
 
 
 def _make_fingerprint(signal_type: str, company_name: str, timestamp: str) -> str:
-    """Stable 16-char hex fingerprint for a signal — used to prevent duplicates."""
-    key = f"{signal_type}:{company_name.upper().strip()}:{timestamp[:10]}"
+    """Stable 16-char hex fingerprint for a signal — used to prevent duplicates.
+
+    Normalises company_name by uppercasing, stripping outer whitespace, and
+    collapsing internal runs of whitespace to a single space so that
+    'Foo  Bar' and 'Foo Bar' map to the same fingerprint.
+    """
+    import re as _re
+    normalised = _re.sub(r'\s+', ' ', company_name.upper().strip())
+    key = f"{signal_type}:{normalised}:{timestamp[:10]}"
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -195,6 +202,7 @@ def _load_existing_fps(user_id: int) -> set:
 
 @bp.route("/trademark", methods=["POST"])
 @jwt_required()
+@limiter.limit("10 per minute")
 def run_trademark_scan():
     """
     Fetch real USPTO trademark filings and persist new ones for the current user.
@@ -298,6 +306,7 @@ def run_trademark_scan():
 
 @bp.route("/delaware", methods=["POST"])
 @jwt_required()
+@limiter.limit("10 per minute")
 def run_delaware_scan():
     """
     Fetch real Delaware LLC/Corp filings and cross-reference matching domains.
@@ -401,6 +410,7 @@ def run_delaware_scan():
 
 @bp.route("/producthunt", methods=["POST"])
 @jwt_required()
+@limiter.limit("10 per minute")
 def run_producthunt_scan():
     """
     Fetch recent Product Hunt consumer launches and persist new ones.

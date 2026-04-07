@@ -1,6 +1,9 @@
 import json
+import logging
 import os
 import time as _time
+
+logger = logging.getLogger(__name__)
 from calendar import monthrange
 from datetime import datetime, timezone
 
@@ -192,7 +195,8 @@ def _proxycurl_credits() -> dict:
             return {"available": data.get("credit_balance"), "error": None}
         return {"available": None, "error": f"HTTP {resp.status_code}"}
     except Exception as exc:
-        return {"available": None, "error": str(exc)}
+        logger.warning("Proxycurl credit check failed: %s", repr(exc))
+        return {"available": None, "error": "Unable to reach Proxycurl API"}
 
 
 def _serpapi_stats() -> dict:
@@ -217,7 +221,8 @@ def _serpapi_stats() -> dict:
             }
         return {"searches_left": None, "searches_per_month": None, "this_month_usage": None, "error": f"HTTP {resp.status_code}"}
     except Exception as exc:
-        return {"searches_left": None, "searches_per_month": None, "this_month_usage": None, "error": str(exc)}
+        logger.warning("SerpAPI stats check failed: %s", repr(exc))
+        return {"searches_left": None, "searches_per_month": None, "this_month_usage": None, "error": "Unable to reach SerpAPI"}
 
 
 def _count_signals_this_month(field_check: str) -> int:
@@ -259,7 +264,8 @@ def _resend_email_stats():
         all_time = ScanRun.query.filter(ScanRun.alert_sent == True).count()
         return {"emails_this_month": this_month, "emails_all_time": all_time, "error": None}
     except Exception as e:
-        return {"emails_this_month": 0, "emails_all_time": 0, "error": str(e)}
+        logger.warning("Resend email stats query failed: %s", repr(e))
+        return {"emails_this_month": 0, "emails_all_time": 0, "error": "Stats unavailable"}
 
 
 @bp.route("/spend", methods=["GET"])

@@ -115,7 +115,9 @@ def run_scan_now(scan, user_id: int) -> dict:
 
     for sig in signals:
         signal_type = sig.get("signal_type", "trademark")
-        key = f"{signal_type}:{sig['companyName'].upper().strip()}:{sig['timestamp'][:10]}"
+        import re as _re
+        _norm = _re.sub(r'\s+', ' ', sig['companyName'].upper().strip())
+        key = f"{signal_type}:{_norm}:{sig['timestamp'][:10]}"
         fp  = hashlib.sha256(key.encode()).hexdigest()[:16]
 
         if fp in existing_fps:
