@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 
 import requests
 from urllib.parse import urljoin, urlparse
@@ -380,6 +381,54 @@ def search_exit_background(
         return {"has_exit_background": False, "details": None}
 
 
+def _web_search_founder(brand_name: str, category: str, serpapi_key: str, client) -> tuple | None:
+    """
+    Run the SerpAPI web search for founder and return (name, confidence, source) or None.
+    """
+    web_query = f'"{brand_name}" founder OR "founded by" OR CEO'
+    web_snippets = _serp_search(web_query)
+    if web_snippets:
+        result = _extract_founder_from_snippets(brand_name, web_snippets)
+        if result.get("name") and result.get("confidence") in ("high", "medium"):
+            return (result["name"], result["confidence"], "web_search")
+    return None
+
+
+def _producthunt_search_founder(brand_name: str, serpapi_key: str, client) -> tuple | None:
+    """
+    Run the SerpAPI Product Hunt search for founder and return (name, confidence, source) or None.
+    """
+    ph_query = f'site:producthunt.com "{brand_name}"'
+    ph_snippets = _serp_search(ph_query)
+    if ph_snippets:
+        result = _extract_founder_from_snippets(brand_name, ph_snippets)
+        if result.get("name") and result.get("confidence") in ("high", "medium"):
+            return (result["name"], result["confidence"], "producthunt")
+    return None
+
+
+def _website_search_founder(brand_name: str, category: str, serpapi_key: str, client) -> tuple | None:
+    """
+    Find brand website, scrape About/Team page, and extract founder.
+    Returns (name, linkedin_url_hint, source) or None.
+    linkedin_url_hint may be None if no LinkedIn was found on page.
+    """
+    website_url = find_brand_website(brand_name, category or "", serpapi_key)
+    if not website_url:
+        return None
+    page_text = scrape_about_page(website_url)
+    if not page_text or not client:
+        return None
+    founders = extract_founders_from_page(page_text, brand_name, client)
+    if founders:
+        first_founder = founders[0]
+        scraped_name = first_founder.get("name")
+        scraped_linkedin = first_founder.get("linkedin_url")
+        if scraped_name:
+            return (scraped_name, scraped_linkedin, "website")
+    return None
+
+
 def discover_founder(
     brand_name: str,
     filer_name: str = None,
@@ -429,68 +478,54 @@ def discover_founder(
         found_confidence = "high"
         found_source = "filer"
 
-    # ── 2. Web search ─────────────────────────────────────────────────────────
-    if not found_name:
-        web_query = f'"{brand_name}" founder OR "founded by" OR CEO'
-        web_snippets = _serp_search(web_query)
-        if web_snippets:
-            result = _extract_founder_from_snippets(brand_name, web_snippets)
-            if result.get("name") and result.get("confidence") in ("high", "medium"):
-                logger.info(
-                    "Founder discovery: found '%s' via web search (confidence=%s)",
-                    result["name"], result["confidence"],
-                )
-                found_name = result["name"]
-                found_confidence = result["confidence"]
-                found_source = "web_search"
-
-    # ── 3. Product Hunt search ────────────────────────────────────────────────
-    if not found_name:
-        ph_query = f'site:producthunt.com "{brand_name}"'
-        ph_snippets = _serp_search(ph_query)
-        if ph_snippets:
-            result = _extract_founder_from_snippets(brand_name, ph_snippets)
-            if result.get("name") and result.get("confidence") in ("high", "medium"):
-                logger.info(
-                    "Founder discovery: found '%s' via Product Hunt search (confidence=%s)",
-                    result["name"], result["confidence"],
-                )
-                found_name = result["name"]
-                found_confidence = result["confidence"]
-                found_source = "producthunt"
-
-    # ── 4. Website scraping ───────────────────────────────────────────────────
+    # ── 2–4. Parallel: web search, Product Hunt, website scraping ─────────────
     if not found_name or not linkedin_url_hint:
         try:
-            website_url = find_brand_website(brand_name, category_str, serpapi_key)
-            if website_url:
-                page_text = scrape_about_page(website_url)
-                if page_text and claude_client:
-                    founders = extract_founders_from_page(page_text, brand_name, claude_client)
-                    if founders:
-                        first_founder = founders[0]
-                        scraped_name = first_founder.get("name")
-                        scraped_linkedin = first_founder.get("linkedin_url")
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {
+                    executor.submit(_web_search_founder, brand_name, category_str, serpapi_key, claude_client): "web",
+                    executor.submit(_producthunt_search_founder, brand_name, serpapi_key, claude_client): "ph",
+                    executor.submit(_website_search_founder, brand_name, category_str, serpapi_key, claude_client): "site",
+                }
+                parallel_results = {}
+                for future in as_completed(futures, timeout=20):
+                    key = futures[future]
+                    try:
+                        parallel_results[key] = future.result()
+                    except Exception as exc:
+                        logger.warning("Founder discovery %s failed: %s", key, exc)
+                        parallel_results[key] = None
+        except FuturesTimeout:
+            logger.warning("Founder discovery parallel futures timed out for '%s'", brand_name)
+            parallel_results = {}
 
-                        # Use scraped name only if cascade didn't find one
-                        if not found_name and scraped_name:
-                            logger.info(
-                                "Founder discovery: found '%s' via website scraping",
-                                scraped_name,
-                            )
-                            found_name = scraped_name
-                            found_confidence = "medium"
-                            found_source = "website"
+        # site result is (name, linkedin_url_hint, source); web/ph are (name, confidence, source)
+        site_result = parallel_results.get("site")
+        web_result  = parallel_results.get("web")
+        ph_result   = parallel_results.get("ph")
 
-                        # Store LinkedIn hint if found (saves Proxycurl credit)
-                        if scraped_linkedin and not linkedin_url_hint:
-                            linkedin_url_hint = scraped_linkedin
-                            logger.info(
-                                "Founder discovery: LinkedIn URL hint from website: %s",
-                                scraped_linkedin,
-                            )
-        except Exception as exc:
-            logger.warning("Website scraping step failed for '%s': %s", brand_name, exc)
+        # Capture linkedin_url_hint from site result regardless of name priority
+        if site_result and site_result[1] and not linkedin_url_hint:
+            linkedin_url_hint = site_result[1]
+            logger.info("Founder discovery: LinkedIn URL hint from website: %s", linkedin_url_hint)
+
+        if not found_name:
+            # Priority: site > web > ph (site has medium confidence; web/ph carry their own)
+            if site_result and site_result[0]:
+                found_name       = site_result[0]
+                found_confidence = "medium"
+                found_source     = "website"
+                logger.info("Founder discovery: found '%s' via website scraping", found_name)
+            elif web_result and web_result[0]:
+                found_name       = web_result[0]
+                found_confidence = web_result[1]
+                found_source     = "web_search"
+                logger.info("Founder discovery: found '%s' via web search (confidence=%s)", found_name, found_confidence)
+            elif ph_result and ph_result[0]:
+                found_name       = ph_result[0]
+                found_confidence = ph_result[1]
+                found_source     = "producthunt"
+                logger.info("Founder discovery: found '%s' via Product Hunt search (confidence=%s)", found_name, found_confidence)
 
     # ── 5. Exit background search ─────────────────────────────────────────────
     exit_background = {"has_exit_background": False, "details": None}

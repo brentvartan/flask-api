@@ -18,6 +18,8 @@ import threading
 
 logger = logging.getLogger(__name__)
 
+_founder_semaphore = threading.Semaphore(3)  # max 3 concurrent founder enrichments
+
 
 def run_founder_enrichment(
     item_id: int,
@@ -219,38 +221,39 @@ def run_founder_enrichment_in_background(
     to each address in alert_emails.
     """
     def _run():
-        with app.app_context():
-            try:
-                result = run_founder_enrichment(
-                    item_id=item_id,
-                    brand_name=brand_name,
-                    category=category,
-                    one_line_thesis=one_line_thesis,
-                    filer_name=filer_name,
-                )
-
-                if not result.get("enriched"):
-                    logger.info(
-                        "Background founder enrichment: not enriched for item %s (%s): %s",
-                        item_id, brand_name, result.get("reason"),
+        with _founder_semaphore:
+            with app.app_context():
+                try:
+                    result = run_founder_enrichment(
+                        item_id=item_id,
+                        brand_name=brand_name,
+                        category=category,
+                        one_line_thesis=one_line_thesis,
+                        filer_name=filer_name,
                     )
-                    return
 
-                founder_score = result.get("founder_score", 0)
-                logger.info(
-                    "Background founder enrichment complete: item %s ('%s') → score=%d tier=%s",
-                    item_id, brand_name, founder_score, result.get("tier"),
-                )
+                    if not result.get("enriched"):
+                        logger.info(
+                            "Background founder enrichment: not enriched for item %s (%s): %s",
+                            item_id, brand_name, result.get("reason"),
+                        )
+                        return
 
-                # Fire alert if score is HIGH_PRIORITY (>= 75)
-                if founder_score >= 75 and alert_emails:
-                    _send_alert(result, brand_name, item_id, alert_emails)
+                    founder_score = result.get("founder_score", 0)
+                    logger.info(
+                        "Background founder enrichment complete: item %s ('%s') → score=%d tier=%s",
+                        item_id, brand_name, founder_score, result.get("tier"),
+                    )
 
-            except Exception as exc:
-                logger.warning(
-                    "Background founder enrichment failed for item %s ('%s'): %s",
-                    item_id, brand_name, exc,
-                )
+                    # Fire alert if score is HIGH_PRIORITY (>= 75)
+                    if founder_score >= 75 and alert_emails:
+                        _send_alert(result, brand_name, item_id, alert_emails)
+
+                except Exception as exc:
+                    logger.warning(
+                        "Background founder enrichment failed for item %s ('%s'): %s",
+                        item_id, brand_name, exc,
+                    )
 
     threading.Thread(target=_run, daemon=True).start()
 

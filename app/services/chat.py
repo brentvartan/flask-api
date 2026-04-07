@@ -3,7 +3,9 @@ Ask Bullish — conversational AI over the Stealth Finder signal database.
 """
 import os
 import json
+import re
 import anthropic
+from datetime import datetime, timezone
 
 _client = None
 
@@ -54,12 +56,15 @@ def _load_signal_manifest() -> str:
             watch_level = (e.get("watch_level") or "cold").lower()
             score = e.get("bullish_score") or 0
 
+            theme = e.get('cultural_theme') or 'None'
+            theme = re.sub(r'^\d{4}\s*(Theme:?\s*)?', '', theme, flags=re.IGNORECASE).strip() or 'None'
+
             line = (
                 f"- {meta.get('company_name', item.title)} | "
                 f"{meta.get('category', '')} | "
                 f"{watch_level.upper()} | "
                 f"Score: {score} | "
-                f"Theme: {e.get('cultural_theme') or 'None'} | "
+                f"Theme: {theme} | "
                 f"Founder: {founder_str} | "
                 f"Signal: {signal_type} | "
                 f"Filed: {(meta.get('timestamp') or '')[:10]} | "
@@ -80,7 +85,8 @@ def _load_signal_manifest() -> str:
     lines = [row[2] for row in enriched]
 
     # Cap at 300 to stay within token budget (~75k chars ≈ 19k tokens)
-    manifest = "\n".join(lines[:300])
+    timestamp_line = f"[Signal manifest built: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}]\n"
+    manifest = timestamp_line + "\n".join(lines[:300])
     import logging
     logging.getLogger(__name__).info(
         "manifest: %d total enriched, %d sent to Claude, %d chars",

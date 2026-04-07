@@ -1,5 +1,6 @@
 import json
 import os
+import time as _time
 from calendar import monthrange
 from datetime import datetime, timezone
 
@@ -164,6 +165,8 @@ def force_reset_password(user_id):
 
 # ─── Spend / usage dashboard ──────────────────────────────────────────────────
 
+_spend_cache: dict = {"data": None, "expires": 0}
+
 # Cost constants (update if pricing changes)
 _PROXYCURL_COST_PER_LOOKUP   = 0.01    # ~1 credit per profile fetch @ $0.01/credit
 _SERPAPI_COST_PER_SEARCH     = 0.00    # free plan (250/mo); paid plan ~$0.01/search
@@ -264,6 +267,10 @@ def _resend_email_stats():
 def get_spend():
     """Admin-only spend and usage dashboard."""
 
+    now = _time.time()
+    if _spend_cache["data"] and _spend_cache["expires"] > now:
+        return jsonify(_spend_cache["data"]), 200
+
     # Live balances from external APIs
     proxycurl = _proxycurl_credits()
     serpapi   = _serpapi_stats()
@@ -312,7 +319,7 @@ def get_spend():
     total_cost_month   = round(proxycurl_cost_month   + serpapi_cost_month   + anthropic_cost_month   + crunchbase_cost_month   + resend_cost_month,   2)
     total_cost_alltime = round(proxycurl_cost_alltime + serpapi_cost_alltime + anthropic_cost_alltime + crunchbase_cost_alltime + resend_cost_alltime, 2)
 
-    return jsonify({
+    result_dict = {
         "proxycurl": {
             "credits_available":         proxycurl["available"],
             "error":                     proxycurl["error"],
@@ -361,7 +368,10 @@ def get_spend():
             "estimated_cost_all_time":   total_cost_alltime,
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
-    }), 200
+    }
+    _spend_cache["data"] = result_dict
+    _spend_cache["expires"] = _time.time() + 300  # 5 minutes
+    return jsonify(result_dict), 200
 
 
 @bp.route("/users/<int:user_id>", methods=["DELETE"])

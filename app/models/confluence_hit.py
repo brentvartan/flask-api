@@ -25,10 +25,14 @@ class ConfluenceHit(db.Model):
                               default=lambda: datetime.now(timezone.utc))
 
     def get_signal_types(self) -> list:
-        try:
-            return json.loads(self.signal_types or "[]")
-        except Exception:
+        import json
+        if not self.signal_types:
             return []
+        try:
+            val = json.loads(self.signal_types)
+            return val if isinstance(val, list) else [str(val)]
+        except Exception:
+            return [self.signal_types] if self.signal_types else []
 
     def to_dict(self):
         return {
