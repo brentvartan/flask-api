@@ -117,6 +117,19 @@ def record_signal_and_check_confluence(
         brand_name, signal_count, all_types, bullish_score,
     )
 
+    # Trigger re-score if brand is on watchlist
+    try:
+        from flask import current_app
+        from .watchlist import trigger_rescore_if_watchlisted
+        trigger_rescore_if_watchlisted(
+            current_app._get_current_object().app_context(),
+            brand_name=brand_name,
+            new_signal_type=signal_type,
+            owner_id=owner_id,
+        )
+    except Exception as exc:
+        logger.warning("Rescore trigger failed: %s", exc)
+
     return {
         "is_confluence": True,
         "signal_count":  signal_count,

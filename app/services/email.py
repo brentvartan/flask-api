@@ -684,6 +684,159 @@ def send_founder_alert(
     })
 
 
+def send_founder_news_alert(to_email, founder_name, company, bullish_score, new_articles, linkedin_url=""):
+    """Send a founder news alert when new press coverage is found."""
+    if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
+        return
+    from_address = _resend_client()
+    from_with_name = f"Bullish <{from_address}>"
+    app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
+
+    count = len(new_articles)
+    article_html = ""
+    for a in new_articles:
+        article_html += f"""
+        <div style="border-left:3px solid #052EF0;padding:10px 14px;margin:10px 0;background:#fff;">
+          <a href="{a['link']}" style="font-size:13px;font-weight:bold;color:#052EF0;text-decoration:none;">{a['title']}</a>
+          <div style="font-size:11px;color:#999;margin:3px 0;">{a.get('source','')} · {a.get('date','')}</div>
+          <div style="font-size:12px;color:#555;margin-top:4px;">{a.get('snippet','')}</div>
+        </div>
+        """
+
+    score_html = f"""<div style="background:#052EF0;color:#fff;border-radius:6px;padding:6px 14px;
+                       font-family:monospace;font-weight:bold;font-size:18px;display:inline-block;margin-bottom:8px;">
+                       {bullish_score}</div>""" if bullish_score else ""
+
+    linkedin_html = (f'<a href="{linkedin_url}" style="color:#052EF0;font-size:12px;text-decoration:none;">'
+                     f'View LinkedIn &rarr;</a>') if linkedin_url else ""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
+    <div style="padding:32px 40px 24px;border-bottom:1px solid #222;">
+      {_LOGO_LOCKUP}
+      <h1 style="margin:0;color:#fff;font-family:monospace;font-size:22px;font-weight:bold;letter-spacing:2px;">
+        FOUNDER UPDATE
+      </h1>
+      <p style="margin:8px 0 0;color:#888;font-size:13px;">
+        New press coverage detected for {founder_name} &middot; {company}
+      </p>
+    </div>
+    <div style="padding:24px 40px;">
+      {score_html}
+      <div style="font-family:monospace;font-weight:bold;font-size:18px;letter-spacing:2px;
+                  text-transform:uppercase;color:#fff;margin-bottom:4px;">{company}</div>
+      <div style="font-size:13px;color:#888;margin-bottom:4px;">{founder_name}</div>
+      {linkedin_html}
+      <div style="margin-top:20px;">
+        <div style="font-size:10px;font-weight:bold;letter-spacing:2px;color:#666;
+                    text-transform:uppercase;margin-bottom:8px;">
+          {count} NEW ARTICLE{'S' if count != 1 else ''}
+        </div>
+        {article_html}
+      </div>
+    </div>
+    <div style="padding:16px 40px 32px;">
+      <a href="{app_url}" style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
+         padding:12px 24px;border-radius:6px;font-family:monospace;font-weight:bold;
+         font-size:12px;letter-spacing:1px;text-transform:uppercase;">
+        Open Watchlist &rarr;
+      </a>
+    </div>
+    <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
+      <p style="margin:0;color:#555;font-size:11px;">
+        Bullish Brand Fund III &middot; Stealth Startup Finder &middot; Founder Intelligence
+      </p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    plain = f"Founder Update: {founder_name} ({company})\n\n{count} new article(s):\n\n"
+    for a in new_articles:
+        plain += f"- {a['title']}\n  {a['link']}\n  {a.get('snippet','')}\n\n"
+    plain += f"View Watchlist: {app_url}\n"
+
+    resend.Emails.send({
+        "from":    from_with_name,
+        "to":      [to_email],
+        "subject": f"Founder Update: {founder_name} · {company} — {count} new article{'s' if count != 1 else ''} · Stealth Startup Finder",
+        "html":    html,
+        "text":    plain,
+    })
+
+
+def send_rescore_alert(to_email, brand_name, old_score, new_score, new_signal_type, signal_types, thesis=""):
+    """Alert when a watchlisted brand's score jumps >=5 points due to a new signal."""
+    if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
+        return
+    from_address = _resend_client()
+    app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
+    delta = new_score - old_score
+    signal_chips = "".join(
+        f'<span style="background:#1a1a1a;color:#888;font-size:10px;padding:3px 8px;border-radius:3px;'
+        f'margin-right:4px;text-transform:uppercase;letter-spacing:1px;">{s}</span>'
+        for s in signal_types
+    )
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
+    <div style="padding:32px 40px 24px;border-bottom:1px solid #222;">
+      {_LOGO_LOCKUP}
+      <h1 style="margin:0;color:#052EF0;font-family:monospace;font-size:22px;font-weight:bold;letter-spacing:2px;">
+        SCORE JUMP
+      </h1>
+      <p style="margin:8px 0 0;color:#888;font-size:13px;">
+        A watchlisted brand just got stronger
+      </p>
+    </div>
+    <div style="padding:24px 40px;">
+      <div style="font-family:monospace;font-weight:bold;font-size:20px;letter-spacing:2px;
+                  text-transform:uppercase;color:#fff;margin-bottom:12px;">{brand_name}</div>
+      <table cellpadding="0" cellspacing="0" border="0" style="margin-bottom:16px;">
+        <tr>
+          <td style="background:#333;color:#888;border-radius:6px;padding:8px 14px;
+                     font-family:monospace;font-weight:bold;font-size:20px;text-align:center;">
+            {old_score}
+          </td>
+          <td style="padding:0 12px;color:#052EF0;font-size:20px;font-weight:bold;">&rarr;</td>
+          <td style="background:#052EF0;color:#fff;border-radius:6px;padding:8px 14px;
+                     font-family:monospace;font-weight:bold;font-size:20px;text-align:center;">
+            {new_score}
+          </td>
+          <td style="padding-left:12px;color:#16a34a;font-size:13px;font-weight:bold;">
+            +{delta} pts
+          </td>
+        </tr>
+      </table>
+      <div style="margin-bottom:12px;">{signal_chips}</div>
+      <p style="font-size:11px;color:#666;margin-bottom:4px;">NEW SIGNAL: <span style="color:#fff;">{new_signal_type.upper()}</span></p>
+      {f'<p style="font-style:italic;color:#888;font-size:13px;border-left:3px solid #052EF0;padding-left:12px;margin-top:12px;">{thesis}</p>' if thesis else ''}
+    </div>
+    <div style="padding:0 40px 32px;">
+      <a href="{app_url}" style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
+         padding:12px 24px;border-radius:6px;font-family:monospace;font-weight:bold;
+         font-size:12px;letter-spacing:1px;text-transform:uppercase;">
+        View Watchlist &rarr;
+      </a>
+    </div>
+    <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
+      <p style="margin:0;color:#555;font-size:11px;">Bullish Brand Fund III &middot; Stealth Startup Finder</p>
+    </div>
+  </div>
+</body>
+</html>"""
+    plain = f"Score Jump: {brand_name}\n{old_score} -> {new_score} (+{delta} pts)\nNew signal: {new_signal_type}\n\n{thesis}\n\nView Watchlist: {app_url}\n"
+    resend.Emails.send({
+        "from": f"Bullish <{_resend_client()}>",
+        "to": [to_email],
+        "subject": f"{brand_name} +{delta}pts ({old_score}->{new_score}) · New {new_signal_type} signal · Stealth Startup Finder",
+        "html": html, "text": plain,
+    })
+
+
 def send_password_reset_email(to_email: str, reset_url: str) -> None:
     """Send a password-reset email via Resend.
 

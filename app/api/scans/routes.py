@@ -125,6 +125,35 @@ def _enrich_items_in_background(app, item_ids: list):
                             alert_emails=alert_emails,
                         )
 
+                    # Auto-add HOT brands to watchlist
+                    if enrichment.get("watch_level") == "hot":
+                        try:
+                            from ...services.watchlist import auto_add_to_watchlist
+                            _brand_name = meta.get("company_name", item.title)
+                            _founder = enrichment.get("founder", {})
+                            _sig_type = meta.get("signal_type", "trademark")
+                            _sig_types = [_sig_type] if isinstance(_sig_type, str) else [_sig_type]
+                            _user_id = item.owner_id
+                            threading.Thread(
+                                target=auto_add_to_watchlist,
+                                args=(
+                                    app.app_context(),
+                                    _user_id,
+                                    _brand_name,
+                                    item_id,
+                                    enrichment.get("bullish_score"),
+                                    _founder.get("name") if _founder.get("confidence") != "unknown" else None,
+                                    (enrichment.get("founder_score") or {}).get("total"),
+                                    _founder.get("linkedin_url"),
+                                    enrichment.get("one_line_thesis", ""),
+                                    enrichment.get("cultural_theme", ""),
+                                    _sig_types,
+                                ),
+                                daemon=True,
+                            ).start()
+                        except Exception as _wl_exc:
+                            logger.warning("Auto-watchlist trigger failed for item %s: %s", item_id, _wl_exc)
+
             except Exception as exc:
                 logger.warning("Background enrichment failed for item %s: %s", item_id, exc)
 

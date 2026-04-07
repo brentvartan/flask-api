@@ -8,8 +8,10 @@ import os
 import json
 import hashlib
 import logging
+import threading
 
 from datetime import datetime, timezone, timedelta
+from flask import current_app
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +236,38 @@ def run_scan_now(scan, user_id: int) -> dict:
     except Exception as exc:
         logger.warning("Confluence detection block failed: %s", exc)
 
+    # ── 5b. Auto-add HOT brands to watchlist ─────────────────────────────────
+    try:
+        from ..services.watchlist import auto_add_to_watchlist
+        for brand in hot_brands:
+            item = db.session.get(Item, brand["item_id"])
+            if not item:
+                continue
+            meta = json.loads(item.description or "{}")
+            enrichment = meta.get("enrichment", {})
+            founder = enrichment.get("founder", {})
+            _sig_type = meta.get("signal_type", "trademark")
+            _sig_types = [_sig_type] if isinstance(_sig_type, str) else [_sig_type]
+            threading.Thread(
+                target=auto_add_to_watchlist,
+                args=(
+                    current_app._get_current_object().app_context(),
+                    user_id,
+                    brand["name"],
+                    brand["item_id"],
+                    brand["score"],
+                    founder.get("name") if founder.get("confidence") != "unknown" else None,
+                    founder.get("founder_score"),
+                    founder.get("linkedin_url"),
+                    brand["thesis"],
+                    brand["theme"],
+                    _sig_types,
+                ),
+                daemon=True,
+            ).start()
+    except Exception as exc:
+        logger.warning("Auto-watchlist trigger failed: %s", exc)
+
     # ── 6. Send HOT alert email + Slack ──────────────────────────────────────
     from ..services.slack import send_slack_hot_alert
 
@@ -420,6 +454,114 @@ def _send_weekly_digest(app):
                 logger.warning("Weekly digest email failed to %s: %s", addr, exc)
 
 
+def _check_founder_news(app):
+    """
+    Weekly job: for every watchlist entry with a founder name,
+    run a SerpAPI news search and email alerts on new results.
+    """
+    import os, json, requests
+    from ..models.item import Item
+    from ..services.email import send_founder_news_alert
+    from ..extensions import db
+    from datetime import datetime, timezone, timedelta
+
+    serpapi_key = os.environ.get("SERPAPI_API_KEY", "")
+    if not serpapi_key:
+        return
+
+    with app.app_context():
+        # Load all watchlist items with a founder name
+        rows = Item.query.filter(
+            Item.description.contains('"_type"')
+        ).all()
+
+        watchlist_items = []
+        for row in rows:
+            try:
+                meta = json.loads(row.description or '{}')
+                if meta.get('_type') == 'watchlist' and meta.get('name'):
+                    watchlist_items.append((row, meta))
+            except Exception:
+                pass
+
+        if not watchlist_items:
+            return
+
+        alert_emails = os.environ.get("ALERT_EMAILS", "").strip()
+        try:
+            settings = Item.query.filter_by(title="__bullish_settings__").first()
+            if settings:
+                s = json.loads(settings.description or '{}')
+                if s.get('alert_emails'):
+                    alert_emails = ",".join(s['alert_emails'])
+        except Exception:
+            pass
+
+        for row, meta in watchlist_items:
+            founder_name = meta.get('name', '').strip()
+            company = meta.get('company', '').strip()
+            if not founder_name or not company:
+                continue
+
+            try:
+                # SerpAPI news search
+                params = {
+                    "engine": "google",
+                    "q": f'"{founder_name}" "{company}"',
+                    "tbm": "nws",
+                    "num": 5,
+                    "api_key": serpapi_key,
+                }
+                resp = requests.get("https://serpapi.com/search", params=params, timeout=10)
+                if resp.status_code != 200:
+                    continue
+
+                data = resp.json()
+                new_articles = []
+
+                for result in data.get('news_results', []):
+                    title = result.get('title', '')
+                    link  = result.get('link', '')
+                    snippet = result.get('snippet', '')
+                    date_str = result.get('date', '')
+
+                    # Check if this link was in previous results
+                    prev_links = {r.get('link') for r in meta.get('news_results', [])}
+                    if link not in prev_links:
+                        new_articles.append({
+                            'title': title,
+                            'link': link,
+                            'snippet': snippet,
+                            'date': date_str,
+                            'source': result.get('source', ''),
+                        })
+
+                # Update stored results (keep last 10)
+                all_results = new_articles + (meta.get('news_results') or [])
+                meta['news_results'] = all_results[:10]
+                meta['last_news_check'] = datetime.now(timezone.utc).isoformat()
+                row.description = json.dumps(meta)
+                db.session.commit()
+
+                # Send alert if new articles found
+                if new_articles and alert_emails:
+                    for addr in [e.strip() for e in alert_emails.split(',') if e.strip()]:
+                        try:
+                            send_founder_news_alert(
+                                addr,
+                                founder_name=founder_name,
+                                company=company,
+                                bullish_score=meta.get('bullish_score'),
+                                new_articles=new_articles,
+                                linkedin_url=meta.get('linkedin', ''),
+                            )
+                        except Exception as exc:
+                            logger.warning("Founder news alert failed to %s: %s", addr, exc)
+
+            except Exception as exc:
+                logger.warning("Founder news check failed for %s / %s: %s", founder_name, company, exc)
+
+
 def start_scheduler(app):
     """Start the APScheduler background scheduler (once per process)."""
     global _scheduler
@@ -447,7 +589,15 @@ def start_scheduler(app):
             replace_existing=True,
             misfire_grace_time=3600,
         )
+        _scheduler.add_job(
+            _check_founder_news,
+            trigger=CronTrigger(day_of_week="wed", hour=8, minute=0, timezone="UTC"),
+            args=[app],
+            id="founder_news_monitor",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
         _scheduler.start()
-        logger.info("Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC")
+        logger.info("Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC, founder news Wed 08:00 UTC")
     except Exception as exc:
         logger.warning("Scheduler could not start: %s", exc)
