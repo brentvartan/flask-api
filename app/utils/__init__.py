@@ -1,11 +1,11 @@
 from functools import wraps
 from flask import jsonify
 from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
-from ..extensions import db
-from ..models.user import User
 
 
 def db_get_user():
+    from ..extensions import db
+    from ..models.user import User
     user_id = int(get_jwt_identity())
     return db.session.get(User, user_id)
 
