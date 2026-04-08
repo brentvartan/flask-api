@@ -166,7 +166,7 @@ Respond ONLY with a valid JSON object (no markdown, no explanation outside the J
   "consumer_brand_reason": "<one concise sentence>",
   "repeat_potential": "<high|medium|low>",
   "repeat_reason": "<what drives repeat: consumable, subscription, habit, identity, multi-SKU>",
-  "cultural_theme": "<specific 2026 Bullish theme this fits, or null if none>",
+  "cultural_theme": "<the Bullish macro theme this fits (e.g. 'Women's Health Renaissance / GenAlpha Beauty'), or null if none — do NOT include a year prefix>",
   "advocacy_deficiency": "<brief: is there category whitespace? Are incumbents weak or generic?>",
   "remarkability_drivers": ["<which of the 7 Remarkability factors could be strong based on category and positioning>"],
   "one_line_thesis": "<if score >= 50: the Bullish investment thesis in one sentence; if score < 50: why this is a pass>",

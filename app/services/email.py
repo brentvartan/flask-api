@@ -25,7 +25,7 @@ _LOGO_LOCKUP = """<!-- Logo lockup — table-based for email client compatibilit
       <span style="font-family:Arial Black,Arial,sans-serif;font-size:15px;font-weight:900;color:#fff;line-height:1;">B</span>
     </td>
     <td style="padding-left:10px;vertical-align:middle;">
-      <span style="font-family:Arial,sans-serif;font-size:11px;font-weight:800;letter-spacing:0.15em;color:#fff;text-transform:uppercase;">STEALTH STARTUP FINDER</span>
+      <span style="font-family:Arial,sans-serif;font-size:11px;font-weight:800;letter-spacing:0.15em;color:#fff;text-transform:uppercase;">STEALTH FINDER</span>
     </td>
   </tr>
 </table>"""
@@ -41,7 +41,7 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
     app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
 
     count = len(hot_brands)
-    subject = f"🔵 {count} HOT Signal{'s' if count != 1 else ''} — Stealth Startup Finder"
+    subject = f"🔵 {count} HOT Signal{'s' if count != 1 else ''} — Stealth Finder"
 
     brand_cards = ""
     for b in hot_brands:
@@ -93,14 +93,14 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
              style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
                     padding:14px 28px;border-radius:6px;font-family:monospace;font-weight:bold;
                     font-size:13px;letter-spacing:1px;text-transform:uppercase;">
-            View in Stealth Startup Finder →
+            View in Stealth Finder →
           </a>
         </div>
 
         <!-- Footer -->
         <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
           <p style="margin:0;color:#555;font-size:11px;">
-            Bullish Brand Fund III · Stealth Startup Finder · Automated Signal Detection
+            Bullish Brand Fund III · Stealth Finder · Automated Signal Detection
           </p>
         </div>
       </div>
@@ -108,7 +108,7 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
     </html>
     """
 
-    plain_text = f"Bullish Stealth Startup Finder — {count} HOT Signal{'s' if count != 1 else ''}\n\n"
+    plain_text = f"Bullish Stealth Finder — {count} HOT Signal{'s' if count != 1 else ''}\n\n"
     for b in hot_brands:
         plain_text += f"  {b.get('score', '—')}  {b.get('name', '').upper()}\n"
         if b.get('thesis'):
@@ -116,7 +116,7 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
         if b.get('theme'):
             plain_text += f"  Theme: {_strip_year(b['theme'])}\n"
         plain_text += "\n"
-    plain_text += f"View in Stealth Startup Finder: {app_url}\n"
+    plain_text += f"View in Stealth Finder: {app_url}\n"
 
     resend.Emails.send({
         "from":    from_with_name,
@@ -141,7 +141,7 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Your access to Bullish Stealth Startup Finder</title>
+  <title>Your access to Bullish Stealth Finder</title>
 </head>
 <body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
   <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
@@ -150,7 +150,7 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
     <div style="padding:36px 40px 28px;border-bottom:1px solid #222;text-align:center;">
       <div style="font-family:Georgia,serif;font-style:italic;color:#fff;font-size:22px;
                   letter-spacing:2px;line-height:1.3;margin-bottom:6px;">
-        Bullish Stealth Startup Finder
+        Bullish Stealth Finder
       </div>
       <div style="font-family:monospace;font-size:10px;color:#555;letter-spacing:3px;
                   text-transform:uppercase;">
@@ -165,14 +165,14 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
         ACCESS GRANTED
       </h1>
       <p style="margin:0;color:#888;font-size:14px;">
-        {invited_by} has added you to the Bullish Stealth Startup Finder team.
+        {invited_by} has added you to the Bullish Stealth Finder team.
       </p>
     </div>
 
     <!-- Body -->
     <div style="padding:24px 40px 32px;">
       <p style="color:#ccc;font-size:14px;line-height:1.7;margin:0 0 24px;">
-        Stealth Startup Finder tracks early-stage consumer brand signals — trademark filings,
+        Stealth Finder tracks early-stage consumer brand signals — trademark filings,
         EDGAR incorporations, and domain registrations — enriched with Bullish AI
         to surface the next Bubble, Hu, or Nom Nom before anyone else.
       </p>
@@ -190,18 +190,18 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
     <!-- Footer -->
     <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
       <p style="margin:0;color:#444;font-size:11px;">
-        Bullish Brand Fund III &middot; Stealth Startup Finder
+        Bullish Brand Fund III &middot; Stealth Finder
       </p>
     </div>
   </div>
 </body>
 </html>"""
 
-    plain_text = f"""Bullish Stealth Startup Finder — Team Access
+    plain_text = f"""Bullish Stealth Finder — Team Access
 
-{invited_by} has added you to the Bullish Stealth Startup Finder team.
+{invited_by} has added you to the Bullish Stealth Finder team.
 
-Stealth Startup Finder tracks early-stage consumer brand signals — trademark filings, EDGAR incorporations, and domain registrations — enriched with Bullish AI to surface the next Bubble, Hu, or Nom Nom before anyone else.
+Stealth Finder tracks early-stage consumer brand signals — trademark filings, EDGAR incorporations, and domain registrations — enriched with Bullish AI to surface the next Bubble, Hu, or Nom Nom before anyone else.
 
 Create your account here:
 {invite_url}
@@ -209,14 +209,14 @@ Create your account here:
 This link expires in 7 days. If you were not expecting this, you can safely ignore it.
 
 —
-Bullish Brand Fund III · Stealth Startup Finder
+Bullish Brand Fund III · Stealth Finder
 """
 
     resend.Emails.send({
         "from":    from_with_name,
         "to":      [to_email],
         "reply_to": reply_to,
-        "subject": "Your access to Bullish Stealth Startup Finder",
+        "subject": "Your access to Bullish Stealth Finder",
         "html":    html,
         "text":    plain_text,
         "headers": {
@@ -293,7 +293,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
             WEEK OF {week_label.upper()}
           </h1>
           <p style="margin:6px 0 0;color:#888;font-size:13px;">
-            {total} HOT/WARM signal{'' if total == 1 else 's'} this week · Stealth Startup Finder
+            {total} HOT/WARM signal{'' if total == 1 else 's'} this week · Stealth Finder
           </p>
         </div>
         <div style="padding:20px 36px;">
@@ -304,12 +304,12 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
              style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
                     padding:12px 24px;border-radius:6px;font-family:monospace;font-weight:bold;
                     font-size:12px;letter-spacing:1px;text-transform:uppercase;">
-            View in Stealth Startup Finder →
+            View in Stealth Finder →
           </a>
         </div>
         <div style="padding:14px 36px;border-top:1px solid #222;text-align:center;">
           <p style="margin:0;color:#555;font-size:10px;">
-            Bullish Brand Fund III · Stealth Startup Finder · Weekly Signal Digest
+            Bullish Brand Fund III · Stealth Finder · Weekly Signal Digest
           </p>
         </div>
       </div>
@@ -317,7 +317,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
     </html>
     """
 
-    digest_plain = f"Stealth Startup Finder Weekly — {week_label}\n\n"
+    digest_plain = f"Stealth Finder Weekly — {week_label}\n\n"
     if hot_signals:
         digest_plain += "HOT\n"
         for b in hot_signals:
@@ -326,12 +326,12 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
         digest_plain += "\nWARM\n"
         for b in warm_signals:
             digest_plain += f"  {b.get('score','—')}  {b.get('name','').upper()}\n"
-    digest_plain += f"\nView in Stealth Startup Finder: {app_url}\n"
+    digest_plain += f"\nView in Stealth Finder: {app_url}\n"
 
     resend.Emails.send({
         "from":    from_with_name,
         "to":      [to_email],
-        "subject": f"Stealth Startup Finder Weekly — {len(hot_signals)} HOT, {len(warm_signals)} WARM · {week_label}",
+        "subject": f"Stealth Finder Weekly — {len(hot_signals)} HOT, {len(warm_signals)} WARM · {week_label}",
         "html":    html,
         "text":    digest_plain,
     })
@@ -466,14 +466,14 @@ def send_confluence_alert(
                     text-decoration:none;padding:12px 24px;border-radius:6px;
                     font-family:monospace;font-weight:bold;font-size:12px;
                     letter-spacing:1px;text-transform:uppercase;">
-            Open in Stealth Startup Finder →
+            Open in Stealth Finder →
           </a>
         </div>
 
         <!-- Footer -->
         <div style="padding:14px 36px;border-top:1px solid #222;text-align:center;">
           <p style="margin:0;color:#555;font-size:10px;">
-            Bullish Brand Fund III · Stealth Startup Finder · Confluence Detection
+            Bullish Brand Fund III · Stealth Finder · Confluence Detection
           </p>
         </div>
       </div>
@@ -484,7 +484,7 @@ def send_confluence_alert(
     resend.Emails.send({
         "from":    from_address,
         "to":      [to_email],
-        "subject": f"⚡ {brand_name} — {signal_count} signals in {span_days}d · Stealth Startup Finder",
+        "subject": f"⚡ {brand_name} — {signal_count} signals in {span_days}d · Stealth Finder",
         "html":    html,
     })
 
@@ -655,7 +655,7 @@ def send_founder_alert(
         <!-- Footer -->
         <div style="padding:14px 36px;border-top:1px solid #222;text-align:center;">
           <p style="margin:0;color:#555;font-size:10px;">
-            Bullish Brand Fund III · Stealth Startup Finder · Founder Intelligence
+            Bullish Brand Fund III · Stealth Finder · Founder Intelligence
           </p>
         </div>
       </div>
@@ -664,7 +664,7 @@ def send_founder_alert(
     """
 
     plain_text = (
-        f"Bullish Stealth Startup Finder — Founder Signal\n\n"
+        f"Bullish Stealth Finder — Founder Signal\n\n"
         f"Brand: {brand_name} ({level_label})\n"
         f"Founder: {founder_name}\n"
         f"Founder Score: {founder_score} ({tier_label})\n"
@@ -673,12 +673,12 @@ def send_founder_alert(
         plain_text += f"Brand Score: {brand_score}\n"
     if linkedin_url:
         plain_text += f"LinkedIn: {linkedin_url}\n"
-    plain_text += f"\nView in Stealth Startup Finder: {app_url}\n"
+    plain_text += f"\nView in Stealth Finder: {app_url}\n"
 
     resend.Emails.send({
         "from":    from_address,
         "to":      [to_email],
-        "subject": f"🔵 {founder_name} · {brand_name} Founder — Score {founder_score} · Stealth Startup Finder",
+        "subject": f"🔵 {founder_name} · {brand_name} Founder — Score {founder_score} · Stealth Finder",
         "html":    html,
         "text":    plain_text,
     })
@@ -746,7 +746,7 @@ def send_founder_news_alert(to_email, founder_name, company, bullish_score, new_
     </div>
     <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
       <p style="margin:0;color:#555;font-size:11px;">
-        Bullish Brand Fund III &middot; Stealth Startup Finder &middot; Founder Intelligence
+        Bullish Brand Fund III &middot; Stealth Finder &middot; Founder Intelligence
       </p>
     </div>
   </div>
@@ -761,7 +761,7 @@ def send_founder_news_alert(to_email, founder_name, company, bullish_score, new_
     resend.Emails.send({
         "from":    from_with_name,
         "to":      [to_email],
-        "subject": f"Founder Update: {founder_name} · {company} — {count} new article{'s' if count != 1 else ''} · Stealth Startup Finder",
+        "subject": f"Founder Update: {founder_name} · {company} — {count} new article{'s' if count != 1 else ''} · Stealth Finder",
         "html":    html,
         "text":    plain,
     })
@@ -823,7 +823,7 @@ def send_rescore_alert(to_email, brand_name, old_score, new_score, new_signal_ty
       </a>
     </div>
     <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
-      <p style="margin:0;color:#555;font-size:11px;">Bullish Brand Fund III &middot; Stealth Startup Finder</p>
+      <p style="margin:0;color:#555;font-size:11px;">Bullish Brand Fund III &middot; Stealth Finder</p>
     </div>
   </div>
 </body>
@@ -832,7 +832,7 @@ def send_rescore_alert(to_email, brand_name, old_score, new_score, new_signal_ty
     resend.Emails.send({
         "from": f"Bullish <{_resend_client()}>",
         "to": [to_email],
-        "subject": f"{brand_name} +{delta}pts ({old_score}->{new_score}) · New {new_signal_type} signal · Stealth Startup Finder",
+        "subject": f"{brand_name} +{delta}pts ({old_score}->{new_score}) · New {new_signal_type} signal · Stealth Finder",
         "html": html, "text": plain,
     })
 
@@ -862,7 +862,7 @@ def send_password_reset_email(to_email: str, reset_url: str) -> None:
     <div style="padding:32px 40px 24px;border-bottom:1px solid #222;text-align:center;">
       <div style="font-family:Georgia,serif;font-style:italic;color:#fff;font-size:20px;
                   letter-spacing:2px;">
-        Bullish Stealth Startup Finder
+        Bullish Stealth Finder
       </div>
     </div>
     <div style="padding:32px 40px;">
@@ -887,14 +887,14 @@ def send_password_reset_email(to_email: str, reset_url: str) -> None:
     </div>
     <div style="padding:16px 40px;border-top:1px solid #222;text-align:center;">
       <p style="margin:0;color:#444;font-size:11px;">
-        Bullish Brand Fund III &middot; Stealth Startup Finder
+        Bullish Brand Fund III &middot; Stealth Finder
       </p>
     </div>
   </div>
 </body>
 </html>"""
 
-    plain_text = f"""Bullish Stealth Startup Finder — Password Reset
+    plain_text = f"""Bullish Stealth Finder — Password Reset
 
 We received a request to reset the password for your account.
 
@@ -904,14 +904,14 @@ Reset your password here:
 This link expires in 1 hour. If you did not request a password reset, you can safely ignore this email.
 
 —
-Bullish Brand Fund III · Stealth Startup Finder
+Bullish Brand Fund III · Stealth Finder
 """
 
     resend.Emails.send({
         "from":     from_with_name,
         "to":       [to_email],
         "reply_to": reply_to,
-        "subject":  "Reset your Bullish Stealth Startup Finder password",
+        "subject":  "Reset your Bullish Stealth Finder password",
         "html":     html,
         "text":     plain_text,
         "headers": {
