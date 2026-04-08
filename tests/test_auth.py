@@ -5,21 +5,28 @@ from app.services.tokens import generate_reset_token
 class TestRegister:
     def test_register_success(self, client, db):
         resp = client.post("/api/auth/register", json={
-            "email": "new@test.com",
+            "email": "new@bullish.co",
             "password": "password123",
             "first_name": "New",
             "last_name": "User",
         })
         assert resp.status_code == 201
         data = resp.get_json()
-        assert data["user"]["email"] == "new@test.com"
+        assert data["user"]["email"] == "new@bullish.co"
         assert data["user"]["role"] == "user"
         assert "access_token" in data
         assert "refresh_token" in data
 
-    def test_register_duplicate_email(self, client, regular_user):
+    def test_register_duplicate_email(self, client, db):
+        # Pre-create a bullish.co user via the register route, then try again
+        client.post("/api/auth/register", json={
+            "email": "dupe@bullish.co",
+            "password": "password123",
+            "first_name": "First",
+            "last_name": "User",
+        })
         resp = client.post("/api/auth/register", json={
-            "email": "user@test.com",
+            "email": "dupe@bullish.co",
             "password": "password123",
             "first_name": "Dupe",
             "last_name": "User",
