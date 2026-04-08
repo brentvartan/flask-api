@@ -14,6 +14,9 @@ _DEFAULT_SCAN = {
     "frequency":   "daily",
 }
 
+_VALID_SCAN_TYPES = ('full', 'trademark', 'delaware', 'producthunt', 'app_store')
+_VALID_FREQUENCIES = ('daily', 'weekly')
+
 
 @bp.route("/", methods=["GET"])
 @jwt_required()
@@ -44,13 +47,12 @@ def create_scan():
     user_id = int(get_jwt_identity())
     data = request.get_json(silent=True) or {}
 
-    _VALID_SCAN_TYPES = ('full', 'trademark', 'delaware', 'producthunt')
     scan = ScheduledScan(
         owner_id=user_id,
         name=data.get("name", "New Scan"),
         days_back=max(1, min(int(data.get("days_back", 7)), 90)),
         max_results=max(10, min(int(data.get("max_results", 200)), 500)),
-        frequency=data.get("frequency", "daily") if data.get("frequency") in ("daily", "weekly") else "daily",
+        frequency=data.get("frequency", "daily") if data.get("frequency") in _VALID_FREQUENCIES else "daily",
         enabled=bool(data.get("enabled", True)),
         scan_type=data.get("scan_type", "full") if data.get("scan_type") in _VALID_SCAN_TYPES else "full",
     )
@@ -67,19 +69,12 @@ def update_scan(scan_id):
     scan = ScheduledScan.query.filter_by(id=scan_id, owner_id=user_id).first_or_404()
 
     data = request.get_json(silent=True) or {}
-    if "name" in data:
-        scan.name = data["name"]
-    if "days_back" in data:
-        scan.days_back = max(1, min(int(data["days_back"]), 90))
-    if "max_results" in data:
-        scan.max_results = max(10, min(int(data["max_results"]), 500))
-    if "frequency" in data and data["frequency"] in ("daily", "weekly"):
-        scan.frequency = data["frequency"]
-    if "enabled" in data:
-        scan.enabled = bool(data["enabled"])
-    _VALID_SCAN_TYPES = ('full', 'trademark', 'delaware', 'producthunt')
-    if "scan_type" in data and data["scan_type"] in _VALID_SCAN_TYPES:
-        scan.scan_type = data["scan_type"]
+    if "name"       in data: scan.name      = data["name"]
+    if "days_back"  in data: scan.days_back  = max(1,  min(int(data["days_back"]),  90))
+    if "max_results" in data: scan.max_results = max(10, min(int(data["max_results"]), 500))
+    if "enabled"    in data: scan.enabled   = bool(data["enabled"])
+    if "frequency"  in data and data["frequency"]  in _VALID_FREQUENCIES:  scan.frequency  = data["frequency"]
+    if "scan_type"  in data and data["scan_type"]   in _VALID_SCAN_TYPES:   scan.scan_type  = data["scan_type"]
 
     db.session.commit()
     return jsonify(scan.to_dict()), 200

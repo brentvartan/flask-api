@@ -22,6 +22,7 @@ class Item(db.Model):
             "id": self.id,
             "title": self.title,
             "description": self.description,
+            "item_type": self.item_type,
             "owner_id": self.owner_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
