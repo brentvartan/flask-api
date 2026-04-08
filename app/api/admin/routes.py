@@ -16,8 +16,6 @@ from ...extensions import db
 from ...models.user import User
 from ...models.item import Item
 from ...schemas import AdminUserUpdateSchema, AdminForcePasswordSchema, PaginationSchema
-from ...services.tokens import generate_reset_token
-from ...services.email import send_password_reset_email
 from ...utils import admin_required
 
 logger = logging.getLogger(__name__)
@@ -416,6 +414,8 @@ def delete_user(user_id):
 @admin_required()
 def send_reset_link(user_id):
     """Send a password-reset link email to a user (admin only)."""
+    from ...services.tokens import generate_reset_token
+    from ...services.email import send_password_reset_email
     # Guard: can't reset your own password via admin panel
     current_user_id = int(get_jwt_identity())
     if user_id == current_user_id:

@@ -6,9 +6,6 @@ import re
 import threading
 from datetime import datetime, timezone
 
-from ..extensions import db
-from ..models.item import Item
-
 logger = logging.getLogger(__name__)
 
 _SETTINGS_TITLE = "__bullish_settings__"
@@ -20,6 +17,8 @@ def _strip_year(theme: str) -> str:
 
 
 def _get_watchlist_items(owner_id: int):
+    from ..extensions import db
+    from ..models.item import Item
     return Item.query.filter(
         Item.owner_id == owner_id,
         Item.item_type == 'watchlist',
@@ -55,6 +54,9 @@ def auto_add_to_watchlist(
     Add a HOT brand to the watchlist if not already present.
     Returns True if a new entry was created, False if already exists.
     """
+    from ..extensions import db
+    from ..models.item import Item
+
     with app_context:
         try:
             brand_key = brand_name.upper().strip()
@@ -117,6 +119,9 @@ def trigger_rescore_if_watchlisted(app_context, brand_name: str, new_signal_type
     Fires an alert if score jumps >=5 points.
     """
     def _run():
+        from ..extensions import db
+        from ..models.item import Item
+
         with app_context:
             try:
                 brand_key = brand_name.upper().strip()
@@ -181,6 +186,9 @@ def trigger_rescore_if_watchlisted(app_context, brand_name: str, new_signal_type
 
 def _send_rescore_alert(brand_name, old_score, new_score, new_signal_type, signal_types, enrichment):
     """Send rescore alert emails to configured recipients."""
+    from ..models.item import Item
+    from ..services.email import send_rescore_alert
+
     alert_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
     try:
         settings = Item.query.filter_by(title=_SETTINGS_TITLE).first()
@@ -191,7 +199,6 @@ def _send_rescore_alert(brand_name, old_score, new_score, new_signal_type, signa
     except Exception:
         pass
 
-    from ..services.email import send_rescore_alert
     for addr in [e.strip() for e in alert_emails_str.split(",") if e.strip()]:
         try:
             send_rescore_alert(
