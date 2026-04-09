@@ -34,7 +34,6 @@ def run_scan_now(scan, user_id: int) -> dict:
     from ..models.item import Item
     from ..services.trademarks import search_recent_trademarks
     from ..services.enrichment import enrich_signal
-    from ..services.email import send_hot_alert
     from ..extensions import db
 
     # ── 1. Fetch signals based on scan_type ───────────────────────────────────
@@ -288,24 +287,7 @@ def run_scan_now(scan, user_id: int) -> dict:
     except Exception as exc:
         logger.warning("Auto-watchlist trigger failed: %s", exc)
 
-    # ── 6. Send HOT alert email + Slack ──────────────────────────────────────
-    from ..services.slack import send_slack_hot_alert
-
-    # Read alert_emails from DB settings first, fall back to env var
-    alert_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
-    try:
-        from ..models.item import Item as _Item
-        _settings_item = _Item.query.filter_by(title="__bullish_settings__").first()
-        if _settings_item:
-            _settings = json.loads(_settings_item.description or "{}")
-            _emails_list = _settings.get("alert_emails", [])
-            if _emails_list:
-                alert_emails_str = ",".join(_emails_list)
-    except Exception:
-        pass
-
-    # ── Dedup: within this run, same brand may appear via trademark + Delaware ───
-    # Keep the highest-scored entry per brand name so one brand = one email card.
+    # ── 6. Dedup hot_brands (same brand from multiple sources in one run) ────────
     seen_keys: dict = {}
     deduped_hot: list = []
     for b in hot_brands:
@@ -314,24 +296,12 @@ def run_scan_now(scan, user_id: int) -> dict:
             seen_keys[key] = len(deduped_hot)
             deduped_hot.append(b)
         elif (b.get("score") or 0) > (deduped_hot[seen_keys[key]].get("score") or 0):
-            deduped_hot[seen_keys[key]] = b  # replace with higher-scored version
+            deduped_hot[seen_keys[key]] = b
     hot_brands = deduped_hot
 
+    # Per-scan alerts disabled — digest goes out on Mondays via weekly_digest job.
     alert_sent = False
-
-    if hot_brands and alert_emails_str:
-        for addr in [e.strip() for e in alert_emails_str.split(",") if e.strip()]:
-            try:
-                send_hot_alert(addr, hot_brands, scan.name)
-                alert_sent = True
-            except Exception as exc:
-                logger.warning("HOT alert email failed to %s: %s", addr, exc)
-
-    if hot_brands:
-        try:
-            send_slack_hot_alert(hot_brands, scan.name)
-        except Exception as exc:
-            logger.warning("Slack HOT alert failed: %s", exc)
+    alert_emails_str = ""
 
     # ── 7. Update scan record ─────────────────────────────────────────────────
     scan.last_run_at   = datetime.now(timezone.utc)
