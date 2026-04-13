@@ -288,14 +288,12 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
     <body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
       <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
         <div style="padding:28px 36px 20px;border-bottom:1px solid #222;">
-          <div style="font-family:monospace;font-size:10px;color:#666;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;">
-            Bullish Intelligence · Weekly Digest
-          </div>
-          <h1 style="margin:0;color:#fff;font-family:monospace;font-size:22px;font-weight:bold;letter-spacing:3px;">
+          {_LOGO_LOCKUP}
+          <h1 style="margin:12px 0 0;color:#fff;font-family:monospace;font-size:22px;font-weight:bold;letter-spacing:3px;">
             WEEK OF {week_label.upper()}
           </h1>
           <p style="margin:6px 0 0;color:#888;font-size:13px;">
-            {total} HOT/WARM signal{'' if total == 1 else 's'} this week · Stealth Startup Finder
+            {total} HOT/WARM signal{'' if total == 1 else 's'} this week
           </p>
         </div>
         <div style="padding:20px 36px;">
