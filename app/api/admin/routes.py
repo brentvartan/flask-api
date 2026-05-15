@@ -410,6 +410,62 @@ def delete_user(user_id):
     return jsonify({"message": f"User {user.email} deleted"}), 200
 
 
+@bp.route("/run-press-monitor", methods=["POST"])
+@admin_required()
+def run_press_monitor():
+    """Manually trigger the trade press cross-reference scan for all brands in DB."""
+    import threading
+    from ...services.scheduler import _run_press_monitor as _press_job
+    app = current_app._get_current_object()
+    threading.Thread(target=_press_job, args=(app,), daemon=True).start()
+    return jsonify({"message": "Press monitor started — check back in ~2 minutes"}), 202
+
+
+@bp.route("/check-all-domains", methods=["POST"])
+@admin_required()
+def check_all_domains():
+    """Queue domain status checks for all domain signals that haven't been checked yet."""
+    import threading
+    from ...services.scheduler import _check_domain_bg
+
+    app = current_app._get_current_object()
+
+    domain_items = (
+        Item.query
+        .filter(
+            Item.item_type == 'signal',
+            Item.description.contains('"signal_type":"domain"'),
+        )
+        .limit(300)
+        .all()
+    )
+
+    queued = 0
+    for item in domain_items:
+        try:
+            meta = json.loads(item.description or '{}')
+            if meta.get('signal_type') != 'domain':
+                continue
+            if meta.get('domain_status'):
+                continue  # already checked
+            url = meta.get('url')
+            if not url:
+                continue
+            threading.Thread(
+                target=_check_domain_bg,
+                args=(app, item.id, url),
+                daemon=True,
+            ).start()
+            queued += 1
+        except Exception as exc:
+            logger.warning("Domain check queue failed for item %s: %s", item.id, exc)
+
+    return jsonify({
+        "message": f"Domain check queued for {queued} signal{'s' if queued != 1 else ''} — results appear within ~1 minute",
+        "queued": queued,
+    }), 202
+
+
 @bp.route("/users/<int:user_id>/send-reset", methods=["POST"])
 @admin_required()
 def send_reset_link(user_id):
