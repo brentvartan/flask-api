@@ -243,6 +243,30 @@ def enrich_signal(signal: dict) -> dict:
     else:
         user_message += "\n"
 
+    # Signal-type-specific context — critical for newswire's 'just-out-of-stealth' moment
+    _SIGNAL_TYPE_CONTEXT = {
+        "newswire": (
+            "NEWSWIRE SIGNAL: This brand has just issued a public press release — "
+            "this is the critical 'just-out-of-stealth' moment. The brand has actively "
+            "chosen to announce itself publicly. This often indicates a seed round has "
+            "just closed or is imminent. Weight this heavily when scoring: if combined "
+            "with trademark or Delaware filings, treat as a very high-conviction 'just-before-VC' signal."
+        ),
+        "producthunt": (
+            "PRODUCT HUNT SIGNAL: This brand has publicly launched on Product Hunt — "
+            "it has a real product, a consumer audience, and is actively seeking traction. "
+            "DTC-ready with community validation signals."
+        ),
+        "app_store": (
+            "APP STORE SIGNAL: This brand has a live consumer app in the App Store — "
+            "it has shipped a real product with an active distribution channel."
+        ),
+    }
+    _sig_type = signal.get("signal_type", "trademark")
+    _type_context = _SIGNAL_TYPE_CONTEXT.get(_sig_type)
+    if _type_context:
+        user_message += f"{_type_context}\n\n"
+
     # Signal confluence — pass multi-signal context to boost scoring appropriately
     signal_count = signal.get("signal_count", 1)
     signal_types = signal.get("signal_types", [])
