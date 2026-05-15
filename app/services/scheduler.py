@@ -103,6 +103,23 @@ def run_scan_now(scan, user_id: int) -> dict:
             logger.warning("App Store import/scan failed: %s", exc)
             errors.append(f"AppStore: {exc}")
 
+    if scan_type in ('full', 'newswire'):
+        sources_ran.append('newswire')
+        try:
+            from ..services.newswire import search_recent_newswire
+            nw_result = search_recent_newswire(
+                days_back=scan.days_back,
+                max_results=scan.max_results,
+            )
+            if not nw_result.get("error"):
+                signals.extend(nw_result["signals"])
+            else:
+                logger.warning("Newswire scan error: %s", nw_result["error"])
+                errors.append(f"Newswire: {nw_result['error']}")
+        except Exception as exc:
+            logger.warning("Newswire import/scan failed: %s", exc)
+            errors.append(f"Newswire: {exc}")
+
     sources_ran_str = ",".join(sources_ran)
 
     if not signals:
