@@ -182,6 +182,22 @@ def run_scan_now(scan, user_id: int) -> dict:
     if new_saved > 0:
         db.session.commit()
 
+    # ── 3b. Background domain checks for newly saved domain signals ───────────
+    for item_id in new_item_ids:
+        item = db.session.get(Item, item_id)
+        if not item:
+            continue
+        try:
+            _meta = json.loads(item.description or '{}')
+            if _meta.get('signal_type') == 'domain' and _meta.get('url'):
+                threading.Thread(
+                    target=_check_domain_bg,
+                    args=(current_app._get_current_object(), item_id, _meta['url']),
+                    daemon=True,
+                ).start()
+        except Exception as exc:
+            logger.debug("Domain check launch failed for item %s: %s", item_id, exc)
+
     # ── 4. Enrich new signals with Bullish AI ─────────────────────────────────
     hot_brands = []
     hot_count  = 0
@@ -589,6 +605,86 @@ def _check_founder_news(app):
                 logger.warning("Founder news check failed for %s / %s: %s", founder_name, company, exc)
 
 
+def _check_domain_bg(app, item_id: int, url: str) -> None:
+    """Background thread — crawl a domain URL and persist status to item metadata."""
+    try:
+        from .domain_checker import check_domain_status
+        status = check_domain_status(url)
+    except Exception as exc:
+        logger.warning("Domain checker failed for item %s: %s", item_id, exc)
+        return
+
+    try:
+        from ..models.item import Item as _Item
+        from ..extensions import db as _db
+        with app.app_context():
+            item = _db.session.get(_Item, item_id)
+            if not item:
+                return
+            meta = json.loads(item.description or '{}')
+            meta['domain_status'] = status
+            item.description = json.dumps(meta, separators=(',', ':'))
+            _db.session.commit()
+            logger.info("Domain status for item %s: %s", item_id, status.get('status'))
+    except Exception as exc:
+        logger.warning("Domain status DB write failed for item %s: %s", item_id, exc)
+
+
+def _run_press_monitor(app):
+    """
+    Weekly job (Thu 08:00 UTC): scan ~20 consumer trade press RSS feeds and
+    cross-reference against every brand in the signal DB.
+    Appends new press mentions to each brand's item metadata without duplicates.
+    """
+    from ..models.item import Item
+    from ..extensions import db
+
+    with app.app_context():
+        items = Item.query.filter_by(item_type='signal').all()
+
+        brand_map: dict[str, object] = {}
+        for item in items:
+            try:
+                meta = json.loads(item.description or '{}')
+                name = (meta.get('company_name') or item.title or '').strip()
+                if len(name) >= 4:
+                    brand_map[name.upper()] = item
+            except Exception:
+                pass
+
+        if not brand_map:
+            logger.info("Press monitor: no brands in DB — skipping")
+            return
+
+        logger.info("Press monitor: checking %d brands", len(brand_map))
+
+        try:
+            from .press_monitor import scan_press_for_brands
+            mentions = scan_press_for_brands(list(brand_map.keys()))
+        except Exception as exc:
+            logger.warning("Press monitor scan failed: %s", exc)
+            return
+
+        updated = 0
+        for brand_key, articles in mentions.items():
+            item = brand_map.get(brand_key)
+            if not item or not articles:
+                continue
+            try:
+                meta = json.loads(item.description or '{}')
+                existing_urls = {a.get('url') for a in meta.get('press_mentions', [])}
+                new_only = [a for a in articles if a.get('url') not in existing_urls]
+                meta['press_mentions'] = (new_only + meta.get('press_mentions', []))[:20]
+                meta['press_checked_at'] = datetime.now(timezone.utc).isoformat()
+                item.description = json.dumps(meta, separators=(',', ':'))
+                updated += 1
+            except Exception as exc:
+                logger.warning("Press mention update failed for %s: %s", brand_key, exc)
+
+        db.session.commit()
+        logger.info("Press monitor: updated %d brands with new press mentions", updated)
+
+
 def start_scheduler(app):
     """Start the APScheduler background scheduler (once per process)."""
     global _scheduler
@@ -624,7 +720,18 @@ def start_scheduler(app):
             replace_existing=True,
             misfire_grace_time=3600,
         )
+        _scheduler.add_job(
+            _run_press_monitor,
+            trigger=CronTrigger(day_of_week="thu", hour=8, minute=0, timezone="UTC"),
+            args=[app],
+            id="press_monitor",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
         _scheduler.start()
-        logger.info("Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC, founder news Wed 08:00 UTC")
+        logger.info(
+            "Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC, "
+            "founder news Wed 08:00 UTC, press monitor Thu 08:00 UTC"
+        )
     except Exception as exc:
         logger.warning("Scheduler could not start: %s", exc)
