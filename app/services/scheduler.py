@@ -202,7 +202,26 @@ def run_scan_now(scan, user_id: int) -> dict:
                     # Trigger founder enrichment in background for HOT brands
                     try:
                         from ..services.founder_enrichment import run_founder_enrichment_in_background
-                        run_founder_enrichment_in_background(item_id)
+                        _fe_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
+                        try:
+                            _fe_settings = Item.query.filter_by(title="__bullish_settings__").first()
+                            if _fe_settings:
+                                _fe_sd = json.loads(_fe_settings.description or "{}")
+                                _fe_el = _fe_sd.get("alert_emails", [])
+                                if _fe_el:
+                                    _fe_emails_str = ",".join(_fe_el)
+                        except Exception:
+                            pass
+                        _fe_alert_emails = [e.strip() for e in _fe_emails_str.split(",") if e.strip()] or None
+                        run_founder_enrichment_in_background(
+                            current_app._get_current_object(),
+                            item_id,
+                            meta.get("company_name", item.title),
+                            meta.get("category", ""),
+                            enrichment.get("one_line_thesis", ""),
+                            filer_name=None,
+                            alert_emails=_fe_alert_emails,
+                        )
                         founders_queued += 1
                     except Exception as fe:
                         logger.warning("Founder enrichment trigger failed for item %s: %s", item_id, fe)
