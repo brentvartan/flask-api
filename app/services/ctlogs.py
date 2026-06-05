@@ -39,24 +39,19 @@ CRTSH_URL = "https://crt.sh/"
 # Each entry is a crt.sh query string (% = wildcard).
 
 SEARCH_PATTERNS = [
-    # Brand-starter prefixes — very common in DTC naming
-    "get%.co", "get%.health", "get%.shop",
-    "try%.co", "try%.shop",
-    "join%.co", "join%.shop",
-    "my%.co", "our%.co",
-    # Beverage / food brand patterns
-    "%sip%.com", "%brew%.co", "%pour%.co",
-    "%snack%.co", "%bite%.co",
+    # Brand-starter prefixes (tight — DTC naming conventions)
+    "get%.co", "try%.co", "join%.co",
+    # Beverage / food
+    "%sip%.co", "%brew%.co", "%snack%.co",
     # Beauty / personal care
-    "%glow%.co", "%balm%.co", "%bare%.co",
+    "%glow%.co", "%balm%.co",
     # Wellness
     "%vita%.co", "%ritual%.co",
-    "%wellness%.co",
     # Pet
-    "%paw%.co", "%fur%.co",
-    # DTC-signature TLDs with any consumer-friendly name
-    "%.fun",       # board.fun, drink.fun, etc.
-    "%.health",    # consumer health brands
+    "%paw%.co",
+    # DTC-signature TLDs
+    "%.fun",      # board.fun — the example from the spec
+    "%.health",
 ]
 
 # ── Known corporate / infrastructure domains to exclude ──────────────────────
