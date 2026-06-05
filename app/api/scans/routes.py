@@ -18,6 +18,7 @@ from ...services.newswire import search_recent_newswire
 from ...services.ctlogs import search_recent_ct_domains
 from ...services.conviction import check_conviction_match_multi
 from ...services.trademark_assignments import resolve_brand_name
+from ...services.press_stealth import search_recent_press_stealth
 
 logger = logging.getLogger(__name__)
 
@@ -818,6 +819,100 @@ def run_ctlogs_scan():
                 daemon=True,
             ).start()
         logger.info("CT logs scan: %d new domain signals queued for enrichment", new_saved)
+
+    return jsonify({
+        "total_found": result.get("total_found", len(signals)),
+        "fetched":     len(signals),
+        "new_saved":   new_saved,
+        "skipped":     skipped,
+        "error":       result.get("error"),
+    }), 200
+
+
+@bp.route("/press-stealth", methods=["POST"])
+@jwt_required()
+@limiter.limit("10 per minute")
+def run_press_stealth_scan():
+    """
+    Scan startup + consumer trade press RSS for stealth-founder language.
+
+    Surfaces journalist-written articles where a founder is described as
+    "building something new," "quietly building," "left [BigCo] to build," etc.
+    Pattern-keyed (not person-keyed) — catches the Board/Brynn Putnam type
+    19 months before the Series A announcement.
+
+    When a conviction founder's name appears in the article, the conviction
+    check in _enrich_items_in_background will flag it automatically.
+
+    Request body (all optional):
+        days_back   int   Days of articles to include (1–30, default 14)
+        max_results int   Max results to process (1–100, default 50)
+    """
+    data        = request.get_json(silent=True) or {}
+    user_id     = int(get_jwt_identity())
+    days_back   = max(1, min(int(data.get("days_back",   14)),  30))
+    max_results = max(1, min(int(data.get("max_results", 50)),  100))
+
+    result = search_recent_press_stealth(days_back=days_back, max_results=max_results)
+
+    if result.get("error") and not result.get("signals"):
+        return jsonify({
+            "total_found": 0, "fetched": 0,
+            "new_saved": 0,   "skipped": 0,
+            "error": result["error"],
+        }), 502
+
+    signals = result.get("signals", [])
+    if not signals:
+        return jsonify({"total_found": 0, "fetched": 0, "new_saved": 0, "skipped": 0, "error": None}), 200
+
+    existing_fps = _load_existing_fps(user_id)
+    new_items = []
+    skipped   = 0
+
+    for sig in signals:
+        fp = _make_fingerprint("press_stealth", sig["companyName"], sig["timestamp"])
+
+        if fp in existing_fps:
+            skipped += 1
+            continue
+
+        item = Item(
+            title=sig["companyName"],
+            owner_id=user_id,
+            item_type="signal",
+            description=json.dumps({
+                "_type":        "signal",
+                "fp":           fp,
+                "company_name": sig["companyName"],
+                "signal_type":  "press_stealth",
+                "category":     sig["category"],
+                "score_boost":  sig.get("score_boost", 10),
+                "description":  sig["description"],
+                "url":          sig["url"],
+                "notes":        sig.get("notes", ""),
+                "timestamp":    sig["timestamp"],
+                "source":       sig.get("source", ""),
+            }, separators=(",", ":")),
+        )
+        db.session.add(item)
+        new_items.append(item)
+        existing_fps.add(fp)
+
+    new_saved = len(new_items)
+    if new_saved > 0:
+        db.session.commit()
+        new_ids = [item.id for item in new_items]
+        app = current_app._get_current_object()
+        threading.Thread(target=_enrich_items_in_background, args=(app, new_ids), daemon=True).start()
+        for item in new_items:
+            meta = json.loads(item.description or "{}")
+            threading.Thread(
+                target=_check_confluence_in_background,
+                args=(app, item.id, user_id, item.title, "press_stealth", meta.get("url")),
+                daemon=True,
+            ).start()
+        logger.info("Press stealth scan: %d articles queued for enrichment + conviction check", new_saved)
 
     return jsonify({
         "total_found": result.get("total_found", len(signals)),
