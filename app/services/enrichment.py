@@ -145,11 +145,15 @@ FOUNDER RESEARCH: Also attempt to identify the founder of this brand. Use your t
 
 FOUNDER SCORING MODEL: Score the founder against Bullish's 5-signal model. Use training data for known founders, infer from filing language for unknowns. Be honest about confidence.
 
-GATE: The single question is — IS A PERSON (consumer) THE PAYER? If yes, gate_passed=true regardless of category. Bullish invests in any business where a human pays directly: physical product, subscription, service fee, marketplace transaction, device purchase, concierge fee, or any other direct consumer payment. The category doesn't matter — the payer does.
+GATE — DEFAULT-INCLUDE: Assume gate_passed=true unless you can clearly prove otherwise. The question is NOT "is this definitely consumer?" — it is "is this obviously B2B-only?" When in doubt, keep it in.
 
-gate_passed=false ONLY IF: (1) the primary customer is a business, not a person — true B2B SaaS, enterprise software, infrastructure, B2B data/API products; OR (2) the consumer is the product, not the payer — ad-supported platforms, data monetization, attention-selling models where revenue comes from advertisers not users.
+Two-stage exclusion (the only grounds to set gate_passed=false):
+STAGE 1 — keyword knockout (free, automatic): Discard ONLY records that self-describe with unambiguous B2B markers: "enterprise," "B2B SaaS," "API platform," "developer tools," "infrastructure," "procurement," "logistics software," "compliance platform," "HR software," "ERP." When in doubt about a keyword, keep.
+STAGE 2 — intent check: Is the primary customer a business (not a person)? gate_passed=false only if: (1) true B2B SaaS, enterprise software, infrastructure, B2B data/API products where no consumer ever pays; OR (2) consumer is the product, not the payer — ad-supported platforms, data monetization, attention-selling where revenue comes from advertisers not users.
 
-Examples that PASS the gate: CPG, apparel, beauty, wellness, fitness, marketplace (consumer pays for goods/services), concierge platform (consumer pays subscription), hardware device (consumer buys it), DTC financial product (consumer pays fee or premium), consumer insurance (consumer pays monthly premium directly — e.g. Lemonade), consumer neobanking (consumer is the direct account holder paying fees/interchange — e.g. Chime), entertainment subscription, education subscription, any Uber/Airbnb-style model where a person pays per transaction.
+CRITICAL: Never gate on industry category codes alone. "Other Technology" (Board — gaming console), "Manufacturing" (Filament — haircare), "Other" — all pass the gate. Industry codes are ranking features only, never exclusion criteria. A repeat consumer founder (ex-Mirror, ex-RxBar, ex-Glossier) building anything gets gate_passed=true regardless of how the filing is categorized.
+
+Examples that PASS: CPG, apparel, beauty, wellness, fitness, consumer hardware (home devices, gaming, wearables, connected products), DTC financial product (consumer pays fee or premium), consumer insurance (e.g. Lemonade), consumer neobanking (e.g. Chime), marketplace (consumer pays for goods/services), entertainment subscription, education subscription, any Uber/Airbnb-style model where a person pays per transaction.
 
 Examples that FAIL: B2B SaaS, enterprise software, ad-supported social media, data brokers, infrastructure APIs sold to businesses.
 
@@ -275,6 +279,18 @@ def enrich_signal(signal: dict) -> dict:
     _type_context = _SIGNAL_TYPE_CONTEXT.get(_sig_type)
     if _type_context:
         user_message += f"{_type_context}\n\n"
+
+    # Conviction founder match — pre-computed by the scan pipeline
+    _conviction = signal.get("conviction_match")
+    if _conviction:
+        user_message += (
+            f"CONVICTION FOUNDER MATCH: '{_conviction.get('name')}' has been identified "
+            f"in this signal's filing data. Context: {_conviction.get('reason')}. "
+            f"Known brands: {', '.join(_conviction.get('known_brands', [])) or 'none on record'}. "
+            f"This is a Bullish conviction-list founder — score generously on founder model "
+            f"and set founder confidence='known'. The brand thesis still governs bullish_score "
+            f"independently, but founder_score should reflect this person's track record.\n\n"
+        )
 
     # Signal confluence — pass multi-signal context to boost scoring appropriately
     signal_count = signal.get("signal_count", 1)
