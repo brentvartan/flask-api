@@ -21,8 +21,10 @@ def _resend_client():
 _LOGO_LOCKUP = """<!-- Logo lockup — table-based for email client compatibility -->
 <table cellpadding="0" cellspacing="0" border="0" style="margin-bottom:10px;">
   <tr>
-    <td style="width:30px;height:30px;background:#052EF0;text-align:center;vertical-align:middle;">
-      <span style="font-family:Arial Black,Arial,sans-serif;font-size:15px;font-weight:900;color:#fff;line-height:1;">B</span>
+    <td style="width:36px;height:36px;vertical-align:middle;">
+      <img src="https://brentvartan.github.io/stealth-finder-frontend/bullish-mark.svg"
+           width="36" height="36" alt="Bullish"
+           style="display:block;border:0;outline:none;text-decoration:none;" />
     </td>
     <td style="padding-left:10px;vertical-align:middle;line-height:1.2;">
       <span style="display:block;font-family:Arial,sans-serif;font-size:10px;font-weight:800;letter-spacing:0.15em;color:#fff;text-transform:uppercase;">Stealth</span>
