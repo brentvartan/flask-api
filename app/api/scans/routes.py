@@ -19,6 +19,11 @@ from ...services.ctlogs import search_recent_ct_domains
 from ...services.conviction import check_conviction_match_multi
 from ...services.trademark_assignments import resolve_brand_name
 from ...services.press_stealth import search_recent_press_stealth
+from ...services.exit_watch import (
+    check_exit_alumni_match_multi,
+    detect_acquisition_in_text,
+    add_exit_brand,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +136,109 @@ def _enrich_items_in_background(app, item_ids: list):
                         "Conviction match: '%s' in signal '%s' (item %s)",
                         conviction["name"], meta.get("company_name"), item_id,
                     )
+
+                # ── Exit alumni name check (same mechanism as conviction) ────
+                # Catches #2–4 operators from notable exits who aren't in the
+                # main conviction list but deserve an ALUMNI badge + boost.
+                if not conviction:
+                    alumni_match = check_exit_alumni_match_multi([
+                        owner,
+                        notes,
+                        meta.get("description", ""),
+                        meta.get("company_name", item.title),
+                    ])
+                    if alumni_match:
+                        meta["exit_alumni_match"] = alumni_match
+                        item.description = json.dumps(meta, separators=(",", ":"))
+                        db.session.commit()
+                        logger.info(
+                            "Exit alumni match: '%s' in signal '%s' (item %s)",
+                            alumni_match["name"], meta.get("company_name"), item_id,
+                        )
+
+                # ── Form D related persons extraction ──────────────────────
+                # For Form D signals: fetch the EDGAR XML filing and extract
+                # every named Director/Officer.  Check each against conviction
+                # list and exit alumni list.  If a match is found and there's
+                # no existing conviction_match, promote it.
+                if sig_type == "delaware":
+                    _adsh = meta.get("_adsh", "")
+                    _cik  = meta.get("_cik", "")
+                    if _adsh and _cik:
+                        try:
+                            from ...services.delaware import fetch_form_d_related_persons
+                            related = fetch_form_d_related_persons(_adsh, _cik)
+                            if related:
+                                enriched_related = []
+                                for person in related:
+                                    pname = person["name"]
+                                    p_conv   = check_conviction_match_multi([pname])
+                                    p_alumni = check_exit_alumni_match_multi([pname]) if not p_conv else None
+                                    enriched_related.append({
+                                        **person,
+                                        "conviction_match":   p_conv,
+                                        "exit_alumni_match":  p_alumni,
+                                    })
+
+                                meta["related_persons"] = enriched_related
+                                item.description = json.dumps(meta, separators=(",", ":"))
+                                db.session.commit()
+                                logger.info(
+                                    "Form D related persons: %d found for item %s",
+                                    len(enriched_related), item_id,
+                                )
+
+                                # Promote to conviction/alumni if no existing match
+                                if not conviction and not meta.get("exit_alumni_match"):
+                                    for rp in enriched_related:
+                                        if rp.get("conviction_match"):
+                                            meta["conviction_match"] = rp["conviction_match"]
+                                            conviction = rp["conviction_match"]
+                                            item.description = json.dumps(meta, separators=(",", ":"))
+                                            db.session.commit()
+                                            logger.info(
+                                                "Related person conviction: '%s' promoted for item %s",
+                                                rp["conviction_match"]["name"], item_id,
+                                            )
+                                            break
+                                        elif rp.get("exit_alumni_match"):
+                                            meta["exit_alumni_match"] = rp["exit_alumni_match"]
+                                            item.description = json.dumps(meta, separators=(",", ":"))
+                                            db.session.commit()
+                                            logger.info(
+                                                "Related person alumni: '%s' promoted for item %s",
+                                                rp["exit_alumni_match"]["name"], item_id,
+                                            )
+                                            break
+                        except Exception as _rp_exc:
+                            logger.debug(
+                                "Form D related persons check skipped for item %s: %s",
+                                item_id, _rp_exc,
+                            )
+
+                # ── Acquisition detection for press/newswire signals ───────
+                # When an article announces an acquisition, add the brand to
+                # the exit watch list so future signals from that brand's alumni
+                # can be cross-referenced.
+                if sig_type in ("press_stealth", "newswire"):
+                    try:
+                        acq_brand = detect_acquisition_in_text(
+                            meta.get("description", "") + " " + notes
+                        )
+                        if acq_brand:
+                            add_exit_brand(
+                                acq_brand,
+                                notes=f"Auto-detected from {sig_type} signal",
+                            )
+                            logger.info(
+                                "Exit watch: auto-added '%s' from %s (item %s)",
+                                acq_brand, sig_type, item_id,
+                            )
+                    except Exception as _acq_exc:
+                        logger.debug(
+                            "Acquisition detection skipped for item %s: %s",
+                            item_id, _acq_exc,
+                        )
 
                 enrichment = enrich_signal({
                     "companyName": meta.get("resolved_owner") or meta.get("company_name", item.title),

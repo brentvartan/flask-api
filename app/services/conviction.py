@@ -101,6 +101,33 @@ CONVICTION_FOUNDERS: dict[str, tuple[str, list[str]]] = {
     "Max Levchin":        ("Affirm — consumer-first financial product at scale", ["Affirm"]),
     "Tina Sharkey":       ("iVillage, Brandless — consumer community + DTC brand", ["Brandless"]),
 
+    # ── Additional acquired-brand founders (exits not yet in list) ─────────
+    "Steph Korey":        ("Away co-founder; 'lifestyle luggage' category creator — DTC brand storytelling at scale", ["Away"]),
+    "Jen Rubio":          ("Away co-founder + President; designed the product line and built the brand voice", ["Away"]),
+    "Tyler Haney":        ("Outdoor Voices founder; activewear built on 'Doing Things' culture — heavily VC-backed category maker", ["Outdoor Voices"]),
+    "Rachel Drori":       ("Daily Harvest founder; plant-based meal delivery at $100M+ ARR — food-as-identity DTC leader", ["Daily Harvest"]),
+    "Nick Taranto":       ("Plated co-founder; ~$200M Albertsons exit — first major meal-kit brand acquisition", ["Plated"]),
+    "Josh Hix":           ("Plated co-founder; built and sold the meal-kit company that defined the category for acquirers", ["Plated"]),
+    "Katia Beauchamp":    ("Birchbox co-founder; invented the beauty subscription model before it was a category", ["Birchbox"]),
+    "Hayley Barna":       ("Birchbox co-founder; built beauty discovery subscription to 1M+ subscribers", ["Birchbox"]),
+    "Morgan Hermand-Waiche": ("Adore Me founder; DTC lingerie at scale — sold to Walmart ~$400M", ["Adore Me"]),
+    "Jon Sebastiani":     ("KRAVE Jerky founder → Hershey acquisition; now runs Sonoma Brands portfolio — serial better-snacking builder", ["KRAVE Jerky", "Sonoma Brands"]),
+    "Philip Krim":        ("Casper co-founder + CEO; DTC mattress category creator, IPO'd then went private", ["Casper"]),
+    "Jeff Chapin":        ("Casper co-founder + Chief Product Officer; industrial designer who made the mattress a brand", ["Casper"]),
+    "Sophia Amoruso":     ("Nasty Gal founder; built $100M+ fashion empire from eBay store — culture-first DTC pioneer", ["Nasty Gal", "Girlboss"]),
+    "Sasha Plavsic":      ("ILIA Beauty founder; defined the clean + performance beauty intersection before the category went mainstream", ["ILIA Beauty"]),
+    "Jesse Merrill":      ("Good Culture co-founder; reinvented cottage cheese as a modern protein brand in a stagnant category", ["Good Culture"]),
+    "Gabby Slome":        ("Ollie co-founder; premium fresh pet food subscription — first major premium DTC pet brand", ["Ollie"]),
+    "Ryan Babenzien":     ("JOLIE Skin Co. founder; prior Greats sneakers co-founder — serial DTC product company builder", ["JOLIE", "Greats"]),
+
+    # ── Early operators / #2–4 from iconic exits — exit-pedigree, below founder tier ──
+    "Henry Davis":        ("Glossier President 2016–2021; ran the entire P&L while Emily Weiss built the brand — category-level operator", ["Glossier"]),
+    "Neil Parikh":        ("Casper co-founder + COO; built operations and supply chain for a 9-figure DTC brand", ["Casper"]),
+    "Luke Sherwin":       ("Casper co-founder + Chief Creative Officer; defined the visual language of DTC home goods", ["Casper"]),
+    "Jonathan Neman":     ("Sweetgreen co-founder + CEO; scaled ingredient-transparent fast-casual to a public company", ["Sweetgreen"]),
+    "Nicolas Jammet":     ("Sweetgreen co-founder; culinary + supply-chain architect behind the most iconic fast-casual brand", ["Sweetgreen"]),
+    "Nathaniel Ru":       ("Sweetgreen co-founder; brand and community architect — defined Sweetgreen's cultural identity", ["Sweetgreen"]),
+
     # ── Add more here ──────────────────────────────────────────────────────
     # "Firstname Lastname": ("reason", ["Brand"]),
 }

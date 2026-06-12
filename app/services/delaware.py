@@ -17,6 +17,7 @@ EDGAR's search API is completely free with no API key required.
 import re
 import time
 import logging
+import xml.etree.ElementTree as ET
 import requests
 
 from datetime import datetime, timedelta
@@ -206,6 +207,76 @@ def check_domain(brand_slug: str, days_back: int = 90) -> dict | None:
 
 # ─── Main service function ────────────────────────────────────────────────────
 
+def fetch_form_d_related_persons(adsh: str, cik: str) -> list[dict]:
+    """
+    Fetch the EDGAR Form D XML filing and extract Related Persons.
+
+    Form D XML stores every director, officer, and significant owner who was
+    named in the filing — i.e. the #1–4 people who just made someone a legal
+    promise.  This is the earliest structured record of who is building the brand.
+
+    Args:
+        adsh: EDGAR accession number e.g. "0001234567-24-000123"
+        cik:  EDGAR CIK number (digits only)
+
+    Returns:
+        List of {"name": str, "relationships": list[str]}, empty list on failure.
+    """
+    if not adsh or not cik:
+        return []
+
+    adsh_clean = adsh.replace("-", "")
+    url = (
+        f"https://www.sec.gov/Archives/edgar/data/"
+        f"{cik}/{adsh_clean}/{adsh}.xml"
+    )
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Bullish Stealth Finder research@bullish.co"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.debug("Form D XML fetch HTTP %d for %s", resp.status_code, adsh)
+            return []
+
+        root = ET.fromstring(resp.content)
+        persons = []
+
+        # EDGAR Form D XML uses tags like {http://...}relatedPersonInfo or plain tags
+        # depending on version — iterate all descendants and match by local name.
+        for elem in root.iter():
+            local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if local != "relatedPersonInfo":
+                continue
+
+            first = last = ""
+            relationships: list[str] = []
+
+            for child in elem.iter():
+                child_local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if child_local == "firstName" and child.text:
+                    first = child.text.strip()
+                elif child_local == "lastName" and child.text:
+                    last = child.text.strip()
+                elif child_local == "relationship" and child.text:
+                    relationships.append(child.text.strip())
+
+            full_name = f"{first} {last}".strip()
+            if full_name:
+                persons.append({"name": full_name, "relationships": relationships})
+
+        logger.debug("Form D %s: found %d related persons", adsh, len(persons))
+        return persons
+
+    except ET.ParseError as exc:
+        logger.debug("Form D XML parse error for %s: %s", adsh, exc)
+        return []
+    except Exception as exc:
+        logger.debug("Form D related persons fetch failed for %s: %s", adsh, exc)
+        return []
+
+
 def search_recent_delaware_entities(
     days_back: int = 7,
     max_results: int = 200,
@@ -317,6 +388,7 @@ def search_recent_delaware_entities(
                 if adsh else "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=D"
             )
 
+            _cik = (src.get("ciks") or [""])[0]
             signals.append({
                 "companyName": brand,
                 "signal_type": "delaware",
@@ -334,6 +406,9 @@ def search_recent_delaware_entities(
                     + (" (Not yet Delaware — likely pre-VC stage.)" if inc_state != "DE" else "")
                 ),
                 "timestamp":   file_date + "T00:00:00",
+                # Stored for related-persons lookup in routes.py — not displayed
+                "_adsh":       adsh,
+                "_cik":        _cik,
             })
 
             # Domain cross-reference
