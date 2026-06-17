@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import threading
+import time
 
 from flask import jsonify, request, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -65,6 +66,75 @@ def _check_confluence_in_background(app, item_id: int, owner_id: int,
                     logger.info("Confluence alert sent for %s (%d signals)", brand_name, result["signal_count"])
         except Exception as exc:
             logger.warning("Confluence check failed for item %s: %s", item_id, exc)
+
+
+def _check_domains_in_background(app, user_id: int, form_d_items: list):
+    """
+    Background thread: run domain cross-reference for a batch of Form D signals.
+
+    form_d_items is a list of (item_id, brand_name, category, timestamp) tuples.
+    Each call hits DomainsDB with a 0.4s sleep between requests so we don't hammer
+    the API. Domain hits are saved as new 'domain' signal items and queued for
+    enrichment. This keeps the /delaware route fast (no inline domain checks).
+    """
+    with app.app_context():
+        for item_id, brand_name, category, timestamp in form_d_items:
+            try:
+                slug = _brand_slug(brand_name)
+                if not slug or len(slug) < 3:
+                    continue
+
+                domain_info = check_domain(slug, days_back=120)
+                if not domain_info:
+                    time.sleep(0.4)
+                    continue
+
+                fp = _make_fingerprint("domain", brand_name, timestamp)
+                already_exists = (
+                    Item.query
+                    .filter_by(owner_id=user_id)
+                    .filter(Item.description.contains(f'"fp":"{fp}"'))
+                    .first()
+                )
+                if already_exists:
+                    time.sleep(0.4)
+                    continue
+
+                domain_item = Item(
+                    title=brand_name,
+                    owner_id=user_id,
+                    item_type="signal",
+                    description=json.dumps({
+                        "_type":        "signal",
+                        "fp":           fp,
+                        "company_name": brand_name,
+                        "signal_type":  "domain",
+                        "category":     category,
+                        "score_boost":  3,
+                        "description":  (
+                            f"{domain_info['domain']} — registered {domain_info['registered']}"
+                            f" — corroborates Form D filing for {brand_name}"
+                        ),
+                        "url":          domain_info["url"],
+                        "notes":        (
+                            f"Domain registered {domain_info['registered']}, "
+                            f"matching Form D entity {brand_name}."
+                        ),
+                        "timestamp":    timestamp,
+                    }, separators=(",", ":")),
+                )
+                db.session.add(domain_item)
+                db.session.commit()
+                logger.info(
+                    "Domain hit (bg): %s → %s saved as item %d",
+                    brand_name, domain_info["domain"], domain_item.id,
+                )
+                _enrich_items_in_background(app, [domain_item.id])
+
+            except Exception as exc:
+                logger.debug("BG domain check failed for %s: %s", brand_name, exc)
+            finally:
+                time.sleep(0.4)
 
 
 def _enrich_items_in_background(app, item_ids: list):
@@ -492,11 +562,14 @@ def run_delaware_scan():
     days_back   = max(1, min(int(data.get("days_back",   7)),   30))
     max_results = max(1, min(int(data.get("max_results", 150)), 300))
 
-    # ── 1. Fetch from OpenCorporates + domain cross-reference ─────────────────
+    # ── 1. Fetch Form D filings — domain cross-reference runs in background ───
+    # check_domains=False keeps this synchronous call fast. Domain hits are
+    # checked asynchronously per entity in _check_domains_in_background so a
+    # slow DomainsDB response (up to 20s × 60 entities) doesn't block the route.
     result = search_recent_delaware_entities(
         days_back=days_back,
         max_results=max_results,
-        check_domains=True,
+        check_domains=False,
     )
 
     if result.get("error"):
@@ -508,7 +581,6 @@ def run_delaware_scan():
 
     signals     = result["signals"]
     total_found = result["total_found"]
-    domain_hits = result["domain_hits"]
 
     # ── 2. Dedup and persist ──────────────────────────────────────────────────
     user_id      = int(get_jwt_identity())
@@ -539,6 +611,8 @@ def run_delaware_scan():
                 "url":          sig["url"],
                 "notes":        sig.get("notes", ""),
                 "timestamp":    sig["timestamp"],
+                "_adsh":        sig.get("_adsh", ""),
+                "_cik":         sig.get("_cik", ""),
             }, separators=(",", ":")),
         )
         db.session.add(item)
@@ -558,12 +632,35 @@ def run_delaware_scan():
                 args=(app, item.id, user_id, item.title, meta.get("signal_type", "delaware"), meta.get("url")),
                 daemon=True,
             ).start()
-        logger.info("Delaware scan: %d new signals queued for enrichment + confluence check", new_saved)
+
+        # Domain cross-reference — runs fully async so the route doesn't block
+        form_d_tuples = [
+            (
+                item.id,
+                item.title,
+                json.loads(item.description or "{}").get("category", "Consumer AI"),
+                json.loads(item.description or "{}").get("timestamp", ""),
+            )
+            for item in new_items
+            if json.loads(item.description or "{}").get("signal_type") == "delaware"
+        ]
+        if form_d_tuples:
+            threading.Thread(
+                target=_check_domains_in_background,
+                args=(app, user_id, form_d_tuples),
+                daemon=True,
+            ).start()
+            logger.info(
+                "Delaware scan: %d new signals saved; domain check for %d entities running in background",
+                new_saved, len(form_d_tuples),
+            )
+        else:
+            logger.info("Delaware scan: %d new signals queued for enrichment + confluence check", new_saved)
 
     return jsonify({
         "total_found": total_found,
         "fetched":     result["fetched"],
-        "domain_hits": domain_hits,
+        "domain_hits": 0,   # domain hits saved async — appear on next dashboard load
         "new_saved":   new_saved,
         "skipped":     skipped,
         "error":       None,
