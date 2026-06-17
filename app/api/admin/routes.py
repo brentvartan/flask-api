@@ -776,15 +776,18 @@ def list_founder_profiles():
       200:
         description: List of founder profiles
     """
-    tier_filter   = request.args.get("tier", "").strip().upper() or None
-    status_filter = request.args.get("status", "").strip().lower() or None
-    q             = request.args.get("q", "").strip().lower() or None
+    tier_filter     = request.args.get("tier", "").strip().upper() or None
+    status_filter   = request.args.get("status", "").strip().lower() or None
+    outreach_filter = request.args.get("outreach_status", "").strip().lower() or None
+    q               = request.args.get("q", "").strip().lower() or None
 
     query = FounderProfile.query
     if tier_filter:
         query = query.filter(FounderProfile.tier == tier_filter)
     if status_filter:
         query = query.filter(FounderProfile.status == status_filter)
+    if outreach_filter:
+        query = query.filter(FounderProfile.outreach_status == outreach_filter)
     if q:
         query = query.filter(FounderProfile.name.ilike(f"%{q}%"))
 
@@ -835,6 +838,9 @@ def founder_profiles_summary():
     top_schools          = school_counter.most_common(10)
     top_prior_employers  = employer_counter.most_common(10)
 
+    # Outreach pipeline counts
+    outreach_counts = Counter(fp.outreach_status or "cold" for fp in all_profiles)
+
     return jsonify({
         "total":            total,
         "building":         building,
@@ -844,4 +850,38 @@ def founder_profiles_summary():
         "not_found":        not_found,
         "top_schools":      top_schools,
         "top_prior_employers": top_prior_employers,
+        "outreach": {
+            "cold":             outreach_counts.get("cold", 0),
+            "email_sent":       outreach_counts.get("email_sent", 0),
+            "connected":        outreach_counts.get("connected", 0),
+            "had_call":         outreach_counts.get("had_call", 0),
+            "in_their_corner":  outreach_counts.get("in_their_corner", 0),
+        },
     }), 200
+
+
+@bp.route("/founder-profiles/<int:profile_id>", methods=["PATCH"])
+@admin_required()
+def update_founder_profile(profile_id):
+    """Update outreach CRM fields on a founder profile (admin only).
+    ---
+    tags: [Admin]
+    security:
+      - Bearer: []
+    """
+    fp = FounderProfile.query.get_or_404(profile_id)
+    data = request.get_json(silent=True) or {}
+
+    allowed = {"outreach_status", "outreach_notes", "last_contact", "next_action"}
+    for field in allowed:
+        if field in data:
+            if field == "last_contact":
+                from datetime import date
+                val = data[field]
+                setattr(fp, field, date.fromisoformat(val) if val else None)
+            else:
+                setattr(fp, field, data[field])
+
+    from ...extensions import db as _db
+    _db.session.commit()
+    return jsonify(fp.to_dict()), 200
