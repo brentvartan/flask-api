@@ -3,6 +3,7 @@ import logging
 import os
 import time as _time
 from calendar import monthrange
+from collections import Counter
 from datetime import datetime, timezone
 
 import requests
@@ -15,6 +16,7 @@ from . import bp
 from ...extensions import db
 from ...models.user import User
 from ...models.item import Item
+from ...models.founder_profile import FounderProfile
 from ...schemas import AdminUserUpdateSchema, AdminForcePasswordSchema, PaginationSchema
 from ...utils import admin_required
 
@@ -633,3 +635,213 @@ def send_reset_link(user_id):
         return jsonify({"error": "Email service unavailable"}), 500
 
     return jsonify({"message": f"Reset link sent to {user.email}"}), 200
+
+
+# ─── Founder Radar ────────────────────────────────────────────────────────────
+
+_TIER_ORDER = {"DEPARTURE": 0, "CONVICTION": 1, "ALUMNI": 2, "EXEC": 3}
+_STATUS_ORDER = {"building": 0, "advisory": 1, "quiet": 2, "still_at_brand": 3}
+
+
+def _derive_status(current_company, known_brand):
+    """Derive founder status from current_company and known_brand."""
+    if not current_company:
+        return "quiet"
+    cc_lower = current_company.lower()
+    # still at their famous brand
+    if known_brand and known_brand.lower() in cc_lower:
+        return "still_at_brand"
+    # advisory / board roles
+    advisory_keywords = ("advisor", "board", "investor", "venture", "capital",
+                         "angel", "partner", "fund")
+    if any(kw in cc_lower for kw in advisory_keywords):
+        return "advisory"
+    # actively building something new
+    return "building"
+
+
+@bp.route("/founder-profiles/import", methods=["POST"])
+@admin_required()
+def import_founder_profiles():
+    """Bulk-upsert founder profiles (admin only).
+    ---
+    tags: [Admin]
+    security:
+      - Bearer: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            properties:
+              profiles:
+                type: array
+    responses:
+      200:
+        description: Import result counts
+    """
+    body = request.get_json(silent=True) or {}
+    profiles = body.get("profiles", [])
+    if not isinstance(profiles, list) or not profiles:
+        return jsonify({"error": "profiles must be a non-empty list"}), 400
+    if len(profiles) > 2000:
+        return jsonify({"error": "profiles list too large (max 2000)"}), 400
+
+    imported = 0
+    updated = 0
+    now = datetime.utcnow()
+
+    for p in profiles:
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+
+        known_brand     = (p.get("brand") or p.get("known_brand") or "").strip() or None
+        tier            = (p.get("tier") or "").strip().upper() or None
+        current_company = (p.get("current_company") or "").strip() or None
+        status          = (p.get("status") or "").strip() or None
+        bio             = (p.get("bio") or "").strip() or None
+        profile_url     = (p.get("profile_url") or "").strip() or None
+        schools         = p.get("schools") or []
+        past_companies  = p.get("past_companies") or []
+        follower_count  = p.get("follower_count")
+        x_handle        = (p.get("x_handle") or "").strip() or None
+
+        # Derive status if not explicitly provided
+        if not status:
+            status = _derive_status(current_company, known_brand)
+
+        existing = FounderProfile.query.filter_by(name=name).first()
+        if existing:
+            existing.known_brand     = known_brand
+            existing.tier            = tier
+            existing.current_company = current_company
+            existing.status          = status
+            existing.bio             = bio
+            existing.profile_url     = profile_url
+            existing.schools         = schools if isinstance(schools, list) else []
+            existing.past_companies  = past_companies if isinstance(past_companies, list) else []
+            existing.follower_count  = follower_count
+            existing.x_handle        = x_handle
+            existing.last_updated    = now
+            updated += 1
+        else:
+            fp = FounderProfile(
+                name=name,
+                known_brand=known_brand,
+                tier=tier,
+                current_company=current_company,
+                status=status,
+                bio=bio,
+                profile_url=profile_url,
+                schools=schools if isinstance(schools, list) else [],
+                past_companies=past_companies if isinstance(past_companies, list) else [],
+                follower_count=follower_count,
+                x_handle=x_handle,
+                last_updated=now,
+                created_at=now,
+            )
+            db.session.add(fp)
+            imported += 1
+
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.error("import_founder_profiles failed: %s", exc)
+        return jsonify({"error": "Database error during import"}), 500
+
+    return jsonify({"imported": imported, "updated": updated}), 200
+
+
+@bp.route("/founder-profiles", methods=["GET"])
+@admin_required()
+def list_founder_profiles():
+    """List founder profiles with optional filters (admin only).
+    ---
+    tags: [Admin]
+    security:
+      - Bearer: []
+    parameters:
+      - in: query
+        name: tier
+        schema: {type: string}
+      - in: query
+        name: status
+        schema: {type: string}
+      - in: query
+        name: q
+        schema: {type: string}
+    responses:
+      200:
+        description: List of founder profiles
+    """
+    tier_filter   = request.args.get("tier", "").strip().upper() or None
+    status_filter = request.args.get("status", "").strip().lower() or None
+    q             = request.args.get("q", "").strip().lower() or None
+
+    query = FounderProfile.query
+    if tier_filter:
+        query = query.filter(FounderProfile.tier == tier_filter)
+    if status_filter:
+        query = query.filter(FounderProfile.status == status_filter)
+    if q:
+        query = query.filter(FounderProfile.name.ilike(f"%{q}%"))
+
+    profiles = query.all()
+
+    # Sort: tier order first, then status order within tier
+    def sort_key(fp):
+        tier_rank   = _TIER_ORDER.get(fp.tier or "", 99)
+        status_rank = _STATUS_ORDER.get(fp.status or "", 99)
+        return (tier_rank, status_rank, (fp.name or "").lower())
+
+    profiles.sort(key=sort_key)
+
+    return jsonify({"profiles": [fp.to_dict() for fp in profiles]}), 200
+
+
+@bp.route("/founder-profiles/summary", methods=["GET"])
+@admin_required()
+def founder_profiles_summary():
+    """Aggregate stats across all founder profiles (admin only).
+    ---
+    tags: [Admin]
+    security:
+      - Bearer: []
+    responses:
+      200:
+        description: Summary stats
+    """
+    all_profiles = FounderProfile.query.all()
+    total = len(all_profiles)
+
+    building      = sum(1 for fp in all_profiles if fp.status == "building")
+    advisory      = sum(1 for fp in all_profiles if fp.status == "advisory")
+    quiet         = sum(1 for fp in all_profiles if fp.status == "quiet")
+    still_at_brand = sum(1 for fp in all_profiles if fp.status == "still_at_brand")
+    not_found     = sum(1 for fp in all_profiles if not fp.current_company and not fp.status)
+
+    school_counter   = Counter()
+    employer_counter = Counter()
+    for fp in all_profiles:
+        for school in (fp.schools or []):
+            if school:
+                school_counter[school] += 1
+        for co in (fp.past_companies or []):
+            if co:
+                employer_counter[co] += 1
+
+    top_schools          = school_counter.most_common(10)
+    top_prior_employers  = employer_counter.most_common(10)
+
+    return jsonify({
+        "total":            total,
+        "building":         building,
+        "advisory":         advisory,
+        "quiet":            quiet,
+        "still_at_brand":   still_at_brand,
+        "not_found":        not_found,
+        "top_schools":      top_schools,
+        "top_prior_employers": top_prior_employers,
+    }), 200

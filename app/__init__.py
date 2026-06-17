@@ -57,6 +57,7 @@ def create_app(config_name=None):
 
     # Register models with SQLAlchemy
     from .models.scan_run import ScanRun  # noqa — registers with SQLAlchemy
+    from .models.founder_profile import FounderProfile  # noqa — registers with SQLAlchemy
 
     # JWT token blocklist
     from .models.token_blocklist import TokenBlocklist
