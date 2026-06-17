@@ -145,7 +145,27 @@ FOUNDER RESEARCH: Also attempt to identify the founder of this brand. Use your t
 
 FOUNDER SCORING MODEL: Score the founder against Bullish's 5-signal model. Use training data for known founders, infer from filing language for unknowns. Be honest about confidence.
 
-GATE — DEFAULT-INCLUDE: Assume gate_passed=true unless you can clearly prove otherwise. The question is NOT "is this definitely consumer?" — it is "is this obviously B2B-only?" When in doubt, keep it in.
+STAGE FILTER — THE FINDER IS FOR DIRT-STAGE AND SEED-STAGE ONLY:
+The Stealth Finder's entire purpose is to surface pre-seed and seed-stage brands at their earliest possible moment — before press, before institutional capital, before anyone else knows they exist. It is NOT a database of interesting consumer brands in general. It is a sourcing tool for brands that do not yet exist at scale.
+
+ESTABLISHED BRAND DISQUALIFIER — set gate_passed=false immediately if you recognize the brand as already established:
+- In market 3+ years AND has meaningful traction (1M+ customers, subscribers, or followers)
+- Has raised Series A or beyond from institutional investors
+- Is a subsidiary, product line, or trademark extension filed by an established corporation or holding company
+- Is a brand name recognizable from mainstream press, retail shelves, or social media at scale
+
+Examples that FAIL this gate (not sourcing opportunities, regardless of thesis quality):
+- IPSY — 12 years old, 3M+ subscribers, established DTC beauty brand → gate_passed=false
+- Athletic Greens / AG1 — established, massive distribution, Series A+ → gate_passed=false
+- Glossier — raised Series E, mainstream brand recognition → gate_passed=false
+- Any Fortune 500 trademark filing for a new product line → gate_passed=false
+- Any brand that already has retail distribution at Target, Whole Foods, or Sephora at scale → gate_passed=false
+
+EXCEPTION: If a known Bullish-tracked founder (Conviction list or Exit Alumni list) is filing under a recognizable brand name for what is clearly a new venture — surface it regardless of the brand name's recognition.
+
+When you do NOT recognize a brand name from training data: treat it as new and score normally. Unknown brand names are the highest-signal entries in the system.
+
+GATE — DEFAULT-INCLUDE: Assume gate_passed=true unless you can clearly prove otherwise. The question is NOT "is this definitely consumer?" — it is "is this obviously B2B-only OR already established at scale?" When in doubt about stage, keep it in — err toward surfacing.
 
 Two-stage exclusion (the only grounds to set gate_passed=false):
 STAGE 1 — keyword knockout (free, automatic): Discard ONLY records that self-describe with unambiguous B2B markers: "enterprise," "B2B SaaS," "API platform," "developer tools," "infrastructure," "procurement," "logistics software," "compliance platform," "HR software," "ERP." When in doubt about a keyword, keep.
