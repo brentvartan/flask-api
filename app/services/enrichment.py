@@ -166,10 +166,23 @@ FIVE SIGNALS (score each; sum = total out of 100):
    Rubric: 18-20=primary source in quality outlets + high engagement | 13-17=one strong signal | 8-12=some presence, engagement weak | 0-7=minimal public presence
 4. pedigree (max 15): Fortune 500/Inc 500 alumni (senior role), top-50 college, top-10 MBA/design/ad school, consumer exit ($500M+) alumni, competitive achievement (varsity, championship, pitch finalist), musical craft.
    Rubric: 13-15=3+ hits including cross-tier | 8-12=2+ hits | 4-7=1 hit | 0-3=no detectable pedigree
+   OPERATOR PEDIGREE — automatic tier 1 hit (score 13–15 immediately): Prior employment at any of these Bullish-tracked consumer exits is equivalent to a senior Fortune 500 role. These operators learned how to build category-defining brands from the inside. If the founder's LinkedIn or background shows they worked at any of the following — especially in a VP, Director, Head of, or founding-team role — award maximum pedigree and add a flag noting which brand:
+   Glossier, Liquid Death, Athletic Brewing, Poppi, Whoop, Gymshark, On Running, Peloton, Away, Daily Harvest, Outdoor Voices, Skims, Rhode Skin, Figs, Bombas, Casper, Warby Parker, Harry's, Dollar Shave Club, Birchbox, Allbirds, Stitch Fix, Rent the Runway, Olipop, Hims, BarkBox, Parachute, Brooklinen, MeUndies, Ruggable, Caraway, HexClad, Ritual, Seed, Chomps, Banza, Simple Mills, Kodiak Cakes, Magic Spoon, Graza, Our Place, Chamberlain Coffee, Cuts Clothing, Nutrafol, Lovevery, Lalo, Quip, Thrive Market, Article, Vuori, Eight Sleep, Therabody, Oura, Kind Snacks, Fabletics, Reformation, Rare Beauty, DECIEM, NotCo, Nom Nom, Hungryroot, Ollie, Good Culture, KRAVE Jerky, Alo Yoga, Alani Nu, Fly by Jing, Sweetgreen, Plated, RxBar, CAULIPOWER, care/of, Hint Water, Bonobos, Nasty Gal, ILIA Beauty, Adore Me, TOMS, Honest Tea, Lemon Perfect, Wild One, Primal Kitchen, SmartSweets, Hello Products, Bloom Nutrition, Stasher, Mid-Day Squares, Cirkul, Magic Mind, Once Upon a Farm, Native, Marine Layer, Manscaped, Cocofloss, Wild, Liquid I.V., Burrow, True Classic, HexClad, Rothy's, AG1, Quest Nutrition, Chewy, BodyArmor, e.l.f. Beauty, Savage X Fenty, HeyDude, Beats by Dre, Catalina Crunch, Moon Juice, Super Coffee, Honest Company, David Protein, Dollar Shave Club, Athleta, Chamberlain Coffee
+   The operator-to-founder pipeline is Bullish's highest-conviction sourcing pattern. These people watched a $100M+ consumer brand get built from the inside. They know the playbook. Treat their filings as high-signal regardless of how sparse the filing itself appears.
 5. thesis_clarity (max 10): Problem-first worldview with a named enemy (incumbent, broken system, consumer frustration). Pre-company trail of thinking is a strong signal.
    Rubric: 9-10=clear thesis with named enemy + pre-company trail | 5-8=thesis present but thin | 0-4=product-first/innovation framing, no discernible worldview
 
 TIERS: ≥75=HIGH_PRIORITY ("Move to first meeting quickly") | ≥50=WATCH_LIST ("Monitor for new signals before outreach") | ≥25=WEAK_SIGNAL ("Flag for lightweight human review") | <25=PASS ("Category fit but founder profile doesn't match")
+
+OPERATOR-TO-FOUNDER PATTERN — READ THIS BEFORE SCORING ANY FOUNDER:
+The most predictive signal Bullish has found is not school, not prior funding, not press coverage. It is this: did this person work inside a consumer brand that Bullish would have backed (or did back) — and are they now starting something new?
+
+The career arc that produces Bullish-grade founders:
+- 2–5 years at a top CPG, retail, or legacy consumer brand (Nike, P&G, Unilever, Estée Lauder, L'Oréal, General Mills, Kraft Heinz, Gap, Lululemon) learning category fundamentals
+- 2–4 years at an early-stage DTC or venture-backed consumer brand (any brand on the list above) in a functional leadership role (VP, Director, Head of, #2–5 operator)
+- Now: trademark filing, Form D, domain registration — first legal act of building their own brand
+
+When you see this exact arc — especially the middle DTC brand stint — score category_proximity 23–25 and pedigree 13–15 automatically, even if the filing appears sparse. This person learned how to build a brand that Bullish would invest in. They ARE the thesis.
 
 Respond ONLY with a valid JSON object (no markdown, no explanation outside the JSON):
 {
