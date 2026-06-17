@@ -11,7 +11,7 @@ from . import bp
 from ...extensions import db, limiter
 from ...models.item import Item
 from ...services.trademarks import search_recent_trademarks
-from ...services.delaware import search_recent_delaware_entities
+from ...services.delaware import search_recent_delaware_entities, check_domain, _brand_slug
 from ...services.producthunt import search_recent_producthunt
 from ...services.app_store import search_recent_app_store
 from ...services.newswire import search_recent_newswire
@@ -782,11 +782,13 @@ def run_newswire_scan():
     result = search_recent_newswire(days_back=days_back, max_results=max_results)
 
     if result.get("error") and not result.get("signals"):
+        # All feeds failed — return 200 with error flag so the frontend scan
+        # continues to the next source rather than aborting the whole run.
         return jsonify({
             "total_found": 0, "fetched": 0,
             "new_saved": 0,   "skipped": 0,
             "error": result["error"],
-        }), 502
+        }), 200
 
     signals = result.get("signals", [])
     if not signals:

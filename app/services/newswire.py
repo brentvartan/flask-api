@@ -231,8 +231,15 @@ def search_recent_newswire(days_back: int = 30, max_results: int = 100) -> dict:
                 "score_boost":  0,
             })
 
+    if errors:
+        logger.warning("Newswire: %d feed(s) failed: %s", len(errors), "; ".join(errors))
+
+    logger.info("Newswire scan: %d signals found across %d feeds (%d failed)",
+                len(signals), len(FEEDS), len(errors))
+
+    # Only surface the error when ALL feeds failed and we have nothing to show.
+    # Partial failures (e.g. BusinessWire 403 while PRN works) are not fatal.
     if not signals and errors:
         return {"signals": [], "error": "; ".join(errors)}
 
-    logger.info("Newswire scan: %d signals found across %d feeds", len(signals), len(FEEDS))
     return {"signals": signals, "error": None}
