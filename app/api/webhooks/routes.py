@@ -7,6 +7,7 @@ without requiring a full user session.
 
 Auth: Authorization: Bearer <INBOX_AUDIT_WEBHOOK_SECRET>
 """
+import hmac
 import os
 import logging
 
@@ -24,7 +25,7 @@ def _check_secret():
     auth = request.headers.get('Authorization', '')
     if not auth.startswith('Bearer '):
         return False
-    return auth[7:].strip() == expected
+    return hmac.compare_digest(auth[7:].strip(), expected)
 
 
 @bp.route('/inbox-audit', methods=['POST'])

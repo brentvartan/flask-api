@@ -634,16 +634,16 @@ def run_delaware_scan():
             ).start()
 
         # Domain cross-reference — runs fully async so the route doesn't block
-        form_d_tuples = [
-            (
-                item.id,
-                item.title,
-                json.loads(item.description or "{}").get("category", "Consumer AI"),
-                json.loads(item.description or "{}").get("timestamp", ""),
-            )
-            for item in new_items
-            if json.loads(item.description or "{}").get("signal_type") == "delaware"
-        ]
+        form_d_tuples = []
+        for _item in new_items:
+            _meta = json.loads(_item.description or "{}")
+            if _meta.get("signal_type") == "delaware":
+                form_d_tuples.append((
+                    _item.id,
+                    _item.title,
+                    _meta.get("category", "Consumer AI"),
+                    _meta.get("timestamp", ""),
+                ))
         if form_d_tuples:
             threading.Thread(
                 target=_check_domains_in_background,

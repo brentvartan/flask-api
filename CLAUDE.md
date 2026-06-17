@@ -104,14 +104,14 @@ MAIL_SUPPRESS_SEND=true
 ### Production (Railway — set via dashboard or Raw Editor)
 ```
 FLASK_ENV="production"
-SECRET_KEY="fb24039bbdb1369a36f0b3ef86b9618a2212ee54d59c09a12fc5b81d017e613e"
-JWT_SECRET_KEY="9de9fc68ad8f6fe4a51f4b147a2f214250b00bdde92c5026a5abcf00cf112b7c"
+SECRET_KEY="<set in Railway — do not commit here>"
+JWT_SECRET_KEY="<set in Railway — do not commit here>"
 DATABASE_URL="${{Postgres.DATABASE_URL}}"
 REDIS_URL="${{Redis.REDIS_URL}}"
-SENTRY_DSN="https://f4e57883993cf2fba8b3695d01137ca9@o4511066098499584.ingest.us.sentry.io/4511066101055488"
-RESEND_API_KEY="re_ean9ezLA_Gd9qd4ZHP9iogPyzohMztAqk"
+SENTRY_DSN="<set in Railway — do not commit here>"
+RESEND_API_KEY="<set in Railway — do not commit here>"
 MAIL_FROM="noreply@mail.bullish.co"
-FRONTEND_URL="http://localhost:5173"
+FRONTEND_URL="https://brentvartan.github.io/stealth-finder-frontend"
 ```
 
 ---

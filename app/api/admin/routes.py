@@ -872,15 +872,24 @@ def update_founder_profile(profile_id):
     fp = FounderProfile.query.get_or_404(profile_id)
     data = request.get_json(silent=True) or {}
 
+    _VALID_OUTREACH = {"cold", "email_sent", "connected", "had_call", "in_their_corner"}
     allowed = {"outreach_status", "outreach_notes", "last_contact", "next_action"}
     for field in allowed:
-        if field in data:
-            if field == "last_contact":
-                from datetime import date
-                val = data[field]
+        if field not in data:
+            continue
+        if field == "outreach_status":
+            if data[field] not in _VALID_OUTREACH:
+                return jsonify({"error": f"Invalid outreach_status '{data[field]}'"}), 422
+            setattr(fp, field, data[field])
+        elif field == "last_contact":
+            from datetime import date
+            val = data[field]
+            try:
                 setattr(fp, field, date.fromisoformat(val) if val else None)
-            else:
-                setattr(fp, field, data[field])
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid date format for last_contact — use YYYY-MM-DD"}), 422
+        else:
+            setattr(fp, field, data[field])
 
     from ...extensions import db as _db
     _db.session.commit()

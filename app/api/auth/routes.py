@@ -185,6 +185,9 @@ def invite():
 
     email = data["email"].lower()
 
+    if not email.endswith("@bullish.co"):
+        return jsonify({"error": "Invites are restricted to @bullish.co addresses"}), 403
+
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "An account with that email already exists"}), 409
 
