@@ -503,6 +503,110 @@ def get_inbox_audit():
     return jsonify(result), 200
 
 
+@bp.route("/watchlist/bulk-import", methods=["POST"])
+@admin_required()
+def bulk_import_watchlist():
+    """
+    POST /api/admin/watchlist/bulk-import
+
+    Bulk-add brands to the watchlist. Skips brands already present.
+    Accepts JSON: {"brands": [{"name": "Poppi", "category": "Beverage", "notes": "...", "deal_type": "Acquisition", "acquirer": "PepsiCo", "year": 2025}, ...]}
+    Returns: {"added": [...], "skipped": [...], "total": N}
+    """
+    body = request.get_json(silent=True) or {}
+    brands = body.get("brands", [])
+    if not isinstance(brands, list) or not brands:
+        return jsonify({"error": "brands must be a non-empty list"}), 400
+    if len(brands) > 200:
+        return jsonify({"error": "brands list too large (max 200)"}), 400
+
+    owner_id = int(get_jwt_identity())
+    existing = Item.query.filter(
+        Item.owner_id == owner_id,
+        Item.item_type == "watchlist",
+    ).all()
+    existing_keys = set()
+    for item in existing:
+        try:
+            meta = json.loads(item.description or "{}")
+            key = (meta.get("company") or item.title or "").upper().strip()
+            existing_keys.add(key)
+        except Exception:
+            existing_keys.add((item.title or "").upper().strip())
+
+    added, skipped = [], []
+    now = datetime.now(timezone.utc).isoformat()
+
+    for b in brands:
+        brand_name = (b.get("name") or "").strip()
+        if not brand_name:
+            continue
+        brand_key = brand_name.upper().strip()
+        if brand_key in existing_keys:
+            skipped.append(brand_name)
+            continue
+
+        deal_parts = []
+        if b.get("deal_type"):
+            deal_parts.append(b["deal_type"])
+        if b.get("acquirer") and b["acquirer"] not in ("-", "Public Markets"):
+            deal_parts.append(f"→ {b['acquirer']}")
+        if b.get("year"):
+            deal_parts.append(str(int(b["year"])))
+        deal_str = " ".join(deal_parts)
+
+        notes_parts = []
+        if b.get("what_they_do"):
+            notes_parts.append(b["what_they_do"])
+        if deal_str:
+            notes_parts.append(deal_str)
+        if b.get("notes"):
+            notes_parts.append(b["notes"])
+
+        meta = {
+            "_type":          "watchlist",
+            "name":           "",
+            "company":        brand_name,
+            "linkedin":       "",
+            "twitter":        "",
+            "notes":          " · ".join(notes_parts) if notes_parts else f"Imported from Consumer Deals list",
+            "added_at":       now,
+            "auto_added":     True,
+            "bulk_imported":  True,
+            "category":       b.get("category", ""),
+            "deal_type":      b.get("deal_type", ""),
+            "acquirer":       b.get("acquirer", ""),
+            "deal_year":      int(b["year"]) if b.get("year") and str(b.get("year")).isdigit() else None,
+            "valuation_m":    b.get("valuation_m"),
+            "signal_types":   [],
+            "rescore_history": [],
+            "last_news_check": None,
+            "news_results":   [],
+        }
+
+        db.session.add(Item(
+            title=brand_name,
+            owner_id=owner_id,
+            item_type="watchlist",
+            description=json.dumps(meta),
+        ))
+        existing_keys.add(brand_key)
+        added.append(brand_name)
+
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.error("bulk_import_watchlist failed: %s", exc)
+        return jsonify({"error": "Database error during bulk import"}), 500
+
+    return jsonify({
+        "added":   added,
+        "skipped": skipped,
+        "total":   len(added) + len(skipped),
+    }), 200
+
+
 @bp.route("/users/<int:user_id>/send-reset", methods=["POST"])
 @admin_required()
 def send_reset_link(user_id):

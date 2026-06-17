@@ -128,6 +128,170 @@ CONVICTION_FOUNDERS: dict[str, tuple[str, list[str]]] = {
     "Nicolas Jammet":     ("Sweetgreen co-founder; culinary + supply-chain architect behind the most iconic fast-casual brand", ["Sweetgreen"]),
     "Nathaniel Ru":       ("Sweetgreen co-founder; brand and community architect — defined Sweetgreen's cultural identity", ["Sweetgreen"]),
 
+    # ── Poppi ─────────────────────────────────────────────────────────────────
+    "Allison Ellsworth": ("Poppi co-founder; PepsiCo ~$1.95B exit — after the sale, widely expected to build again", ["Poppi"]),
+    "Stephen Ellsworth": ("Poppi co-founder; built functional soda brand from home to $1.95B PepsiCo acquisition", ["Poppi"]),
+
+    # ── Athletic Brewing ──────────────────────────────────────────────────────
+    "Bill Shufelt":      ("Athletic Brewing co-founder; created the NA craft beer category — Keurig Dr Pepper exit", ["Athletic Brewing"]),
+    "John Walker":       ("Athletic Brewing co-founder + Master Brewer; built NA beer from scratch to category leader", ["Athletic Brewing"]),
+
+    # ── Gymshark ──────────────────────────────────────────────────────────────
+    "Ben Francis":       ("Gymshark founder; built from his parents' garage to $1.3B+ — community-first fitness brand", ["Gymshark"]),
+
+    # ── Whoop ─────────────────────────────────────────────────────────────────
+    "Will Ahmed":        ("Whoop founder; pioneered physiological monitoring wearables for serious athletes", ["Whoop"]),
+
+    # ── Eight Sleep ───────────────────────────────────────────────────────────
+    "Matteo Franceschetti": ("Eight Sleep co-founder; turned sleep into a performance category — Pod cover at $2K+", ["Eight Sleep"]),
+    "Alexandra Zatarain":   ("Eight Sleep co-founder + Chief Brand Officer; built the sleep performance brand narrative", ["Eight Sleep"]),
+
+    # ── Vuori ─────────────────────────────────────────────────────────────────
+    "Joe Kudla":         ("Vuori founder; premium performance apparel with California lifestyle brand identity, $4B val", ["Vuori"]),
+
+    # ── BarkBox / BARK ────────────────────────────────────────────────────────
+    "Matt Meeker":       ("BarkBox co-founder; built the pet subscription category — BARK went public 2021", ["BarkBox", "BARK"]),
+
+    # ── Ritual ────────────────────────────────────────────────────────────────
+    "Katerina Schneider": ("Ritual founder; redefined vitamins with radical transparency and design-forward identity", ["Ritual"]),
+
+    # ── Caraway ───────────────────────────────────────────────────────────────
+    "Jordan Nathan":     ("Caraway founder; made cookware a brand story — DTC home goods with aesthetic identity", ["Caraway"]),
+
+    # ── Seed ──────────────────────────────────────────────────────────────────
+    "Ara Katz":          ("Seed co-founder; turned probiotic science into a design-forward consumer wellness brand", ["Seed"]),
+    "Raja Dhir":         ("Seed co-founder; microbiome science + brand — built Seed into a category-defining wellness co", ["Seed"]),
+
+    # ── Banza ─────────────────────────────────────────────────────────────────
+    "Brian Rudolph":     ("Banza co-founder; chickpea pasta from dorm room to Sovos Brands acquisition", ["Banza"]),
+    "Scott Rudolph":     ("Banza co-founder; food identity brand with mission and mass retail distribution", ["Banza"]),
+
+    # ── Simple Mills ──────────────────────────────────────────────────────────
+    "Katlin Smith":      ("Simple Mills founder; built clean-label snacks/baking category — almond flour pioneer", ["Simple Mills"]),
+
+    # ── Lovevery ──────────────────────────────────────────────────────────────
+    "Jessica Rolph":     ("Lovevery co-founder; science-based children's toys subscription — premium parenting brand", ["Lovevery"]),
+    "Roderick Morris":   ("Lovevery co-founder; The Play Kits — developmental learning subscription for parents", ["Lovevery"]),
+
+    # ── Graza ─────────────────────────────────────────────────────────────────
+    "Andrew Benin":      ("Graza founder; turned olive oil into a brand with a squeeze bottle and DTC food identity", ["Graza"]),
+
+    # ── Our Place ─────────────────────────────────────────────────────────────
+    "Shiza Shahid":      ("Our Place co-founder; Always Pan — multicultural cooking brand with identity-driven DTC", ["Our Place"]),
+    "Amir Tehrani":      ("Our Place co-founder; design-forward cookware built on cultural storytelling", ["Our Place"]),
+
+    # ── Super Coffee ──────────────────────────────────────────────────────────
+    "Jordan DeCicco":    ("Super Coffee co-founder; protein-spiked coffee — family startup built to meaningful scale", ["Super Coffee"]),
+    "Jake DeCicco":      ("Super Coffee co-founder; operational muscle behind the DeCicco family's beverage brand", ["Super Coffee"]),
+    "Jim DeCicco":       ("Super Coffee co-founder; CPG distribution and retail strategy — family-run to exit", ["Super Coffee"]),
+
+    # ── Lalo ──────────────────────────────────────────────────────────────────
+    "Greg Davidson":     ("Lalo co-founder; modern baby brand — design-forward products for millennial parents", ["Lalo"]),
+    "Michael Wieder":    ("Lalo co-founder; Rockets of Awesome before that — serial DTC brand builder for parents", ["Lalo", "Rockets of Awesome"]),
+
+    # ── Mid-Day Squares ───────────────────────────────────────────────────────
+    "Nick Saltarelli":   ("Mid-Day Squares co-founder; built a snack brand in public — radical content transparency", ["Mid-Day Squares"]),
+    "Jake Karls":        ("Mid-Day Squares co-founder; Chief Vibes Officer — turned brand-building into entertainment", ["Mid-Day Squares"]),
+
+    # ── Stasher ───────────────────────────────────────────────────────────────
+    "Kat Nouri":         ("Stasher founder; platinum silicone reusable bags — sustainability + design consumer brand", ["Stasher"]),
+
+    # ── Primal Kitchen ────────────────────────────────────────────────────────
+    "Mark Sisson":       ("Primal Kitchen founder; Kraft Heinz $200M exit — paleo/keto condiments category creator", ["Primal Kitchen"]),
+
+    # ── The Farmer's Dog ──────────────────────────────────────────────────────
+    "Jonathan Regev":    ("The Farmer's Dog co-founder; fresh pet food subscription — $1.8B+ valuation", ["The Farmer's Dog", "Nom Nom"]),
+    "Brett Podolsky":    ("The Farmer's Dog co-founder; disrupted kibble with human-grade fresh food subscription", ["The Farmer's Dog", "Nom Nom"]),
+
+    # ── Chomps ────────────────────────────────────────────────────────────────
+    "Pete Maldonado":    ("Chomps co-founder; better-for-you meat snacks built to $200M+ revenue DTC-first", ["Chomps"]),
+    "Rashid Ali":        ("Chomps co-founder; clean-label meat snacks with DTC-to-retail crossover playbook", ["Chomps"]),
+
+    # ── Chobani ───────────────────────────────────────────────────────────────
+    "Hamdi Ulukaya":     ("Chobani founder; built Greek yogurt into a $10B brand — immigrant founder origin story", ["Chobani"]),
+
+    # ── Bombas ────────────────────────────────────────────────────────────────
+    "David Heath":       ("Bombas co-founder; socks + social mission — buy-one-give-one model, $100M+ revenue", ["Bombas"]),
+    "Randy Goldberg":    ("Bombas co-founder; premium socks with mission-driven brand identity — Shark Tank to scale", ["Bombas"]),
+
+    # ── Figs ──────────────────────────────────────────────────────────────────
+    "Trina Spear":       ("Figs co-founder + CEO; reinvented medical scrubs as a fashion brand — IPO'd 2021", ["Figs"]),
+
+    # ── HexClad ───────────────────────────────────────────────────────────────
+    "Danny Winer":       ("HexClad co-founder; hybrid cookware + Gordon Ramsay — $500M+ premium kitchen brand", ["HexClad"]),
+    "Cole Rubin":        ("HexClad co-founder; built HexClad to $500M+ revenue in the premium cookware category", ["HexClad"]),
+
+    # ── Kodiak Cakes ──────────────────────────────────────────────────────────
+    "Joel Clark":        ("Kodiak Cakes founder; protein pancakes from family wagon to $200M+ brand + Shark Tank", ["Kodiak Cakes"]),
+
+    # ── Ruggable ──────────────────────────────────────────────────────────────
+    "Jeneva Bell":       ("Ruggable founder; machine-washable rugs — category-creating home goods DTC brand", ["Ruggable"]),
+
+    # ── Nutrafol ──────────────────────────────────────────────────────────────
+    "Giorgos Tsetis":    ("Nutrafol co-founder; hair wellness brand — clinically-backed supplements, $1B+ valuation", ["Nutrafol"]),
+    "Roland Peralta":    ("Nutrafol co-founder; built hair health category before anyone else was in it", ["Nutrafol"]),
+
+    # ── Burrow ────────────────────────────────────────────────────────────────
+    "Lee Mayer":         ("Burrow co-founder; modular furniture DTC — brought the Casper playbook to home furnishings", ["Burrow"]),
+    "Stephen Kuhl":      ("Burrow co-founder; modular sofa brand with DTC-first distribution and strong brand identity", ["Burrow"]),
+
+    # ── MeUndies ──────────────────────────────────────────────────────────────
+    "Jonathan Shokrian":  ("MeUndies founder; underwear subscription — fabric-obsessed DTC brand with membership model", ["MeUndies"]),
+
+    # ── Cuts Clothing ─────────────────────────────────────────────────────────
+    "Steven Borrelli":   ("Cuts Clothing founder; premium men's T-shirts — the unofficial uniform of ambition", ["Cuts Clothing"]),
+
+    # ── Bloom Nutrition ───────────────────────────────────────────────────────
+    "Mari Llewellyn":    ("Bloom Nutrition founder; built greens supplement brand through personal transformation story", ["Bloom Nutrition"]),
+
+    # ── SmartSweets ───────────────────────────────────────────────────────────
+    "Tara Bosch":        ("SmartSweets founder; stepped away post-acquisition — candy with 3g sugar, $5K to exit story", ["SmartSweets"]),
+
+    # ── Hello Products ────────────────────────────────────────────────────────
+    "Craig Dubitsky":    ("Hello Products founder; natural oral care — left post-Colgate acquisition 2022, likely building", ["Hello Products"]),
+
+    # ── Fabletics ─────────────────────────────────────────────────────────────
+    "Adam Goldenberg":   ("Fabletics co-founder; TechStyle portfolio — serial DTC fashion brand operator at scale", ["Fabletics", "JustFab"]),
+
+    # ── Reformation ───────────────────────────────────────────────────────────
+    "Yael Aflalo":       ("Reformation founder; sustainable fashion brand with magnetic identity — sold to Permira", ["Reformation"]),
+
+    # ── Brooklinen ────────────────────────────────────────────────────────────
+    "Rich Fulop":        ("Brooklinen co-founder; luxury DTC bedding — disrupted the department store sheet category", ["Brooklinen"]),
+    "Vicki Fulop":       ("Brooklinen co-founder; built direct-to-consumer home textiles brand with lifestyle identity", ["Brooklinen"]),
+
+    # ── Quip ──────────────────────────────────────────────────────────────────
+    "Simon Enever":      ("Quip co-founder; electric toothbrush subscription — design-driven oral care DTC brand", ["Quip"]),
+
+    # ── Moon Juice ────────────────────────────────────────────────────────────
+    "Amanda Chantal Bacon": ("Moon Juice founder; adaptogenic beauty/wellness brand with cult following — The Dusts", ["Moon Juice"]),
+
+    # ── Manscaped ─────────────────────────────────────────────────────────────
+    "Paul Tran":         ("Manscaped co-founder; men's grooming below-the-waist brand — category creation + bold brand voice", ["Manscaped"]),
+
+    # ── Article ───────────────────────────────────────────────────────────────
+    "Aamir Baig":        ("Article co-founder; DTC furniture — modern design at accessible prices, profitable without VC", ["Article"]),
+    "Andy Prochazka":    ("Article co-founder; built one of the largest profitable DTC furniture brands in North America", ["Article"]),
+
+    # ── Wild ──────────────────────────────────────────────────────────────────
+    "Freddy Ward":       ("Wild co-founder; sustainable personal care with refillable deodorant — UK-origin DTC brand", ["Wild"]),
+    "Charlie Bowes-Lyon": ("Wild co-founder; built refillable deodorant category with premium brand identity", ["Wild"]),
+
+    # ── Liquid I.V. ───────────────────────────────────────────────────────────
+    "Brandin Cohen":     ("Liquid I.V. founder; hydration multiplier sold to Unilever 2020 — electrolyte category creator", ["Liquid I.V."]),
+
+    # ── Cirkul ────────────────────────────────────────────────────────────────
+    "Garrett Waggoner":  ("Cirkul co-founder; flavor-infusion water bottle with subscription model — $1B+ valuation", ["Cirkul"]),
+
+    # ── Magic Mind ────────────────────────────────────────────────────────────
+    "William Hicks":     ("Magic Mind founder; world's first productivity shot — functional beverage category pioneer", ["Magic Mind"]),
+
+    # ── Once Upon a Farm ──────────────────────────────────────────────────────
+    "John Foraker":      ("Once Upon a Farm co-founder + CEO; organic baby food — ex-Annie's CEO, repeat CPG operator", ["Once Upon a Farm", "Annie's"]),
+
+    # ── Chamberlain Coffee ────────────────────────────────────────────────────
+    "Emma Chamberlain":  ("Chamberlain Coffee founder; Gen Z creator-to-brand — one of the cleanest creator-to-CPG plays", ["Chamberlain Coffee"]),
+
     # ── Add more here ──────────────────────────────────────────────────────
     # "Firstname Lastname": ("reason", ["Brand"]),
 }
