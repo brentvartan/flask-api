@@ -181,7 +181,7 @@ def _proxycurl_credits() -> dict:
         return {"available": None, "error": "PROXYCURL_API_KEY not set"}
     try:
         resp = requests.get(
-            "https://nubela.co/proxycurl/api/credit-balance",
+            "https://nubela.co/api/v1/meta/credit-balance",
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10,
         )
