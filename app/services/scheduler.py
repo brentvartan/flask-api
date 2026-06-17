@@ -685,6 +685,22 @@ def _run_press_monitor(app):
         logger.info("Press monitor: updated %d brands with new press mentions", updated)
 
 
+def _log_inbox_audit_reminder(app):
+    """
+    Monthly job (1st of month, 07:00 UTC): log a reminder that the Gmail
+    Deals inbox audit is due. The actual audit is triggered by the Claude
+    Code scheduled task 'Stealth Finder Monthly Inbox Audit' which reads
+    the INVESTMENTS/A. Deals Gmail label via MCP and POSTs brand names to
+    POST /api/admin/inbox-audit/run.
+    """
+    with app.app_context():
+        logger.info(
+            "Monthly inbox audit reminder — the Claude Code scheduled task "
+            "should be POSTing deal brand names to /api/admin/inbox-audit/run. "
+            "Check Settings → Tools → Inbox Audit for the last result."
+        )
+
+
 def start_scheduler(app):
     """Start the APScheduler background scheduler (once per process)."""
     global _scheduler
@@ -728,10 +744,19 @@ def start_scheduler(app):
             replace_existing=True,
             misfire_grace_time=3600,
         )
+        _scheduler.add_job(
+            _log_inbox_audit_reminder,
+            trigger=CronTrigger(day=1, hour=7, minute=0, timezone="UTC"),
+            args=[app],
+            id="monthly_inbox_audit_reminder",
+            replace_existing=True,
+            misfire_grace_time=86400,
+        )
         _scheduler.start()
         logger.info(
             "Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC, "
-            "founder news Wed 08:00 UTC, press monitor Thu 08:00 UTC"
+            "founder news Wed 08:00 UTC, press monitor Thu 08:00 UTC, "
+            "inbox audit reminder 1st of month 07:00 UTC"
         )
     except Exception as exc:
         logger.warning("Scheduler could not start: %s", exc)

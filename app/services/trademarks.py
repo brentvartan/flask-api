@@ -16,6 +16,13 @@ REQUEST_TIMEOUT = 20  # seconds
 IC_CATEGORY_MAP = {
     "IC 003": "Beauty",           # Cosmetics, skincare, haircare, toiletries
     "IC 005": "Health/Wellness",  # Supplements, pharma, nutraceuticals, medical
+    "IC 009": "Consumer AI",      # Electronics, wearables, consumer tech, software
+    "IC 014": "Apparel",          # Jewelry, watches, precious metals
+    "IC 016": "Home/Lifestyle",   # Paper goods, stationery, notebooks, prints
+    "IC 018": "Apparel",          # Leather goods, bags, handbags, backpacks
+    "IC 020": "Home/Lifestyle",   # Furniture, mirrors, picture frames
+    "IC 021": "Home/Lifestyle",   # Kitchen tools, cookware, housewares, glassware
+    "IC 024": "Home/Lifestyle",   # Textiles, fabric goods, bed/bath linens
     "IC 025": "Apparel",          # Clothing, footwear, headwear
     "IC 028": "Sports",           # Toys, games, sporting goods
     "IC 029": "CPG/Food/Drink",   # Meat, dairy, preserved / processed foods
@@ -25,6 +32,7 @@ IC_CATEGORY_MAP = {
     "IC 033": "CPG/Food/Drink",   # Wine, spirits, liqueurs
     "IC 035": "Home/Lifestyle",   # Retail / e-commerce services
     "IC 041": "Education",        # Education, entertainment, fitness training
+    "IC 043": "CPG/Food/Drink",   # Food/beverage services, restaurants, cafes
     "IC 044": "Health/Wellness",  # Medical, beauty, spa, veterinary
 }
 

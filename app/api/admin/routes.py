@@ -466,6 +466,43 @@ def check_all_domains():
     }), 202
 
 
+@bp.route("/inbox-audit/run", methods=["POST"])
+@admin_required()
+def run_inbox_audit():
+    """
+    Check a list of deal brand names against the Stealth Finder signal DB.
+
+    Accepts JSON: {"brand_names": ["Filament", "Stripes Beauty", ...]}
+
+    Called monthly by the Claude Code scheduled task that reads the
+    INVESTMENTS/A. Deals Gmail label and extracts brand names via Claude.
+    Can also be triggered manually from the Settings → Tools page.
+    """
+    from ...services.inbox_audit import check_brands_in_db
+    body = request.get_json(silent=True) or {}
+    brand_names = body.get("brand_names", [])
+    if not isinstance(brand_names, list) or not brand_names:
+        return jsonify({"error": "brand_names must be a non-empty list"}), 400
+    if len(brand_names) > 500:
+        return jsonify({"error": "brand_names list too large (max 500)"}), 400
+
+    app = current_app._get_current_object()
+    result = check_brands_in_db(brand_names, app)
+    return jsonify(result), 200
+
+
+@bp.route("/inbox-audit/latest", methods=["GET"])
+@admin_required()
+def get_inbox_audit():
+    """Return the most recent inbox audit result."""
+    from ...services.inbox_audit import get_latest_audit
+    app = current_app._get_current_object()
+    result = get_latest_audit(app)
+    if not result:
+        return jsonify({"error": "No audit has been run yet"}), 404
+    return jsonify(result), 200
+
+
 @bp.route("/users/<int:user_id>/send-reset", methods=["POST"])
 @admin_required()
 def send_reset_link(user_id):
