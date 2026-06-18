@@ -4,31 +4,34 @@ full_rescore.py
 ---------------
 Re-enrich every signal in the database with the latest Bullish AI prompt.
 
-This catches:
-  - Established brands (IPSY, AG1, Glossier) → gate_passed=false → hidden from dashboard
-  - Signals enriched before the stage filter, founder scoring, or calibration updates
-  - Any signal with a stale score that doesn't reflect current thesis anchors
-
-Batch size is 10 (not 50) to stay under Railway's ~60s HTTP timeout.
-Rate limit is 5 calls/min on the batch endpoint → 13s sleep between calls.
-Throughput: ~46 signals/min.
+Runs 4 parallel threads (matching gunicorn --workers 4) so enrichments
+overlap instead of queuing. Real throughput: ~6–7 signals/min.
+Estimated time for 2000 signals: ~5–6 hours.
 
 Usage:
   python scripts/full_rescore.py
 """
 import getpass
+import json
 import sys
 import time
+import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
-API_BASE   = "https://web-production-801ed.up.railway.app/api"
-BATCH_SIZE = 5        # 5 Claude calls ≈ 45s, well under Gunicorn's 300s worker timeout
-SLEEP_SEC  = 13       # 5 calls/min rate limit → 13s gives headroom
+API_BASE       = "https://web-production-801ed.up.railway.app/api"
+ENRICH_TIMEOUT = 65   # seconds — Claude + optional Proxycurl can take ~45s
+MAX_WORKERS    = 4    # must match gunicorn --workers in start.sh
+
+_print_lock = threading.Lock()
+_stats_lock = threading.Lock()
+_enriched   = 0
+_errors     = 0
 
 
 def login(email: str, password: str) -> str:
     r = requests.post(f"{API_BASE}/auth/login",
-                      json={"email": email, "password": password}, timeout=10)
+                      json={"email": email, "password": password}, timeout=15)
     r.raise_for_status()
     token = r.json().get("access_token")
     if not token:
@@ -37,23 +40,73 @@ def login(email: str, password: str) -> str:
     return token
 
 
-def count_signals(token: str) -> int:
-    r = requests.get(f"{API_BASE}/items",
-                     params={"page": 1, "per_page": 1},
-                     headers={"Authorization": f"Bearer {token}"}, timeout=15)
-    r.raise_for_status()
-    return r.json().get("pagination", {}).get("total", 0)
+def fetch_all_signal_ids(token: str) -> list[int]:
+    headers = {"Authorization": f"Bearer {token}"}
+    ids = []
+    page = 1
+    while True:
+        r = requests.get(f"{API_BASE}/items",
+                         params={"page": page, "per_page": 100},
+                         headers=headers, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        for item in data.get("items", []):
+            try:
+                meta = json.loads(item.get("description") or "{}")
+                if meta.get("_type") == "signal":
+                    ids.append(item["id"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if not data.get("pagination", {}).get("has_next"):
+            break
+        page += 1
+    return ids
 
 
-def rescore_page(token: str, offset: int) -> dict:
+def enrich_one(token: str, item_id: int) -> bool:
     r = requests.post(
-        f"{API_BASE}/enrich/batch",
-        json={"rescore_all": True, "limit": BATCH_SIZE, "offset": offset},
+        f"{API_BASE}/enrich/signal/{item_id}",
         headers={"Authorization": f"Bearer {token}"},
-        timeout=290,   # Gunicorn worker timeout is 300s; leave 10s for network
+        timeout=ENRICH_TIMEOUT,
     )
+    if r.status_code == 429:
+        raise RuntimeError("rate-limited")
     r.raise_for_status()
-    return r.json()
+    return r.json().get("enrichment", {}).get("enriched", False)
+
+
+def _process(token: str, item_id: int, index: int, total: int) -> str:
+    global _enriched, _errors
+    pct    = round(index / total * 100)
+    prefix = f"  [{index:4d}/{total}] {pct:3d}%  item={item_id}  "
+    status = ""
+    try:
+        ok     = enrich_one(token, item_id)
+        status = "✓" if ok else "- (skipped)"
+        with _stats_lock:
+            if ok:
+                _enriched += 1
+    except RuntimeError:
+        time.sleep(30)
+        try:
+            ok     = enrich_one(token, item_id)
+            status = "✓ (retry)" if ok else "- (rate-limited, skip)"
+            with _stats_lock:
+                if ok:
+                    _enriched += 1
+                else:
+                    _errors += 1
+        except Exception as e2:
+            status = f"error: {e2}"
+            with _stats_lock:
+                _errors += 1
+    except Exception as e:
+        status = f"error: {e}"
+        with _stats_lock:
+            _errors += 1
+    with _print_lock:
+        print(prefix + status, flush=True)
+    return status
 
 
 def main():
@@ -62,77 +115,45 @@ def main():
     print("=" * 60)
     print()
     print("Re-enriches every signal with the latest AI prompt.")
-    print("Established brands will be gated out. ~46 signals/min.\n")
+    print("Established brands → gate_passed=false → off the dashboard.")
+    print(f"Running {MAX_WORKERS} parallel workers.\n")
 
     email    = input("Admin email: ").strip()
     password = getpass.getpass("Admin password: ")
 
     print("\nLogging in...")
     token = login(email, password)
-    print("✓ Authenticated")
+    print("✓ Authenticated\n")
 
-    total = count_signals(token)
-    est_batches = (total // BATCH_SIZE) + 2
-    est_mins    = round((est_batches * SLEEP_SEC) / 60, 1)
-    est_cost    = round(total * 0.03, 2)
-    print(f"✓ {total} items in database")
-    print(f"\nEstimated time : ~{est_mins} min  |  Estimated cost : ~${est_cost}\n")
+    print("Fetching signal IDs (paging through all items)...")
+    ids   = fetch_all_signal_ids(token)
+    total = len(ids)
+    # ~35s per signal / 4 parallel workers
+    est_mins = round(total / MAX_WORKERS * 35 / 60, 0)
+    est_cost = round(total * 0.03, 2)
+    print(f"✓ {total} signals found")
+    print(f"\nEstimated time : ~{int(est_mins)} min ({int(est_mins)//60}h {int(est_mins)%60}m)"
+          f"  |  Estimated cost : ~${est_cost}\n")
 
     confirm = input("Proceed? [y/N] ").strip().lower()
     if confirm != "y":
         print("Aborted.")
         return
 
-    print()
-    offset         = 0
-    total_enriched = 0
-    total_errors   = 0
-    batch_num      = 0
+    print(f"\nStarting {MAX_WORKERS}-worker parallel rescore...\n")
+    t0 = time.monotonic()
 
-    while True:
-        batch_num += 1
-        print(f"  Batch {batch_num:3d} | offset={offset:4d} | ", end="", flush=True)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        work = [(token, iid, i, total) for i, iid in enumerate(ids, 1)]
+        for _ in executor.map(lambda a: _process(*a), work):
+            pass
 
-        try:
-            result = rescore_page(token, offset)
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code == 429:
-                print("rate-limited — sleeping 60s...")
-                time.sleep(60)
-                continue   # retry same offset
-            print(f"HTTP {e.response.status_code if e.response else '?'}: {e}")
-            break
-        except requests.Timeout:
-            print(f"timed out after 290s — skipping batch, advancing offset")
-            total_errors += BATCH_SIZE
-            offset += BATCH_SIZE
-            continue
-        except Exception as e:
-            print(f"error: {e}")
-            break
-
-        enriched  = result.get("enriched", 0)
-        errors    = result.get("errors", 0)
-        processed = result.get("total_processed", 0)
-        has_more  = result.get("has_more", False)
-
-        total_enriched += enriched
-        total_errors   += errors
-        offset         += processed
-
-        print(f"enriched={enriched:2d}  errors={errors:2d}  "
-              f"running total={total_enriched:4d}  "
-              f"{'→ more' if has_more else '✓ done'}")
-
-        if not has_more or processed == 0:
-            break
-
-        time.sleep(SLEEP_SEC)
-
+    elapsed = time.monotonic() - t0
     print()
     print("=" * 60)
-    print(f"  ✓ Done. Re-enriched {total_enriched} signals, {total_errors} errors.")
-    print(f"  Refresh the Stealth Finder dashboard to see updated scores.")
+    print(f"  ✓ Done. Enriched {_enriched}/{total}, errors: {_errors}.")
+    print(f"  Elapsed: {elapsed/60:.1f} min  |  Rate: {total/(elapsed/60):.1f} signals/min")
+    print(f"  Refresh the dashboard to see updated scores.")
     print("=" * 60)
 
 
