@@ -38,7 +38,7 @@ def _extract_owner(notes: str) -> str:
 
 @bp.route("/signal/<int:item_id>", methods=["POST"])
 @jwt_required()
-@limiter.limit("30 per minute")
+@limiter.limit("30 per minute", override_defaults=True)
 def enrich_single(item_id):
     """Enrich a single signal item with Bullish AI analysis."""
     user_id = int(get_jwt_identity())
