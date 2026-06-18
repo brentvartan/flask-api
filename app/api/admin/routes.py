@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time as _time
+import uuid
 from calendar import monthrange
 from collections import Counter
 from datetime import datetime, timezone
@@ -265,6 +266,30 @@ def _resend_email_stats():
         return {"emails_this_month": 0, "emails_all_time": 0, "error": "Stats unavailable"}
 
 
+def _get_manual_spend_entries() -> list:
+    """Load manual spend entries from __bullish_settings__."""
+    try:
+        settings_item = Item.query.filter_by(title="__bullish_settings__").first()
+        if settings_item:
+            settings = json.loads(settings_item.description or "{}")
+            return settings.get("manual_spend", [])
+    except Exception:
+        pass
+    return []
+
+
+def _save_manual_spend_entries(entries: list) -> None:
+    """Persist manual spend entries back to __bullish_settings__."""
+    settings_item = Item.query.filter_by(title="__bullish_settings__").first()
+    if not settings_item:
+        settings_item = Item(title="__bullish_settings__", owner_id=1, item_type="settings")
+        db.session.add(settings_item)
+    settings = json.loads(settings_item.description or "{}")
+    settings["manual_spend"] = entries
+    settings_item.description = json.dumps(settings)
+    db.session.commit()
+
+
 @bp.route("/spend", methods=["GET"])
 @admin_required()
 def get_spend():
@@ -319,8 +344,12 @@ def get_spend():
     resend_cost_month   = round(resend["emails_this_month"] * _RESEND_COST_PER_EMAIL, 2)
     resend_cost_alltime = round(resend["emails_all_time"]   * _RESEND_COST_PER_EMAIL, 2)
 
+    # Manual spend entries (one-time costs logged by admin)
+    manual_entries = _get_manual_spend_entries()
+    manual_total   = round(sum(e.get("amount", 0) for e in manual_entries), 2)
+
     total_cost_month   = round(proxycurl_cost_month   + serpapi_cost_month   + anthropic_cost_month   + crunchbase_cost_month   + resend_cost_month,   2)
-    total_cost_alltime = round(proxycurl_cost_alltime + serpapi_cost_alltime + anthropic_cost_alltime + crunchbase_cost_alltime + resend_cost_alltime, 2)
+    total_cost_alltime = round(proxycurl_cost_alltime + serpapi_cost_alltime + anthropic_cost_alltime + crunchbase_cost_alltime + resend_cost_alltime + manual_total, 2)
 
     result_dict = {
         "proxycurl": {
@@ -370,11 +399,59 @@ def get_spend():
             "estimated_cost_this_month": total_cost_month,
             "estimated_cost_all_time":   total_cost_alltime,
         },
+        "manual_spend": {
+            "entries": manual_entries,
+            "total":   manual_total,
+        },
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     _spend_cache["data"] = result_dict
     _spend_cache["expires"] = _time.time() + 300  # 5 minutes
     return jsonify(result_dict), 200
+
+
+@bp.route("/spend/manual", methods=["POST"])
+@admin_required()
+def add_manual_spend():
+    """Log a one-time manual spend entry (e.g. LinkedIn scrape, Anthropic top-up)."""
+    data = request.get_json(silent=True) or {}
+    description = (data.get("description") or "").strip()
+    amount = data.get("amount")
+    category = (data.get("category") or "other").strip()
+    date = (data.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")).strip()
+
+    if not description:
+        return jsonify({"error": "description is required"}), 400
+    try:
+        amount = round(float(amount), 2)
+    except (TypeError, ValueError):
+        return jsonify({"error": "amount must be a number"}), 400
+
+    entry = {
+        "id":          uuid.uuid4().hex[:8],
+        "date":        date,
+        "description": description,
+        "category":    category,
+        "amount":      amount,
+    }
+    entries = _get_manual_spend_entries()
+    entries.append(entry)
+    _save_manual_spend_entries(entries)
+    _spend_cache["data"] = None  # bust cache
+    return jsonify({"ok": True, "entry": entry}), 201
+
+
+@bp.route("/spend/manual/<entry_id>", methods=["DELETE"])
+@admin_required()
+def delete_manual_spend(entry_id):
+    """Remove a manual spend entry by ID."""
+    entries = _get_manual_spend_entries()
+    updated = [e for e in entries if e.get("id") != entry_id]
+    if len(updated) == len(entries):
+        return jsonify({"error": "entry not found"}), 404
+    _save_manual_spend_entries(updated)
+    _spend_cache["data"] = None  # bust cache
+    return jsonify({"ok": True}), 200
 
 
 @bp.route("/users/<int:user_id>", methods=["DELETE"])
