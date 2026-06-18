@@ -359,6 +359,21 @@ def enrich_signal(signal: dict) -> dict:
             text = text.split("```")[1].split("```")[0].strip()
 
         result = json.loads(text)
+
+        # Apply minimum tier floors — prevent genuine legal signals from being buried as cold
+        _signal_types   = set(signal.get("signal_types", []))
+        _has_conviction = bool(signal.get("conviction_match"))
+        _has_tm         = "trademark" in _signal_types
+        _has_form_d     = "delaware"  in _signal_types
+        _level          = result.get("watch_level", "cold")
+
+        if _has_conviction:
+            result["watch_level"]       = "hot"
+            result["tier_floor_reason"] = "conviction_match"
+        elif (_has_tm or _has_form_d) and _level == "cold":
+            result["watch_level"]       = "warm"
+            result["tier_floor_reason"] = "tm_plus_form_d" if (_has_tm and _has_form_d) else ("trademark" if _has_tm else "form_d")
+
         result["enriched"] = True
         return result
 
