@@ -31,46 +31,7 @@ FEEDS = [
 
 # ── Consumer brand categories → keywords ─────────────────────────────────────
 
-_CATEGORY_KEYWORDS = {
-    "Beauty": [
-        "beauty", "skincare", "skin care", "cosmetic", "cosmetics",
-        "makeup", "hair care", "haircare", "glow", "serum", "lip",
-        "nail", "fragrance", "sunscreen", "spf", "derma", "aesthetic",
-    ],
-    "Health/Wellness": [
-        "health", "wellness", "supplement", "vitamin", "nutrition",
-        "gut health", "sleep", "stress", "mental health",
-        "longevity", "biohack", "weight loss", "glp", "perimenopause",
-        "hormone", "fertility", "probiotic", "microbiome", "functional",
-        "recovery", "nootropic",
-    ],
-    "CPG/Food/Drink": [
-        "food", "drink", "beverage", "coffee", "tea", "snack",
-        "protein", "meal kit", "plant-based", "organic",
-        "zero sugar", "no alcohol", "mocktail", "adaptogenic",
-        "functional drink", "chocolate", "bar ", "bars", "sauce",
-        "condiment", "cereal", "granola", "cuisine", "culinary",
-    ],
-    "Fitness": [
-        "fitness", "workout", "exercise", "gym", "yoga", "running",
-        "cycling", "strength training", "sport", "athletic", "recovery",
-        "activewear", "training",
-    ],
-    "Apparel": [
-        "clothing", "apparel", "fashion", "wear", "shirt", "dress",
-        "shoes", "sneakers", "jacket", "athleisure", "denim",
-        "outerwear", "streetwear",
-    ],
-    "Home/Lifestyle": [
-        "home decor", "interior", "kitchen", "garden",
-        "cleaning", "organization", "candle", "pet food", "pet care",
-        "baby", "parenting", "nursery",
-    ],
-    "Consumer AI": [
-        "personalized", "ai-powered", "ai coach", "wearable",
-        "smart device", "consumer app", "personalization",
-    ],
-}
+from ..utils.categories import CATEGORY_KEYWORDS as _CATEGORY_KEYWORDS
 
 # Release must contain at least one of these to be relevant (funded or just launching)
 _STAGE_KEYWORDS = [

@@ -24,54 +24,7 @@ REQUEST_TIMEOUT = 15
 
 # ── Consumer keyword → category ───────────────────────────────────────────────
 
-_CATEGORY_KEYWORDS = {
-    "Beauty": [
-        "beauty", "skincare", "skin care", "cosmetic", "cosmetics",
-        "makeup", "hair care", "haircare", "glow", "serum", "lip",
-        "nail", "fragrance", "sunscreen", "spf",
-    ],
-    "Health/Wellness": [
-        "health", "wellness", "supplement", "vitamin", "nutrition",
-        "gut health", "sleep", "stress", "anxiety", "mental health",
-        "longevity", "biohack", "weight loss", "glp", "perimenopause",
-        "hormone", "fertility", "probiotic", "microbiome",
-    ],
-    "CPG/Food/Drink": [
-        "food", "drink", "beverage", "coffee", "tea", "snack",
-        "protein", "meal kit", "recipe", "plant-based", "organic",
-        "zero sugar", "no alcohol", "mocktail", "adaptogenic",
-        "functional drink", "bar ", "bars", "chocolate",
-    ],
-    "Fitness": [
-        "fitness", "workout", "exercise", "gym", "yoga", "running",
-        "cycling", "strength training", "cardio", "sport", "athletic",
-    ],
-    "Apparel": [
-        "clothing", "apparel", "fashion", "wear", "shirt", "dress",
-        "shoes", "sneakers", "jacket", "activewear", "athleisure",
-    ],
-    "Home/Lifestyle": [
-        "home decor", "interior", "furniture", "kitchen", "garden",
-        "cleaning", "organization", "candle", "pet accessory",
-    ],
-    "Consumer AI": [
-        "personalized", "personalization", "ai-powered", "ai coach",
-        "smart device", "wearable",
-    ],
-    "Education": [
-        "learn", "education", "course", "skill", "teach", "tutor",
-    ],
-    "Entertainment": [
-        "entertainment", "game", "gaming", "music", "podcast", "creator",
-    ],
-    "Finance": [
-        "fintech", "savings", "investing", "budget", "personal finance",
-    ],
-    "Pet": [
-        "pet food", "dog food", "cat food", "pet health", "pet care",
-        "veterinary", "dog treat", "cat treat",
-    ],
-}
+from ..utils.categories import CATEGORY_KEYWORDS as _CATEGORY_KEYWORDS
 
 # Keywords that strongly suggest B2B / developer / platform products to exclude
 _B2B_SIGNALS = [

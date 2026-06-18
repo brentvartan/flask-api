@@ -14,6 +14,7 @@ Stealth consumer brands caught here are:
 
 EDGAR's search API is completely free with no API key required.
 """
+import json
 import re
 import time
 import logging
@@ -23,6 +24,13 @@ import requests
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+# Deferred imports to avoid circular dependency at module load time
+# (extensions.db and models.item.Item are only needed by check_domains_in_background)
+def _get_db_and_item():
+    from ..extensions import db
+    from ..models.item import Item
+    return db, Item
 
 EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
 DOMAINSDB_URL    = "https://api.domainsdb.info/v1/domains/search"
@@ -35,123 +43,7 @@ _FUND_ITEMS = {"06a", "06b", "06c", "3c", "3c.1", "3c.7"}
 
 # ─── Consumer keyword → category map ─────────────────────────────────────────
 
-_CATEGORY_KEYWORDS = {
-    "CPG/Food/Drink": [
-        "food", "foods", "beverage", "beverages", "drink", "drinks", "bev",
-        "brew", "brewery", "brewing", "coffee", "tea", "juice", "bar", "bars",
-        "snack", "snacks", "bite", "bites", "eats", "kitchen", "farms", "farm",
-        "harvest", "organic", "fresh", "cafe", "bakery", "bake", "wine", "winery",
-        "spirits", "distillery", "water", "soda", "nutrition", "nutritional",
-        "provisions", "pantry", "table", "grains", "cacao", "chocolate",
-        "condiment", "sauce", "oil", "oils", "dairy", "plant-based", "vegan",
-        "keto", "paleo", "gut", "protein", "meal", "meals", "chew", "chews",
-        "crisp", "crunch", "fizz", "sparkling", "kombucha", "matcha", "mushroom",
-        "adaptogen", "collagen", "prebiotic", "probiotic", "ferment", "fermented",
-        "broth", "bouillon", "grain", "seed", "nut", "nuts", "berry", "berries",
-        "turmeric", "ginger", "honey", "maple", "sweetener", "candy", "confection",
-        "spice", "spices", "blend", "blend", "cocktail", "mocktail", "tonic",
-        "elixir", "drops", "shot", "shots", "chug", "sip", "sipper",
-    ],
-    "Beauty": [
-        "beauty", "cosmetic", "cosmetics", "skincare", "skin", "hair", "haircare",
-        "nail", "glow", "radiant", "serum", "spa", "salon", "lash", "brow",
-        "bloom", "lush", "glam", "glamour", "fragrance", "scent", "parfum",
-        "lipstick", "lip", "blush", "bronze", "contour", "foundation", "toner",
-        "moistur", "mask", "peel", "exfol", "cleanser", "micellar", "essence",
-        "retinol", "peptide", "hyaluron", "sunscreen", "spf", "colour", "color",
-        "pigment", "palette", "eyeshadow", "concealer", "highlight", "groom",
-        "grooming", "shave", "razor", "wax", "scrub", "body", "lotion", "butter",
-        "mist", "spritz", "deodorant", "dental", "teeth", "oral", "tanning",
-        "bronzer", "self-tan", "curl", "wave", "straight", "dye", "tint",
-        "balm", "gloss", "liner", "mascara", "blot", "prime", "primer",
-        "aftershave", "cologne", "perfume", "powder", "setting", "finish",
-    ],
-    "Health/Wellness": [
-        "health", "wellness", "vital", "vitality", "well", "heal", "healing",
-        "longevity", "pure", "detox", "supplement", "supplements",
-        "vitamin", "vitamins", "probiotic", "remedy", "relief", "therapeutic",
-        "mindful", "mindfulness", "balance", "restore", "sleep", "immunity",
-        "immune", "collagen", "omega", "hormone", "fertility", "menopause",
-        "perimenopause", "period", "cycle", "menstrual", "postpartum",
-        "medit", "meditation", "biohack", "longe", "lifespan", "microbiome",
-        "nootropic", "ashwagandha", "functional", "integrative", "holistic",
-        "ayurved", "herbal", "recover", "recovery", "therapy", "clinical",
-        "weight", "metabol", "glp", "peptide", "iv", "infusion", "ozone",
-        "cbd", "hemp", "melatonin", "magnesium", "zinc", "iron", "stress",
-        "anxiety", "mood", "mental", "cognitive", "brain", "focus", "energy",
-    ],
-    "Apparel": [
-        "apparel", "clothing", "wear", "fashion", "style", "dress", "thread",
-        "stitch", "cloth", "fabric", "couture", "gear", "denim", "outfitter",
-        "outfitters", "wardrobe", "garment", "shoe", "shoes", "sneaker",
-        "sneakers", "boot", "boots", "heel", "heels", "accessory", "accessories",
-        "bag", "bags", "purse", "handbag", "wallet", "belt", "hat", "hats",
-        "cap", "caps", "sock", "socks", "underwear", "lingerie", "intimates",
-        "swimwear", "swim", "athleisure", "activewear", "sportswear",
-        "streetwear", "luxury", "womenswear", "menswear", "kidswear",
-        "jewelry", "jewellery", "ring", "rings", "necklace", "bracelet",
-        "earring", "earrings", "pendant", "chain", "watch", "watches",
-        "sunglasses", "eyewear", "glasses", "lens", "scarf", "scarves",
-        "glove", "gloves", "hoodie", "sweatshirt", "tee", "tees", "tshirt",
-        "pant", "pants", "short", "shorts", "skirt", "blazer", "jacket",
-        "coat", "puffer", "down", "vest", "cardigan", "sweater", "knit",
-    ],
-    "Home/Lifestyle": [
-        "home", "house", "living", "decor", "design", "interior", "furnish",
-        "furniture", "bed", "bath", "clean", "cleaning", "organize", "space",
-        "nest", "den", "hearth", "habitat", "cookware", "cook", "bakeware",
-        "knife", "knives", "cutlery", "plate", "plates", "bowl", "bowls",
-        "mug", "mugs", "cup", "cups", "glass", "glasses", "candle", "candles",
-        "diffuser", "aroma", "plant", "garden", "outdoor", "patio", "pillow",
-        "pillows", "blanket", "throw", "rug", "rugs", "towel", "towels",
-        "linen", "linens", "storage", "shelf", "frame", "lamp", "lighting",
-        "pot", "pots", "pan", "pans", "wok", "cast iron", "ceramic",
-        "bamboo", "sustainable", "reusable", "zero waste", "eco",
-    ],
-    "Pet": [
-        "pet", "pets", "dog", "dogs", "cat", "cats", "paw", "paws",
-        "fur", "bark", "vet", "animal", "animals", "canine", "feline",
-        "puppy", "kitten", "kibble", "treat", "treats", "leash", "collar",
-        "poodle", "retriever", "breed", "rescue", "biscuit", "chew", "chews",
-        "fetch", "wag", "tail", "snout", "pup", "hound", "terrier",
-    ],
-    "Fitness": [
-        "fitness", "gym", "sport", "sports", "active", "athlete", "athletes",
-        "train", "training", "run", "running", "lift", "lifting", "workout",
-        "cycle", "cycling", "swim", "movement", "flex", "performance",
-        "yoga", "pilates", "crossfit", "hiit", "cardio", "strength",
-        "bodybuild", "endurance", "marathon", "triathlon", "rowing", "climb",
-        "hike", "hiking", "camp", "camping", "surf", "paddle", "stretch",
-        "recover", "foam", "roller", "mat", "band", "resistance", "weight",
-    ],
-    "Consumer AI": [
-        "ai", "intelligence", "intelligent", "smart", "digital", "lab", "labs",
-        "tech", "app", "platform", "software", "data", "algorithm", "model",
-        "neural", "machine", "automat", "personal", "assistant", "bot",
-    ],
-    "Entertainment": [
-        "entertain", "entertainment", "media", "content", "story", "stories",
-        "game", "games", "gaming", "music", "art", "film", "studio",
-        "creative", "experience", "streaming", "podcast", "creator", "play",
-        "theater", "theatre", "concert", "live", "event", "ticket",
-    ],
-    "Education": [
-        "learn", "learning", "edu", "education", "school", "tutor", "coaching",
-        "skill", "skills", "study", "teach", "academy", "knowledge",
-        "course", "curriculum", "child", "children", "kid", "kids", "family",
-        "parent", "parenting", "montessori", "stem", "stem", "craft",
-    ],
-    "Finance": [
-        "fintech", "payment", "payments", "money", "wallet", "credit", "wealth",
-        "bank", "banking", "invest", "crypto", "defi", "neobank", "insurance",
-        "saving", "savings", "borrow", "lending", "mortgage", "real estate",
-    ],
-    "Sports": [
-        "sport", "sports", "ball", "team", "league", "athlete", "race",
-        "compete", "competition", "soccer", "basketball", "football",
-        "tennis", "golf", "hockey", "baseball", "esport", "fan", "fans",
-    ],
-}
+from ..utils.categories import CATEGORY_KEYWORDS as _CATEGORY_KEYWORDS
 
 _NON_CONSUMER_BLOCKLIST = {
     "holdings", "holding", "capital", "ventures", "venture", "properties",
@@ -511,3 +403,82 @@ def search_recent_delaware_entities(
         "domain_hits": domain_hits,
         "error":       None,
     }
+
+
+def check_domains_in_background(app, user_id: int, form_d_items: list, enrich_fn):
+    """
+    Background thread: domain cross-reference for a batch of Form D signals.
+    enrich_fn: callable(app, item_ids) — passed from routes to avoid circular import.
+
+    form_d_items is a list of (item_id, brand_name, category, timestamp) tuples.
+    Each call hits DomainsDB with a 0.4s sleep between requests so we don't hammer
+    the API. Domain hits are saved as new 'domain' signal items and queued for
+    enrichment. This keeps the /delaware route fast (no inline domain checks).
+    """
+    import hashlib as _hashlib
+    import re as _re
+    import time as _time
+
+    db, Item = _get_db_and_item()
+
+    with app.app_context():
+        for item_id, brand_name, category, timestamp in form_d_items:
+            try:
+                slug = _brand_slug(brand_name)
+                if not slug or len(slug) < 3:
+                    continue
+
+                domain_info = check_domain(slug, days_back=120)
+                if not domain_info:
+                    _time.sleep(0.4)
+                    continue
+
+                # Inline fingerprint (avoids importing from routes)
+                _norm = _re.sub(r'\s+', ' ', brand_name.upper().strip())
+                fp = _hashlib.sha256(f"domain:{_norm}:{timestamp[:10]}".encode()).hexdigest()[:16]
+
+                already_exists = (
+                    Item.query
+                    .filter_by(owner_id=user_id)
+                    .filter(Item.description.contains(f'"fp":"{fp}"'))
+                    .first()
+                )
+                if already_exists:
+                    _time.sleep(0.4)
+                    continue
+
+                domain_item = Item(
+                    title=brand_name,
+                    owner_id=user_id,
+                    item_type="signal",
+                    description=json.dumps({
+                        "_type":        "signal",
+                        "fp":           fp,
+                        "company_name": brand_name,
+                        "signal_type":  "domain",
+                        "category":     category,
+                        "score_boost":  3,
+                        "description":  (
+                            f"{domain_info['domain']} — registered {domain_info['registered']}"
+                            f" — corroborates Form D filing for {brand_name}"
+                        ),
+                        "url":          domain_info["url"],
+                        "notes":        (
+                            f"Domain registered {domain_info['registered']}, "
+                            f"matching Form D entity {brand_name}."
+                        ),
+                        "timestamp":    timestamp,
+                    }, separators=(",", ":")),
+                )
+                db.session.add(domain_item)
+                db.session.commit()
+                logger.info(
+                    "Domain hit (bg): %s → %s saved as item %d",
+                    brand_name, domain_info["domain"], domain_item.id,
+                )
+                enrich_fn(app, [domain_item.id])
+
+            except Exception as exc:
+                logger.debug("BG domain check failed for %s: %s", brand_name, exc)
+            finally:
+                _time.sleep(0.4)
