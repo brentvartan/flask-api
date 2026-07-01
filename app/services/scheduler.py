@@ -17,6 +17,51 @@ logger = logging.getLogger(__name__)
 
 # Module-level flag so only ONE scheduler starts per process
 _scheduler = None
+_scheduler_lock_fd = None  # held open to keep the file lock alive
+
+
+def _job_lock_key(job_id: str) -> str:
+    return f"__jlock_{job_id}__"
+
+
+def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
+    """
+    Prevent duplicate job runs across Gunicorn workers by using the DB as a mutex.
+    Returns True if this worker should run the job, False if another already did.
+    Uses a short INSERT window — not perfectly atomic, but reduces 4-worker spam to
+    at most 1-2 fires in pathological races (acceptable for email jobs).
+    """
+    from ..models.item import Item
+    from ..extensions import db
+
+    lock_title = _job_lock_key(job_id)
+    now = datetime.now(timezone.utc)
+
+    with app.app_context():
+        try:
+            lock = Item.query.filter_by(title=lock_title, item_type="system").first()
+            if lock:
+                meta = json.loads(lock.description or "{}")
+                ran_at_str = meta.get("ran_at")
+                if ran_at_str:
+                    ran_at = datetime.fromisoformat(ran_at_str)
+                    if (now - ran_at).total_seconds() < ttl_seconds:
+                        return False  # Already ran recently — skip
+                meta["ran_at"] = now.isoformat()
+                lock.description = json.dumps(meta)
+            else:
+                lock = Item(
+                    title=lock_title,
+                    item_type="system",
+                    owner_id=1,
+                    description=json.dumps({"ran_at": now.isoformat()}),
+                )
+                db.session.add(lock)
+            db.session.commit()
+            return True
+        except Exception as exc:
+            logger.warning("Job lock check failed for %s: %s — running anyway", job_id, exc)
+            return True
 
 
 # ─── Core: run a single scan now ──────────────────────────────────────────────
@@ -407,6 +452,18 @@ def _run_all_scheduled(app):
     from ..models.scheduled_scan import ScheduledScan
     from datetime import timedelta
 
+    if not _acquire_job_lock(app, "daily_scan", ttl_seconds=82800):
+        logger.info("Daily scan: already ran in another worker — skipping")
+        return
+
+    # Fire weekly digest on Mondays as a fallback in case the dedicated 9AM job
+    # was missed due to a worker restart between deploys.
+    if datetime.now(timezone.utc).weekday() == 0:  # 0 = Monday
+        try:
+            _send_weekly_digest(app)
+        except Exception as _exc:
+            logger.warning("Weekly digest (fallback) failed: %s", _exc)
+
     with app.app_context():
         scans = ScheduledScan.query.filter_by(enabled=True).all()
         for scan in scans:
@@ -426,6 +483,9 @@ def _run_all_scheduled(app):
 
 def _send_weekly_digest(app):
     """APScheduler job — every Monday 9:00 UTC. Sends top HOT/WARM signals from the past 7 days."""
+    if not _acquire_job_lock(app, "weekly_digest", ttl_seconds=82800):  # 23h — one per day max
+        logger.info("Weekly digest: already sent by another worker — skipping")
+        return
     from ..models.item import Item
     from ..services.email import send_weekly_digest_email
     from datetime import timedelta
@@ -502,6 +562,10 @@ def _check_founder_news(app):
     Weekly job: for every watchlist entry with a founder name,
     run a SerpAPI news search and email alerts on new results.
     """
+    if not _acquire_job_lock(app, "founder_news_monitor", ttl_seconds=82800):
+        logger.info("Founder news: already ran in another worker — skipping")
+        return
+
     import os, json, requests
     from ..models.item import Item
     from ..services.email import send_founder_news_alert
@@ -547,12 +611,15 @@ def _check_founder_news(app):
                 continue
 
             try:
-                # SerpAPI news search
+                # Search for forward-looking news about this founder.
+                # Omit the company name (which may be their OLD company) to avoid
+                # surfacing retrospective articles. Limit to last 60 days via tbs=qdr:2m.
                 params = {
                     "engine": "google",
-                    "q": f'"{founder_name}" "{company}"',
+                    "q": f'"{founder_name}" (building OR startup OR raises OR launches OR "new brand" OR "new company" OR "seed round" OR "pre-seed")',
                     "tbm": "nws",
-                    "num": 5,
+                    "tbs": "qdr:2m",   # last 2 months only
+                    "num": 10,
                     "api_key": serpapi_key,
                 }
                 resp = requests.get("https://serpapi.com/search", params=params, timeout=10)
@@ -561,6 +628,8 @@ def _check_founder_news(app):
 
                 data = resp.json()
                 new_articles = []
+                prev_links = {r.get('link') for r in meta.get('news_results', [])}
+                cutoff = datetime.now(timezone.utc) - timedelta(days=60)
 
                 for result in data.get('news_results', []):
                     title = result.get('title', '')
@@ -568,16 +637,16 @@ def _check_founder_news(app):
                     snippet = result.get('snippet', '')
                     date_str = result.get('date', '')
 
-                    # Check if this link was in previous results
-                    prev_links = {r.get('link') for r in meta.get('news_results', [])}
-                    if link not in prev_links:
-                        new_articles.append({
-                            'title': title,
-                            'link': link,
-                            'snippet': snippet,
-                            'date': date_str,
-                            'source': result.get('source', ''),
-                        })
+                    if link in prev_links:
+                        continue
+
+                    new_articles.append({
+                        'title': title,
+                        'link': link,
+                        'snippet': snippet,
+                        'date': date_str,
+                        'source': result.get('source', ''),
+                    })
 
                 # Update stored results (keep last 10)
                 all_results = new_articles + (meta.get('news_results') or [])
@@ -636,6 +705,9 @@ def _run_press_monitor(app):
     cross-reference against every brand in the signal DB.
     Appends new press mentions to each brand's item metadata without duplicates.
     """
+    if not _acquire_job_lock(app, "press_monitor", ttl_seconds=82800):
+        logger.info("Press monitor: already ran in another worker — skipping")
+        return
     from ..models.item import Item
     from ..extensions import db
 
