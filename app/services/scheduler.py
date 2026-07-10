@@ -675,7 +675,7 @@ def _check_founder_news(app):
                     "engine": "google",
                     "q": f'"{founder_name}" (building OR startup OR raises OR launches OR "new brand" OR "new company" OR "seed round" OR "pre-seed")',
                     "tbm": "nws",
-                    "tbs": "qdr:2m",   # hint to SerpAPI — also enforced below
+                    "tbs": "qdr:6m",   # hint to SerpAPI — also enforced below
                     "num": 10,
                     "api_key": serpapi_key,
                 }
@@ -687,7 +687,7 @@ def _check_founder_news(app):
                 new_articles = []
                 prev_links = {r.get('link') for r in meta.get('news_results', [])}
                 now = datetime.now(timezone.utc)
-                cutoff = now - timedelta(days=60)
+                cutoff = now - timedelta(days=180)
 
                 for result in data.get('news_results', []):
                     title = result.get('title', '')
@@ -700,7 +700,7 @@ def _check_founder_news(app):
 
                     # Client-side date enforcement — SerpAPI's tbs filter is unreliable
                     # and can return articles from years ago (e.g. 2016 photo credits,
-                    # obituaries for people with the same name).
+                    # obituaries for people with the same name). Rolling 6-month window.
                     article_date = _parse_article_date(date_str)
                     if article_date is not None and article_date < cutoff:
                         continue
