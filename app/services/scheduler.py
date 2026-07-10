@@ -26,19 +26,41 @@ def _job_lock_key(job_id: str) -> str:
 
 def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
     """
-    Prevent duplicate job runs across Gunicorn workers by using the DB as a mutex.
-    Returns True if this worker should run the job, False if another already did.
-    Uses a short INSERT window — not perfectly atomic, but reduces 4-worker spam to
-    at most 1-2 fires in pathological races (acceptable for email jobs).
+    Prevent duplicate job runs across Gunicorn workers.
+
+    Two-layer guard:
+    1. pg_try_advisory_xact_lock — truly atomic, non-blocking. Only one PG connection
+       can hold the lock at a time, so the first worker wins and all others return False
+       immediately without waiting.
+    2. TTL row in the items table — persists across restarts so the job isn't re-fired
+       if a worker restarts mid-TTL window.
+
+    Committing after updating the TTL row releases the advisory lock (it's xact-scoped),
+    so subsequent workers that then acquire the advisory lock will see the updated TTL
+    and also return False.
     """
     from ..models.item import Item
     from ..extensions import db
+    from sqlalchemy import text
 
+    # Stable bigint key derived from job_id (avoids PYTHONHASHSEED randomness)
+    lock_key = int(hashlib.md5(job_id.encode()).hexdigest()[:15], 16) % (2 ** 62)
     lock_title = _job_lock_key(job_id)
     now = datetime.now(timezone.utc)
 
     with app.app_context():
         try:
+            # Atomically try to acquire a transaction-level PG advisory lock.
+            # If another worker already holds it, returns False immediately (no blocking).
+            acquired = db.session.execute(
+                text("SELECT pg_try_advisory_xact_lock(:key)"),
+                {"key": lock_key},
+            ).scalar()
+            if not acquired:
+                logger.info("Job %s: advisory lock held by another worker — skipping", job_id)
+                return False
+
+            # TTL check: did any worker run this job recently?
             lock = Item.query.filter_by(title=lock_title, item_type="system").first()
             if lock:
                 meta = json.loads(lock.description or "{}")
@@ -46,7 +68,11 @@ def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
                 if ran_at_str:
                     ran_at = datetime.fromisoformat(ran_at_str)
                     if (now - ran_at).total_seconds() < ttl_seconds:
-                        return False  # Already ran recently — skip
+                        logger.info(
+                            "Job %s: ran %.0fs ago (TTL %ds) — skipping",
+                            job_id, (now - ran_at).total_seconds(), ttl_seconds,
+                        )
+                        return False
                 meta["ran_at"] = now.isoformat()
                 lock.description = json.dumps(meta)
             else:
@@ -57,11 +83,41 @@ def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
                     description=json.dumps({"ran_at": now.isoformat()}),
                 )
                 db.session.add(lock)
+
+            # Commit: persists the TTL update AND releases the advisory lock.
+            # Workers that subsequently acquire the advisory lock will hit the TTL
+            # check above and exit without running the job.
             db.session.commit()
             return True
         except Exception as exc:
             logger.warning("Job lock check failed for %s: %s — running anyway", job_id, exc)
             return True
+
+
+def _parse_article_date(date_str: str):
+    """
+    Parse SerpAPI date strings into UTC datetimes for client-side age filtering.
+    Handles relative ("2 days ago") and absolute ("May 16, 2025") formats.
+    Returns None if the format is unrecognised (caller should not filter those out).
+    """
+    import re as _re
+    if not date_str:
+        return None
+    s = date_str.strip()
+    m = _re.match(r'^(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago$', s.lower())
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        seconds = {
+            'second': 1, 'minute': 60, 'hour': 3600, 'day': 86400,
+            'week': 604800, 'month': 2592000, 'year': 31536000,
+        }[unit]
+        return datetime.now(timezone.utc) - timedelta(seconds=n * seconds)
+    for fmt in ('%b %d, %Y', '%B %d, %Y', '%b. %d, %Y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 # ─── Core: run a single scan now ──────────────────────────────────────────────
@@ -613,12 +669,13 @@ def _check_founder_news(app):
             try:
                 # Search for forward-looking news about this founder.
                 # Omit the company name (which may be their OLD company) to avoid
-                # surfacing retrospective articles. Limit to last 60 days via tbs=qdr:2m.
+                # surfacing retrospective articles. tbs=qdr:2m requests last 2 months
+                # from SerpAPI, but the filter is unreliable — we enforce it client-side.
                 params = {
                     "engine": "google",
                     "q": f'"{founder_name}" (building OR startup OR raises OR launches OR "new brand" OR "new company" OR "seed round" OR "pre-seed")',
                     "tbm": "nws",
-                    "tbs": "qdr:2m",   # last 2 months only
+                    "tbs": "qdr:2m",   # hint to SerpAPI — also enforced below
                     "num": 10,
                     "api_key": serpapi_key,
                 }
@@ -629,7 +686,8 @@ def _check_founder_news(app):
                 data = resp.json()
                 new_articles = []
                 prev_links = {r.get('link') for r in meta.get('news_results', [])}
-                cutoff = datetime.now(timezone.utc) - timedelta(days=60)
+                now = datetime.now(timezone.utc)
+                cutoff = now - timedelta(days=60)
 
                 for result in data.get('news_results', []):
                     title = result.get('title', '')
@@ -640,6 +698,13 @@ def _check_founder_news(app):
                     if link in prev_links:
                         continue
 
+                    # Client-side date enforcement — SerpAPI's tbs filter is unreliable
+                    # and can return articles from years ago (e.g. 2016 photo credits,
+                    # obituaries for people with the same name).
+                    article_date = _parse_article_date(date_str)
+                    if article_date is not None and article_date < cutoff:
+                        continue
+
                     new_articles.append({
                         'title': title,
                         'link': link,
@@ -647,6 +712,10 @@ def _check_founder_news(app):
                         'date': date_str,
                         'source': result.get('source', ''),
                     })
+
+                # Cap per-founder sends — especially important on first run when
+                # prev_links is empty and all results are technically "new".
+                new_articles = new_articles[:5]
 
                 # Update stored results (keep last 10)
                 all_results = new_articles + (meta.get('news_results') or [])
