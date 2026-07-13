@@ -239,24 +239,30 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
     app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
 
     def brand_card(b, is_hot):
-        border = "#052EF0" if is_hot else "#000"
+        border   = "#052EF0" if is_hot else "#000"
         score_bg = "#052EF0" if is_hot else "#000"
-        label = "HOT" if is_hot else "WARM"
+        label    = "HOT" if is_hot else "WARM"
+        # Use a table for the score + name row — CSS flexbox is not supported
+        # in Gmail and most email clients; tables render reliably everywhere.
         return f"""
         <div style="border:2px solid {border};border-radius:8px;padding:16px;margin:10px 0;background:#fff;">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-            <div style="background:{score_bg};color:#fff;border-radius:5px;padding:6px 10px;font-family:monospace;font-weight:bold;font-size:18px;min-width:44px;text-align:center;">
-              {b.get('score','—')}
-            </div>
-            <div>
-              <div style="font-family:monospace;font-weight:bold;font-size:15px;letter-spacing:2px;text-transform:uppercase;color:#000;">
-                {b.get('name','')}
-              </div>
-              <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:2px;">
-                {label} · {b.get('category','')}
-              </div>
-            </div>
-          </div>
+          <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-bottom:8px;">
+            <tr>
+              <td valign="middle" style="padding-right:12px;">
+                <div style="background:{score_bg};color:#fff;border-radius:5px;padding:6px 12px;font-family:monospace;font-weight:bold;font-size:20px;text-align:center;white-space:nowrap;">
+                  {b.get('score', '—')}
+                </div>
+              </td>
+              <td valign="middle">
+                <div style="font-family:monospace;font-weight:bold;font-size:15px;letter-spacing:2px;text-transform:uppercase;color:#000;">
+                  {b.get('name', '')}
+                </div>
+                <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:3px;">
+                  {label} · {b.get('category', '')}
+                </div>
+              </td>
+            </tr>
+          </table>
           {f'<p style="font-style:italic;color:#444;margin:6px 0;border-left:3px solid {border};padding-left:10px;font-size:13px;">{b["thesis"]}</p>' if b.get('thesis') else ''}
           {f'<p style="font-size:11px;color:{border};font-weight:600;margin:4px 0;">Theme: {_strip_year(b["theme"])}</p>' if b.get('theme') else ''}
         </div>

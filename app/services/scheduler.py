@@ -586,6 +586,18 @@ def _send_weekly_digest(app):
             logger.info("Weekly digest: no HOT/WARM signals this week — skipping send")
             return
 
+        # Deduplicate by brand name: keep the highest-score entry per name
+        def _dedup(signals):
+            seen: dict = {}
+            for s in signals:
+                key = (s.get("name") or "").upper().strip()
+                if key not in seen or (s.get("score") or 0) > (seen[key].get("score") or 0):
+                    seen[key] = s
+            return list(seen.values())
+
+        hot_signals  = _dedup(hot_signals)
+        warm_signals = _dedup(warm_signals)
+
         hot_signals.sort(key=lambda x: x.get("score") or 0, reverse=True)
         warm_signals.sort(key=lambda x: x.get("score") or 0, reverse=True)
 
@@ -843,10 +855,30 @@ def _log_inbox_audit_reminder(app):
 
 
 def start_scheduler(app):
-    """Start the APScheduler background scheduler (once per process)."""
-    global _scheduler
+    """Start the APScheduler background scheduler (once per process).
+
+    Gunicorn forks N worker processes; each would start its own scheduler and
+    fire every job N times. We use an exclusive non-blocking fcntl file lock
+    so only ONE worker wins and runs the scheduler — the others exit silently.
+    The lock is kept alive by holding the open file descriptor in
+    _scheduler_lock_fd for the lifetime of the process.
+    """
+    global _scheduler, _scheduler_lock_fd
     if _scheduler is not None:
         return  # Already running in this process
+
+    # ── File lock: only one worker gets to run the scheduler ─────────────────
+    import fcntl, tempfile
+    lock_path = os.path.join(tempfile.gettempdir(), "bullish_scheduler.lock")
+    try:
+        fd = open(lock_path, "w")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # non-blocking exclusive
+        _scheduler_lock_fd = fd   # keep open — lock released only when fd closes
+        logger.info("Scheduler file lock acquired — this worker owns the scheduler")
+    except (IOError, OSError):
+        logger.info("Scheduler: another worker holds the lock — skipping scheduler start")
+        return
+    # ─────────────────────────────────────────────────────────────────────────
 
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
