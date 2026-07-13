@@ -707,7 +707,7 @@ def run_app_store_scan():
     skipped   = 0
 
     for sig in signals:
-        fp = _make_fingerprint("app_store", sig["companyName"], sig.get("app_id", ""))
+        fp = _make_fingerprint("app_store", sig["companyName"], str(sig.get("app_id", "")))
 
         if fp in existing_fps:
             skipped += 1
