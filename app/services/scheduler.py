@@ -167,7 +167,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         sources_ran.append('delaware')
         de_result = search_recent_delaware_entities(
             days_back=days_back,
-            max_results=150,
+            max_results=max(500, scan.max_results),
             check_domains=True,
         )
         if not de_result.get("error"):

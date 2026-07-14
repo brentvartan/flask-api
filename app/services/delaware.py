@@ -349,11 +349,14 @@ def _extract_signal(src: dict, seen_names: set, end_dt: datetime) -> dict | None
     if inc_state in {"D8", "N4"}:
         return None
 
+    # DE incorporation is a deliberate VC-track choice; give it a stronger signal.
+    score_boost = 12 if inc_state == "DE" else 8
+
     return {
         "companyName": brand,
         "signal_type": "delaware",
         "category":    category,
-        "score_boost": 5,
+        "score_boost": score_boost,
         "description": (
             f"{name} — {inc_state} Corp/LLC — Form D filed {file_date}"
             + (f" — {biz_loc}" if biz_loc else "")
@@ -374,7 +377,7 @@ def _extract_signal(src: dict, seen_names: set, end_dt: datetime) -> dict | None
 
 def search_recent_delaware_entities(
     days_back: int = 7,
-    max_results: int = 200,
+    max_results: int = 2000,
     check_domains: bool = True,
     max_filings: int = 6000,
 ) -> dict:
@@ -384,8 +387,10 @@ def search_recent_delaware_entities(
 
     Strategy:
     BROAD SWEEP — probe for the true Form D count in the window, then page
-    through the FULL universe (up to max_filings). At ~0.25% consumer rate,
-    a 7-day window (~1,400 filings) yields ~3–4 consumer brands per run.
+    through the FULL universe (up to max_filings). At ~8% consumer candidate
+    rate (after _FUND_ITEMS and blocklist filtering), a 7-day window (~1,400
+    Form Ds) yields ~110 consumer brand candidates. max_results=2000 ensures
+    we never hit the cap and miss brands in any realistic scan window.
     Targeted keyword queries were tried and removed: EDGAR full-text search
     matches officer names and addresses, not just company names, so terms
     like "food" or "beauty" return near-zero results and add no signal.

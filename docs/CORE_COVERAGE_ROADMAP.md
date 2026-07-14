@@ -41,6 +41,11 @@ Status legend: ✅ shipped · 🔨 in progress · ⬜ planned
   - Added BVI (D8) and Luxembourg (N4) jurisdiction filter.
   - Expanded `_NON_CONSUMER_BLOCKLIST` with " lp", "pllc", "spv", "co-invest", "co-investing", "a series of", "gaingels", "holdco", "reit", "qozb", "bancorp", "villas", "scsp", "investco", "moonrock", "biosystems", " metals", "storwell", "credit union" and more.
   - **Net effect:** ~3 consumer brand candidates per 1000 Form Ds → ~20-25 per 1000 (~7-8x coverage increase with the same enrichment budget).
+- ✅ **Form D full-coverage hardening** (2026-07-14) — three caps that silently dropped brands after the filter fixed:
+  - `score_boost` raised from 5 → 12 (Delaware-incorporated) / 8 (other US states). DE incorporation is a deliberate VC-track choice; the differentiation gives dashboard ranking signal.
+  - `search_recent_delaware_entities` default `max_results` raised from 200 → 2000 — never hits the cap for any realistic scan window (7-day window yields ~110 candidates; 30-day yields ~370).
+  - Route default raised from 150 → 500, hard cap from 300 → 2000 (manual `/delaware` scans now cover 30-day windows without truncation).
+  - Scheduler hardcoded `max_results=150` replaced with `max(500, scan.max_results)` — now consistent with trademark/producthunt/newswire behavior and never drops below 500 for Delaware.
 - ⬜ Detection query: count saved `signal` items vs. count the dashboard actually renders — the delta is the invisible population.
 
 ## Workstream 4 — CT-logs net widening  ✅ (shipped 2026-07-13)

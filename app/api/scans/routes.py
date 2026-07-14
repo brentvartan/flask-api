@@ -498,7 +498,7 @@ def run_delaware_scan():
     data = request.get_json(silent=True) or {}
 
     days_back   = max(1, min(int(data.get("days_back",   7)),   30))
-    max_results = max(1, min(int(data.get("max_results", 150)), 300))
+    max_results = max(1, min(int(data.get("max_results", 500)), 2000))
 
     # ── 1. Fetch Form D filings — domain cross-reference runs in background ───
     # check_domains=False keeps this synchronous call fast. Domain hits are
