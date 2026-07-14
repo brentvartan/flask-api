@@ -21,9 +21,12 @@ Status legend: ✅ shipped · 🔨 in progress · ⬜ planned
 - `ctlogs` and `press_stealth` were **never run on any schedule** (manual API only) — so the funding detector shipped earlier was dormant, and the earliest-lead CT-log signal ran zero cadence. Added both to `run_scan_now` dispatch (`app/services/scheduler.py`) so the daily `full` sweep runs them; added both (+`newswire`) to `_VALID_SCAN_TYPES` so they're individually configurable.
 - ⚠️ **Verify in prod:** effectiveness depends on an enabled `full` ScheduledScan existing. Confirm via `GET /api/scheduled-scans`.
 
-**2b — backfill / downtime recovery  ⬜ (planned, HIGH)**
-- In-process APScheduler (`app/__init__.py`), daily 06:00 UTC, `misfire_grace_time=3600`, **no persistent jobstore, no catch-up**. Scheduled window is a flat `days_back=7` for all sources (service defaults are dead in the scheduled path). An outage **> 7 days** (e.g. the May-2026 Railway trial expiry) **permanently loses** the middle days — no recovery.
-- Fix: persist a **last-successful-run watermark** per source; on first run after a gap, widen `days_back` to cover the actual gap. Add an **external heartbeat** (Railway cron / external ping to a run endpoint) so downtime ≠ silent total stop.
+**2b — backfill / downtime recovery  ✅ (shipped 2026-07-13)**
+- `run_scan_now()` gained `days_back_override` param so the scheduler can widen the scan window without mutating the configured `scan.days_back`.
+- `_run_all_scheduled()` reads `scan.last_run_at` (already persisted) as a watermark: if the gap exceeds `scan.days_back`, widens `days_back_override` to cover the full gap (+2-day overlap, capped at 30d). The May-2026 outage would now auto-recover on next boot.
+- `_write_scheduler_heartbeat()` persists `{last_run}` to a `__scheduler_heartbeat__` system item after every daily run.
+- `GET /api/admin/scheduler/status` → `{last_run, hours_since, is_healthy}` (healthy = < 30h).
+- Settings → Schedules tab shows green/amber health pill; turns green after 06:00 UTC tomorrow.
 
 ## Workstream 3 — Scoring / surfacing calibration  ✅ (partial, 2026-07-13)
 **Finding: the numeric score is NOT a hidden gate** — `GET /api/items` is unfiltered; frontend `minScore` defaults to 0. A mis-scored brand is buried, not hidden. The real *automatic* "scanned-but-invisible" bug is category-driven:
