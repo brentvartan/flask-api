@@ -232,6 +232,7 @@ def search_recent_delaware_entities(
     days_back: int = 7,
     max_results: int = 200,
     check_domains: bool = True,
+    max_filings: int = 1000,
 ) -> dict:
     """
     Fetch recent Form D filings from consumer-keyword-matched companies via
@@ -243,6 +244,12 @@ def search_recent_delaware_entities(
 
     Previously filtered to Delaware-incorporated entities only; now catches all
     states so we see founders who haven't yet converted to Delaware for VC.
+
+    `max_filings` bounds how many raw Form D filings we inspect per run (default
+    1000, EDGAR page size 100). This is separate from `max_results`, which caps
+    the consumer-brand *signals* emitted. Raising the filing window (from the old
+    200) is what lets low-profile consumer raises through — they were being
+    crowded out by real-estate/fund filings before ever reaching the name filter.
 
     Returns:
         {
@@ -258,8 +265,15 @@ def search_recent_delaware_entities(
     start_str = start_dt.strftime("%Y-%m-%d")
     end_str   = end_dt.strftime("%Y-%m-%d")
 
-    page_size   = 50
-    pages_to_fetch = min(4, (max_results // page_size) + 1)
+    # Inspect up to `max_filings` raw Form D filings — NOT capped at `max_results`.
+    # Form D volume is thousands/week across every industry (real estate, funds,
+    # oil & gas); consumer brands are a small slice, so a shallow 200-filing window
+    # (the pre-2026-07 default) crowded them out entirely — e.g. Austelle (filed
+    # 2026-05-13) and Algae Cooking Club (2026-05-11) both had Form Ds the scanner
+    # never saw. page_size 100 is EDGAR's max; we page deep, then the consumer
+    # name filter (below) trims to the handful of real candidates before enrichment.
+    page_size   = 100
+    pages_to_fetch = max(1, min(20, -(-max_filings // page_size)))
 
     signals     = []
     total_found = 0
