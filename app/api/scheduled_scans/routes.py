@@ -14,7 +14,8 @@ _DEFAULT_SCAN = {
     "frequency":   "daily",
 }
 
-_VALID_SCAN_TYPES = ('full', 'trademark', 'delaware', 'producthunt', 'app_store')
+_VALID_SCAN_TYPES = ('full', 'trademark', 'delaware', 'producthunt', 'app_store',
+                     'newswire', 'ctlogs', 'press_stealth')
 _VALID_FREQUENCIES = ('daily', 'weekly')
 
 

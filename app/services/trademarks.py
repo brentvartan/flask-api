@@ -49,6 +49,32 @@ def _infer_category(ic_classes: list) -> str:
     return "Other"
 
 
+# Owner-name terms that mark an institutional / non-brand filer. The consumer-IC
+# query still returns tons of trademarks owned by law firms, holding companies,
+# banks, universities, etc. We reject those BEFORE enrichment so the bounded
+# per-run signal budget is spent on plausible venture-track brands. Do NOT list
+# LLC/Inc/Corp/Co — those are exactly how a new brand entity files.
+_NON_BRAND_OWNER = {
+    "holdings", "holding", "capital", "ventures", "venture", "partners",
+    "l.p.", " lp", "trust", "properties", "property", "realty", "real estate",
+    "bank", "bancorp", "insurance", "university", "college", "hospital",
+    "health system", "church", "ministries", "diocese", "law", "attorneys",
+    "attorney", "llp", "pllc", "consulting", "advisors", "advisory",
+    "management", "staffing", "logistics", "associates", "foundation",
+}
+
+
+def _is_brand_candidate(owner: str, wordmark: str) -> bool:
+    """Reject obvious institutional / non-brand trademark owners."""
+    if not wordmark or not wordmark.strip():
+        return False
+    o = f" {(owner or '').lower()} "
+    # Strip entity suffixes so 'Capital' in 'Capital Foods LLC' still counts but
+    # the LLC/Inc themselves never trigger a reject.
+    o = re.sub(r"\b(llc|inc|corp|co|ltd|company|corporation)\b\.?", " ", o)
+    return not any(term in o for term in _NON_BRAND_OWNER)
+
+
 def _clean_owner(raw: str) -> str:
     """
     Strip the entity-type / jurisdiction annotation USPTO appends.
@@ -76,37 +102,21 @@ def _fmt_date(dt: datetime) -> str:
 
 # ── Main service function ─────────────────────────────────────────────────────
 
-def search_recent_trademarks(days_back: int = 30, max_results: int = 200) -> dict:
-    """
-    Query USPTO for consumer trademark filings in the last *days_back* days.
+def _es_query(start_dt: datetime, end_dt: datetime, size: int, frm: int) -> dict:
+    """Build the consumer-class Form/trademark ES query for one page.
 
-    Returns:
-        {
-            "signals": [...],       # list of signal dicts ready to be stored
-            "total_found": int,     # total matching filings in the index
-            "fetched": int,         # number of signals in this response
-            "error": str | None,    # set only on failure
-        }
+    Sorted by filedDate DESC so paging is deterministic and returns the FRESHEST
+    filings first (the pre-2026-07 query had no sort → the capped page was
+    relevance-ranked, not recent).
     """
-    end_dt = datetime.utcnow()
-    start_dt = end_dt - timedelta(days=days_back)
-
-    es_query = {
+    return {
         "query": {
             "bool": {
                 "must": [
-                    {
-                        "range": {
-                            "filedDate": {
-                                "gte": _fmt_date(start_dt),
-                                "lte": _fmt_date(end_dt),
-                            }
-                        }
-                    }
+                    {"range": {"filedDate": {"gte": _fmt_date(start_dt),
+                                             "lte": _fmt_date(end_dt)}}}
                 ],
-                "filter": [
-                    {"term": {"alive": True}}
-                ],
+                "filter": [{"term": {"alive": True}}],
                 # At least one consumer IC class must appear in goodsAndServices
                 "should": [
                     {"match_phrase": {"goodsAndServices": ic}}
@@ -115,95 +125,149 @@ def search_recent_trademarks(days_back: int = 30, max_results: int = 200) -> dic
                 "minimum_should_match": 1,
             }
         },
-        "size": max_results,
-        "from": 0,
+        "sort": [{"filedDate": {"order": "desc"}}],
+        "size": size,
+        "from": frm,
         "track_total_hits": True,
         "_source": [
-            "filedDate",
-            "wordmark",
-            "ownerName",
-            "goodsAndServices",
-            "internationalClass",
-            "registrationId",
+            "filedDate", "wordmark", "ownerName",
+            "goodsAndServices", "internationalClass", "registrationId",
         ],
     }
 
-    try:
-        resp = requests.post(
-            USPTO_SEARCH_URL,
-            json=es_query,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/plain, */*",
-                "Origin": "https://tmsearch.uspto.gov",
-                "Referer": "https://tmsearch.uspto.gov/search/search-results",
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.RequestException as exc:
-        return {"signals": [], "total_found": 0, "fetched": 0, "error": str(exc)}
 
-    hits_obj = data.get("hits", {})
-    total_found = hits_obj.get("totalValue", 0)
-    raw_hits = hits_obj.get("hits", [])
+def search_recent_trademarks(
+    days_back: int = 30,
+    max_results: int = 250,
+    max_filings: int = 1200,
+) -> dict:
+    """
+    Query USPTO for consumer trademark filings in the last *days_back* days.
+
+    Trademark is the app's longest-lead signal (6-28 months pre-launch), but a
+    30-day window holds ~39,000 consumer-IC-class filings. We cannot enrich them
+    all, so the pre-2026-07 approach (grab first 200, no sort) sampled ~0.5% and
+    not even the fresh ones. This version instead makes those bounded slots COUNT:
+      • sort by filedDate DESC — the newest filings, deterministically paged;
+      • page up to `max_filings` so the owner filter has depth to work with;
+      • reject institutional/non-brand owners (_is_brand_candidate) BEFORE the
+        `max_results` enrichment budget is spent.
+    Net: same order-of-magnitude cost, far higher signal quality. `max_results`
+    is the enrich budget; `max_filings` is how deep we page to fill it.
+
+    Returns:
+        {"signals": [...], "total_found": int, "fetched": int, "error": str|None,
+         "inspected": int}   # inspected = raw filings paged through
+    """
+    end_dt = datetime.utcnow()
+    start_dt = end_dt - timedelta(days=days_back)
+
+    page_size = 100
+    pages = max(1, min(20, -(-max_filings // page_size)))
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://tmsearch.uspto.gov",
+        "Referer": "https://tmsearch.uspto.gov/search/search-results",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+    }
 
     signals = []
-    for hit in raw_hits:
-        src = hit.get("source", {})
-        wordmark = src.get("wordmark")
+    total_found = 0
+    inspected = 0
+    seen = set()
+    error = None
 
-        # Skip design-only marks (no text wordmark)
-        if not wordmark:
-            continue
+    for page in range(pages):
+        try:
+            resp = requests.post(
+                USPTO_SEARCH_URL,
+                json=_es_query(start_dt, end_dt, page_size, page * page_size),
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as exc:
+            if page == 0:
+                return {"signals": [], "total_found": 0, "fetched": 0,
+                        "inspected": 0, "error": str(exc)}
+            error = str(exc)
+            break
 
-        ic_classes = src.get("internationalClass", [])
-        category = _infer_category(ic_classes)
+        hits_obj = data.get("hits", {})
+        if page == 0:
+            total_found = hits_obj.get("totalValue", 0)
+        raw_hits = hits_obj.get("hits", [])
+        if not raw_hits:
+            break
 
-        # Skip any non-consumer trademarks that slipped through the filter
-        if category == "Other":
-            continue
+        for hit in raw_hits:
+            inspected += 1
+            src = hit.get("source", {})
+            wordmark = src.get("wordmark")
 
-        owners = src.get("ownerName", [])
-        owner = _clean_owner(owners[0]) if owners else "Unknown"
+            # Skip design-only marks (no text wordmark)
+            if not wordmark:
+                continue
 
-        filed_date = src.get("filedDate", "")
-        filed_label = filed_date[:10] if filed_date else "unknown date"
+            key = wordmark.strip().lower()
+            if key in seen:
+                continue
 
-        # Primary class for display
-        primary_class = next(
-            (ic for ic in ic_classes if ic in IC_CATEGORY_MAP),
-            ic_classes[0] if ic_classes else ""
-        )
+            ic_classes = src.get("internationalClass", [])
+            category = _infer_category(ic_classes)
+            # Skip any non-consumer trademarks that slipped through the filter
+            if category == "Other":
+                continue
 
-        gs_list = src.get("goodsAndServices", [])
-        snippet = _gs_snippet(gs_list)
+            owners = src.get("ownerName", [])
+            owner = _clean_owner(owners[0]) if owners else "Unknown"
+            # Reject institutional / non-brand owners before spending enrich budget
+            if not _is_brand_candidate(owner, wordmark):
+                continue
 
-        search_url = (
-            f"https://tmsearch.uspto.gov/search/search-results"
-            f"?searchInput={requests.utils.quote(wordmark)}&dateOption=custom"
-        )
+            seen.add(key)
 
-        signals.append({
-            "companyName":  wordmark,
-            "signal_type":  "trademark",
-            "category":     category,
-            "score_boost":  15,
-            "description":  f"{wordmark} — {primary_class} — Filed {filed_label}",
-            "url":          search_url,
-            "notes":        f"Owner: {owner}. {snippet}".strip(". "),
-            "timestamp":    filed_date or end_dt.isoformat(),
-        })
+            filed_date = src.get("filedDate", "")
+            filed_label = filed_date[:10] if filed_date else "unknown date"
+            primary_class = next(
+                (ic for ic in ic_classes if ic in IC_CATEGORY_MAP),
+                ic_classes[0] if ic_classes else ""
+            )
+            snippet = _gs_snippet(src.get("goodsAndServices", []))
+            search_url = (
+                f"https://tmsearch.uspto.gov/search/search-results"
+                f"?searchInput={requests.utils.quote(wordmark)}&dateOption=custom"
+            )
+
+            signals.append({
+                "companyName":  wordmark,
+                "signal_type":  "trademark",
+                "category":     category,
+                "score_boost":  15,
+                "description":  f"{wordmark} — {primary_class} — Filed {filed_label}",
+                "url":          search_url,
+                "notes":        f"Owner: {owner}. {snippet}".strip(". "),
+                "timestamp":    filed_date or end_dt.isoformat(),
+            })
+
+            if len(signals) >= max_results:
+                break
+
+        if len(signals) >= max_results:
+            break
+        if (page + 1) * page_size >= total_found:
+            break
 
     return {
         "signals":     signals,
         "total_found": total_found,
         "fetched":     len(signals),
-        "error":       None,
+        "inspected":   inspected,
+        "error":       error,
     }
