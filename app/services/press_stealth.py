@@ -49,6 +49,16 @@ FEEDS = [
     ("beauty_independent", "https://www.beautyindependent.com/feed/"),
     ("food_dive",       "https://www.fooddive.com/feeds/news/"),
     ("food_navigator",  "https://www.foodnavigator-usa.com/Info/RSS-Feeds/RSS-Content"),
+
+    # Added 2026-07 (inbox-audit coverage fix): trade outlets where funded
+    # consumer brands surface first — the food/bev + funded-beauty blind spots.
+    # Each validated to return parseable RSS under this service's User-Agent.
+    ("nosh",            "https://www.nosh.com/feed/"),
+    ("bevnet",          "https://www.bevnet.com/feed/"),
+    ("wwd",             "https://wwd.com/feed/"),
+    ("citybiz",         "https://www.citybiz.co/feed/"),
+    ("cpgd",            "https://cpgdxyz.substack.com/feed"),
+    ("latimes_business", "https://www.latimes.com/business/rss2.0.xml"),
 ]
 
 # ── Stealth-signal phrase patterns ───────────────────────────────────────────
@@ -75,6 +85,39 @@ STEALTH_PATTERNS = [
 
 _STEALTH_RE = re.compile("|".join(STEALTH_PATTERNS), re.IGNORECASE)
 
+# ── Funding-announcement patterns ────────────────────────────────────────────
+# The stealth patterns above only catch "founder building in secret" language.
+# But most consumer brands reach the deal inbox via a journalist-written FUNDING
+# story in trade press ("Rivalz nets $5M", "Fascent raised new funding") — which
+# is NOT a brand-published wire release (so newswire.py misses it) and contains
+# no stealth language (so _STEALTH_RE misses it). These brands fell straight
+# through both nets (see 2026-07 inbox audit: Rivalz, Fascent, HaloBraid,
+# Ôrəbella, B-Sides, Harken Sweets, Algae Cooking Club). This closes that gap.
+# Venture-stage biased (seed / Series A-B / early raises) to avoid mega-cap M&A.
+
+FUNDING_PATTERNS = [
+    r"\braise[sd]?\b.{0,25}\$\s?\d",                  # "raised $5M", "raises $2 million"
+    r"\bnet[s]?\b.{0,20}\$\s?\d",                     # "nets $5M"
+    r"\bsecure[sd]?\b.{0,25}\$\s?\d",                 # "secured $11.6M"
+    r"\bclose[sd]?\b.{0,30}(seed|series\s+[a-e]|round|funding|investment)",
+    r"\b(pre-?seed|seed|series\s+[a-e])\b.{0,20}(round|funding|raise|investment|led by)",
+    r"\$\s?\d[\d.,]*\s*(k|m|mm|million|bn)?\b.{0,30}(seed|series\s+[a-e]|round|funding|raise|investment)",
+    r"\braise[sd]?\s+(new|additional|fresh|growth)?\s*(funding|capital|investment|round)\b",
+    r"\b(oversubscribed|led by)\b.{0,45}(seed|series\s+[a-e]|round)",
+    r"\bgrowth (equity|capital|investment|funding|round)\b",
+    r"\b(minority|strategic)\s+(investment|stake)\b",
+]
+
+_FUNDING_RE = re.compile("|".join(FUNDING_PATTERNS), re.IGNORECASE)
+
+# Verbs a funding headline uses right after the brand name — used to locate the
+# brand ("Rivalz nets $5M" → Rivalz; "Fascent raised new funding" → Fascent).
+_FUNDING_VERB_RE = re.compile(
+    r"\b(raise[sd]?|net[s]?|secure[sd]?|close[sd]?|land[s]?|bag[s]?|score[s]?|"
+    r"nab[s]?|announce[sd]?|score[sd]?)\b",
+    re.IGNORECASE,
+)
+
 # ── Consumer context filter ──────────────────────────────────────────────────
 # Article must contain at least one consumer signal word to avoid B2B stealth.
 # (We don't want "stealth cybersecurity startup" or "stealth defense contractor")
@@ -84,6 +127,18 @@ CONSUMER_CONTEXT_WORDS = [
     "beauty", "skincare", "wellness", "health", "fitness", "apparel", "fashion",
     "pet", "lifestyle", "retail", "ecommerce", "e-commerce", "direct-to-consumer",
     "supplement", "nutrition", "personal care", "grooming", "home", "fragrance",
+    # Food & beverage category words (added 2026-07 — a thin funding headline
+    # like "Algae Cooking Club secured $11.6M" carried no consumer word before).
+    "cooking", "pantry", "candy", "chocolate", "sauce", "seasoning", "coffee",
+    "tea", "soda", "sparkling", "kombucha", "protein", "ice cream", "cereal",
+    "cracker", "cookie", "jerky", "popcorn", "puff", "hydration", "energy drink",
+    "functional", "seed-oil", "grocery", "restaurant", "kitchen", "cookware",
+    # Beauty / personal-care / apparel category words
+    "cosmetics", "makeup", "haircare", "hair care", "hair", "salon", "nail",
+    "sunscreen", "SPF", "candle",
+    "deodorant", "oral care", "probiotic", "vitamin", "footwear", "sneaker",
+    "jewelry", "eyewear", "denim", "activewear", "athleisure", "baby", "kids",
+    # Anchor brand names (confirm consumer context by association)
     "Glossier", "Olipop", "Liquid Death", "Harry's", "Warby", "RxBar", "RXBAR",
     "L'Oréal", "Unilever", "P&G", "Procter", "PepsiCo", "Mondelez", "Nestlé",
     "lululemon", "Nike", "Peloton", "Mirror",
@@ -145,6 +200,36 @@ def _extract_brand_hint(title: str, description: str) -> str:
     return clean[:60].strip()
 
 
+def _extract_funding_brand(title: str, description: str) -> str:
+    """
+    Extract the brand from a funding headline. These typically lead with the
+    brand, then a funding verb: 'Rivalz nets $5M...', 'Fascent raised funding'.
+    Also handles a descriptor prefix: 'French fragrance brand Fascent raises...'.
+    """
+    clean = re.sub(r'^(Exclusive:|Scoop:|Breaking:|Report:)\s*', '', title, flags=re.IGNORECASE)
+
+    m = _FUNDING_VERB_RE.search(clean)
+    if m:
+        before = clean[:m.start()].strip(" -–—:,")
+        if before:
+            words = before.split()
+            # If a lowercase descriptor precedes the name ("French fragrance brand
+            # Fascent"), keep the trailing Capitalized run — that's the brand.
+            cap_tail = []
+            for w in reversed(words):
+                if re.match(r'^[\"“]?[A-Z0-9]', w):
+                    cap_tail.insert(0, w.strip('"“”'))
+                else:
+                    break
+            candidate = " ".join(cap_tail) if cap_tail else words[-1]
+            candidate = candidate.strip(" -–—:,\"'")
+            if 1 < len(candidate) <= 40:
+                return candidate
+
+    # Fall back to the quoted/named-entity extractor, then truncated title.
+    return _extract_brand_hint(title, description)
+
+
 def _fetch_feed(source: str, url: str, cutoff: datetime) -> list[dict]:
     """Fetch one RSS feed and return matching stealth articles."""
     req = urllib.request.Request(
@@ -189,16 +274,38 @@ def _fetch_feed(source: str, url: str, cutoff: datetime) -> list[dict]:
         if _B2B_RE.search(title):
             continue
 
-        # Must match a stealth phrase
-        if not _STEALTH_RE.search(full_text):
+        # Match either a stealth phrase OR a funding-announcement phrase.
+        stealth_hit = bool(_STEALTH_RE.search(full_text))
+        funding_hit = bool(_FUNDING_RE.search(full_text))
+        if not (stealth_hit or funding_hit):
             continue
 
-        # Must have consumer context
+        # Must have consumer context (guards against B2B raises slipping through)
         if not _CONSUMER_RE.search(full_text):
             continue
 
-        brand_hint = _extract_brand_hint(title, description)
-        timestamp  = parsed_date.isoformat() if parsed_date else datetime.now(timezone.utc).isoformat()
+        timestamp = parsed_date.isoformat() if parsed_date else datetime.now(timezone.utc).isoformat()
+
+        # Stealth language wins when present (earlier, higher-value signal);
+        # otherwise treat it as journalist-written funding coverage.
+        if stealth_hit:
+            detector = "stealth"
+            brand_hint = _extract_brand_hint(title, description)
+            notes = (
+                f"Journalist-written article with stealth-founder language in {source}. "
+                f"Title: {title}. "
+                f"This article may surface a founder building in stealth before any brand announcement. "
+                f"Check article for founder name and brand context."
+            )
+        else:
+            detector = "funding"
+            brand_hint = _extract_funding_brand(title, description)
+            notes = (
+                f"Journalist-written funding coverage in {source} (not a brand wire release). "
+                f"Title: {title}. "
+                f"Consumer brand with a reported raise — surfaced from trade press that "
+                f"newswire/stealth detectors do not cover. Verify round, founder and category."
+            )
 
         results.append({
             "companyName":  brand_hint,
@@ -207,14 +314,10 @@ def _fetch_feed(source: str, url: str, cutoff: datetime) -> list[dict]:
             "score_boost":  10,
             "description":  f"{title[:120]} [{source}]",
             "url":          link,
-            "notes":        (
-                f"Journalist-written article with stealth-founder language in {source}. "
-                f"Title: {title}. "
-                f"This article may surface a founder building in stealth before any brand announcement. "
-                f"Check article for founder name and brand context."
-            ),
+            "notes":        notes,
             "timestamp":    timestamp,
             "source":       source,
+            "detector":     detector,
         })
 
     return results
