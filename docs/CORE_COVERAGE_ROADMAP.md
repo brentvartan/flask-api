@@ -25,18 +25,18 @@ Status legend: ✅ shipped · 🔨 in progress · ⬜ planned
 - In-process APScheduler (`app/__init__.py`), daily 06:00 UTC, `misfire_grace_time=3600`, **no persistent jobstore, no catch-up**. Scheduled window is a flat `days_back=7` for all sources (service defaults are dead in the scheduled path). An outage **> 7 days** (e.g. the May-2026 Railway trial expiry) **permanently loses** the middle days — no recovery.
 - Fix: persist a **last-successful-run watermark** per source; on first run after a gap, widen `days_back` to cover the actual gap. Add an **external heartbeat** (Railway cron / external ping to a run endpoint) so downtime ≠ silent total stop.
 
-## Workstream 3 — Scoring / surfacing calibration  ⬜ (planned; mostly FRONTEND repo)
+## Workstream 3 — Scoring / surfacing calibration  ✅ (partial, 2026-07-13)
 **Finding: the numeric score is NOT a hidden gate** — `GET /api/items` is unfiltered; frontend `minScore` defaults to 0. A mis-scored brand is buried, not hidden. The real *automatic* "scanned-but-invisible" bug is category-driven:
-- ⬜ **CONSUMER_CATEGORIES allow-list drop** (`frontend/src/components/Dashboard.jsx:54`, list at :11-14) silently filters out any signal categorized **`Pet`** (emitted by the backend `app/utils/categories.py` mapper) — scanned, enriched, then never rendered. Reconcile the frontend allow-list against the backend category map; add `Pet`, decide a bucket for `Other`.
-- ⬜ **Dead gate filter** (`Dashboard.jsx:292`) reads `enrichment.gate_passed` (always undefined); real path is `enrichment.founder_score.gate_passed`. No-op → decide intended behavior.
+- ✅ **CONSUMER_CATEGORIES allow-list drop** fixed: added `'Pet'` to `CONSUMER_CATEGORIES` (`Dashboard.jsx:12`). Backend `categories.py` emits `"Pet"` for pet/dog/cat signals; dashboard now renders them.
+- ✅ **Dead gate filter** fixed: `Dashboard.jsx:292` path corrected from `enrichment.gate_passed` (always undefined) to `enrichment.founder_score.gate_passed`. B2B gate now actually filters.
 - ⬜ **Delaware default category** `"Consumer AI"` is never corrected post-enrichment despite the code comment (`delaware.py:72-77`) — keyword-miss Form Ds stick as Consumer AI. Have enrichment write category back, or fix the default.
 - ⬜ Detection query: count saved `signal` items vs. count the dashboard actually renders — the delta is the invisible population.
 
-## Workstream 4 — CT-logs net widening  ⬜ (planned)
-Independent discovery net, but a **narrow keyword sieve** (`app/services/ctlogs.py`):
-- ⬜ **Never queries `.com`** — `SEARCH_PATTERNS` (`:41-55`) only hit `.co/.fun/.health` despite `CONSUMER_TLDS` listing .com/.io/.shop. The entire `.com` DTC universe is invisible. Add `.com` patterns.
-- ⬜ **Head-slice-before-filter bug** (`:133-137`): `data[:MAX_PER_PATTERN]` truncates to 200 raw certs *before* the recency filter → stale certs can consume the window and yield zero recent hits (same disease as the Form D cap). Filter, then cap.
-- ⬜ **Alphabetical cap** (`:192`): `sorted(all_domains)[:100]` biases to early letters. Cap by recency instead.
+## Workstream 4 — CT-logs net widening  ✅ (shipped 2026-07-13)
+Three structural fixes to `app/services/ctlogs.py`:
+- ✅ **Added `.com` patterns**: `SEARCH_PATTERNS` now includes `.com` counterparts for every prefix (get/try/join/sip/brew/snack/glow/balm/vita/ritual/paw). DTC `.com` universe now included.
+- ✅ **Filter-before-cap bug fixed**: `_query_crtsh` now iterates all entries, filters by recency first, then caps on fresh results (`MAX_PER_PATTERN`). Return type changed to `list[tuple]` `(domain, not_before)` to carry timestamps upstream.
+- ✅ **Recency sort**: outer function now sorts `all_domain_hits` by `not_before` descending before capping — newest certs surface first, not alphabetically-earliest brands.
 - ⬜ Broaden keyword patterns (inherent limit: a keyword sieve can't catch arbitrary names like Fascent/Rivalz — that's what trademark/Form D are for).
 
 ---
