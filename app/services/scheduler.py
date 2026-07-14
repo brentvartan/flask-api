@@ -302,16 +302,17 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({
-                "_type":        "signal",
-                "fp":           fp,
-                "company_name": sig["companyName"],
-                "signal_type":  signal_type,
-                "category":     sig["category"],
-                "score_boost":  sig.get("score_boost", 5),
-                "description":  sig["description"],
-                "url":          sig["url"],
-                "notes":        sig.get("notes", ""),
-                "timestamp":    sig["timestamp"],
+                "_type":            "signal",
+                "fp":               fp,
+                "company_name":     sig["companyName"],
+                "signal_type":      signal_type,
+                "category":         sig["category"],
+                "score_boost":      sig.get("score_boost", 5),
+                "is_intent_to_use": sig.get("is_intent_to_use"),  # trademark: 1b pre-launch flag
+                "description":      sig["description"],
+                "url":              sig["url"],
+                "notes":            sig.get("notes", ""),
+                "timestamp":        sig["timestamp"],
             }, separators=(",", ":")),
         )
         db.session.add(item)
