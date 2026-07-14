@@ -132,6 +132,7 @@ def _es_query(start_dt: datetime, end_dt: datetime, size: int, frm: int) -> dict
         "_source": [
             "filedDate", "wordmark", "ownerName",
             "goodsAndServices", "internationalClass", "registrationId",
+            "basisFiled",  # 1b = intent-to-use (pre-launch), 1a = already in commerce
         ],
     }
 
@@ -245,15 +246,25 @@ def search_recent_trademarks(
                 f"?searchInput={requests.utils.quote(wordmark)}&dateOption=custom"
             )
 
+            # basisFiled: "1b" = intent-to-use (pre-launch), "1a" = already in commerce
+            basis_raw = src.get("basisFiled") or []
+            if isinstance(basis_raw, str):
+                basis_raw = [basis_raw]
+            is_itu = any(b.lower().replace("(", "").replace(")", "") in ("1b", "1 b") for b in basis_raw)
+            score_boost = 18 if is_itu else 14
+            basis_note = " · pre-launch intent-to-use" if is_itu else ""
+            desc = f"{wordmark} — {primary_class} — Filed {filed_label}{basis_note}"
+
             signals.append({
-                "companyName":  wordmark,
-                "signal_type":  "trademark",
-                "category":     category,
-                "score_boost":  15,
-                "description":  f"{wordmark} — {primary_class} — Filed {filed_label}",
-                "url":          search_url,
-                "notes":        f"Owner: {owner}. {snippet}".strip(". "),
-                "timestamp":    filed_date or end_dt.isoformat(),
+                "companyName":       wordmark,
+                "signal_type":       "trademark",
+                "category":          category,
+                "score_boost":       score_boost,
+                "is_intent_to_use":  is_itu,
+                "description":       desc,
+                "url":               search_url,
+                "notes":             f"Owner: {owner}. {snippet}".strip(". "),
+                "timestamp":         filed_date or end_dt.isoformat(),
             })
 
             if len(signals) >= max_results:

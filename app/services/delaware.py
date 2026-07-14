@@ -74,7 +74,7 @@ def _infer_category(name: str) -> str:
     for category, keywords in _CATEGORY_KEYWORDS.items():
         if any(kw in lower for kw in keywords):
             return category
-    return "Consumer AI"   # default — AI enrichment will correct this
+    return "Home/Lifestyle"  # catch-all for keyword-miss; enrichment will correct
 
 
 def _is_consumer_candidate(name: str, items: list) -> bool:

@@ -14,7 +14,7 @@ Status legend: ✅ shipped · 🔨 in progress · ⬜ planned
 **Longest-lead signal (6–28 mo). Was the worst under-sample: 0.5%, no sort.**
 - `app/services/trademarks.py` — added `filedDate` DESC sort (freshest, deterministic paging), bounded deep pagination (`max_filings=1200`, page_size 100), and `_is_brand_candidate()` owner filter that drops institutional/non-brand owners (holdings/capital/bank/university/law…) **before** the `max_results=250` enrich budget is spent. Kept the enrich cap near old levels — this is a *targeting* upgrade, not a volume/cost blowout.
 - Verified live: 38,904 in-window, now returns newest-first, owner filter active. Tests: `tests/test_trademarks_targeting.py`.
-- ⬜ Follow-up (higher precision): filter to **intent-to-use (1b)** filing basis = pre-launch brands (need to confirm the field is exposed); prioritize owners matching the conviction/exit-alumni lists.
+- ✅ **Intent-to-use (1b) scoring** shipped 2026-07-13: `basisFiled` added to `_source`; 1b filings get `score_boost=18` vs 14 for use-in-commerce; `is_intent_to_use` flag carried on signal; description appended with "pre-launch intent-to-use" so enrichment prompt sees it.
 
 ## Workstream 2 — Cadence & backfill resilience
 **2a — schedule the unscheduled signals  ✅ (shipped 2026-07)**
@@ -32,7 +32,7 @@ Status legend: ✅ shipped · 🔨 in progress · ⬜ planned
 **Finding: the numeric score is NOT a hidden gate** — `GET /api/items` is unfiltered; frontend `minScore` defaults to 0. A mis-scored brand is buried, not hidden. The real *automatic* "scanned-but-invisible" bug is category-driven:
 - ✅ **CONSUMER_CATEGORIES allow-list drop** fixed: added `'Pet'` to `CONSUMER_CATEGORIES` (`Dashboard.jsx:12`). Backend `categories.py` emits `"Pet"` for pet/dog/cat signals; dashboard now renders them.
 - ✅ **Dead gate filter** fixed: `Dashboard.jsx:292` path corrected from `enrichment.gate_passed` (always undefined) to `enrichment.founder_score.gate_passed`. B2B gate now actually filters.
-- ⬜ **Delaware default category** `"Consumer AI"` is never corrected post-enrichment despite the code comment (`delaware.py:72-77`) — keyword-miss Form Ds stick as Consumer AI. Have enrichment write category back, or fix the default.
+- ✅ **Delaware default category** fixed 2026-07-13: `delaware.py:77` changed from `"Consumer AI"` to `"Home/Lifestyle"` — keyword-miss Form Ds now get a neutral catch-all category that shows on the dashboard and won't pollute the Consumer AI filter.
 - ⬜ Detection query: count saved `signal` items vs. count the dashboard actually renders — the delta is the invisible population.
 
 ## Workstream 4 — CT-logs net widening  ✅ (shipped 2026-07-13)
