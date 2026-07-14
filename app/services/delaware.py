@@ -68,6 +68,12 @@ _NON_CONSUMER_BLOCKLIST = {
     "gaingels",                          # LGBTQ+ investor SPV operator
     "holdco",                            # holding company abbreviation
     "acretrader",                        # farmland investment platform
+    "feeder",                            # feeder fund (investment vehicle)
+    "sidecar",                           # sidecar fund (investment co-invest structure)
+    # Finance / banking / legal entities
+    " financial",                        # financial services (Lizton Financial, etc.)
+    "revocable trust",                   # estate planning trust
+    " l p",                              # "L P" (LP with space between letters)
     # Real estate / finance non-consumer patterns
     "reit",                              # Real Estate Investment Trust
     "qozb",                              # Qualified Opportunity Zone Business
@@ -83,11 +89,14 @@ _NON_CONSUMER_BLOCKLIST = {
     # Sector/industry signals almost never consumer brands
     "biosystems",                        # biotech/research
     " metals",                           # mining/extraction
+    # Medical / healthcare facilities (not consumer wellness brands)
+    "surgery center", "surgical center",  # ambulatory surgical centers
+    "car wash",                           # car wash franchises/facilities
     # Additional non-consumer patterns
-    "industrial", "industries",          # manufacturing / industrial
-    " dst",                              # Delaware Statutory Trust (real estate)
-    "cooperative", " coop",              # farm / housing cooperatives
-    "medical", "clinical", "hospital",   # healthcare (not consumer wellness)
+    "industrial", "industries",           # manufacturing / industrial
+    " dst",                               # Delaware Statutory Trust (real estate)
+    "cooperative", " coop",               # farm / housing cooperatives
+    "medical", "clinical", "hospital",    # healthcare (not consumer wellness)
     "pharma", "pharmaceutical",
     "biotech", "bioscience",
     "infrastructure",
