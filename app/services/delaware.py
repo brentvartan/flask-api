@@ -37,8 +37,11 @@ DOMAINSDB_URL    = "https://api.domainsdb.info/v1/domains/search"
 REQUEST_TIMEOUT  = 20
 
 # Form D "items" codes that indicate investment funds / VC vehicles — not
-# operating companies.  We exclude filings whose only item codes are these.
-_FUND_ITEMS = {"06a", "06b", "06c", "3c", "3c.1", "3c.7"}
+# operating companies.  We exclude filings whose ONLY item codes are these.
+# NOTE: "06a"/"06b"/"06c" (Reg D Rule 506 exemptions) must NOT be here —
+# every operating company including consumer brands files under 06b.
+# Only Investment Company Act fund exemptions belong in this set.
+_FUND_ITEMS = {"3c", "3c.1", "3c.5", "3c.7"}
 
 
 # ─── Consumer keyword → category map ─────────────────────────────────────────
@@ -54,9 +57,58 @@ _NON_CONSUMER_BLOCKLIST = {
     "fund", "funds", "investment", "investments", "asset", "assets",
     "equity", "securities", "acquisition", "acquisitions", "staffing",
     "recruiting", "accounting", "leasing",
-    # NOTE: "development", "services", "solutions", "systems", "group" intentionally
-    # excluded — too aggressive; blocks "Brand Development LLC", "Wellness Services LLC", etc.
+    # Entity-type indicators almost never used by consumer brands
+    " lp",                               # limited partnership (e.g. "GLF Route 66 LP")
+    "l.p.",                              # spelled-out LP form
+    "pllc",                              # professional LLC (law, medicine, accounting)
+    # SPV / co-invest / syndicate structures (never operating companies)
+    "spv",                               # Special Purpose Vehicle
+    "co-invest", "co-investing",         # co-investment SPVs
+    " series of ",                       # "a Series of CGF2021 LLC" style names
+    "gaingels",                          # LGBTQ+ investor SPV operator
+    "holdco",                            # holding company abbreviation
+    "acretrader",                        # farmland investment platform
+    # Real estate / finance non-consumer patterns
+    "reit",                              # Real Estate Investment Trust
+    "qozb",                              # Qualified Opportunity Zone Business
+    "credit union",                      # financial institution
+    "bancorp", "bancshares", "bancshar", # banks
+    "villas",                            # residential real estate
+    " apts", "apartments",               # residential real estate
+    "laydown", "storwell", "self storage", "self-storage",
+    # Fund structures and offshore vehicles
+    "scsp",                              # Luxembourg partnership (fund structure)
+    "investco",                          # investment company
+    "moonrock",                          # known SPV operator
+    # Sector/industry signals almost never consumer brands
+    "biosystems",                        # biotech/research
+    " metals",                           # mining/extraction
+    # Additional non-consumer patterns
+    "industrial", "industries",          # manufacturing / industrial
+    " dst",                              # Delaware Statutory Trust (real estate)
+    "cooperative", " coop",              # farm / housing cooperatives
+    "medical", "clinical", "hospital",   # healthcare (not consumer wellness)
+    "pharma", "pharmaceutical",
+    "biotech", "bioscience",
+    "infrastructure",
+    "enterprise", "enterprises",
+    # NOTE: "development", "services", "solutions", "systems", "group" still
+    # excluded — too aggressive; blocks "Brand Development LLC", "Wellness Services LLC".
 }
+
+# Regex for numbered investment vehicles: "Fund VIII", "Portfolio XVII LLC", etc.
+# Covers Roman numerals II–XLIX (2-49), which is the full range of real-world fund series.
+_FUND_NUMERAL_RE = re.compile(
+    r'\b(?:'
+    r'I{2,3}'                                       # II, III
+    r'|IV'                                           # 4
+    r'|V(?:I{1,3})?'                                # V, VI, VII, VIII
+    r'|IX'                                           # 9
+    r'|X{1,3}(?:I{0,3}|IV|V(?:I{0,3})?|IX)?'       # X–XXXIX
+    r'|XL(?:I{0,3}|IV|V(?:I{0,3})?)?'              # XL–XLIX
+    r')\b',
+    re.IGNORECASE
+)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -91,6 +143,10 @@ def _is_consumer_candidate(name: str, items: list) -> bool:
         return False
 
     if any(term in lower for term in _NON_CONSUMER_BLOCKLIST):
+        return False
+
+    # Numbered investment vehicles (Fund VIII, Portfolio IV, etc.)
+    if _FUND_NUMERAL_RE.search(name):
         return False
 
     if re.match(r'^[\d\s\-\.]+$', name):
@@ -228,194 +284,204 @@ def fetch_form_d_related_persons(adsh: str, cik: str) -> list[dict]:
         return []
 
 
+def _edgar_query(q: str, start_str: str, end_str: str, from_: int, size: int) -> dict:
+    """Run one EDGAR full-text Form D query and return raw JSON."""
+    resp = requests.get(
+        EDGAR_SEARCH_URL,
+        params={
+            "q":         q,
+            "forms":     "D",
+            "dateRange": "custom",
+            "startdt":   start_str,
+            "enddt":     end_str,
+            "from":      from_,
+            "size":      size,
+        },
+        headers={
+            "User-Agent": "Bullish Stealth Finder research@bullish.co",
+            "Accept":     "application/json",
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _extract_signal(src: dict, seen_names: set, end_dt: datetime) -> dict | None:
+    """Parse one EDGAR hit and return a signal dict, or None if filtered."""
+    inc_states = [s.upper() for s in (src.get("inc_states") or [])]
+    inc_state  = inc_states[0] if inc_states else "US"
+
+    display_names = src.get("display_names") or []
+    raw_name = display_names[0] if display_names else ""
+    name = re.sub(r'\s*\(CIK\s*[\d]+\)\s*$', '', raw_name).strip()
+
+    if not name or name in seen_names:
+        return None
+
+    items_list = src.get("items") or []
+    if not _is_consumer_candidate(name, items_list):
+        return None
+
+    brand     = _strip_legal_suffix(name)
+    category  = _infer_category(brand)
+    file_date = src.get("file_date", end_dt.strftime("%Y-%m-%d"))
+    biz_loc   = (src.get("biz_locations") or [""])[0]
+    adsh      = src.get("adsh", "")
+    _cik      = (src.get("ciks") or [""])[0]
+    edgar_url = (
+        f"https://www.sec.gov/Archives/edgar/data/"
+        f"{_cik}/{adsh.replace('-', '')}/{adsh}-index.htm"
+        if adsh else "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=D"
+    )
+
+    # BVI and Luxembourg are offshore fund/crypto jurisdictions at this stage;
+    # legitimate consumer brand operating companies don't incorporate there at seed.
+    if inc_state in {"D8", "N4"}:
+        return None
+
+    return {
+        "companyName": brand,
+        "signal_type": "delaware",
+        "category":    category,
+        "score_boost": 5,
+        "description": (
+            f"{name} — {inc_state} Corp/LLC — Form D filed {file_date}"
+            + (f" — {biz_loc}" if biz_loc else "")
+        ),
+        "url":         edgar_url,
+        "notes":       (
+            f"Angel/pre-seed signal. {name} filed Form D (Reg D exemption) "
+            f"on {file_date}. Incorporated in {inc_state}."
+            + (f" Operating from {biz_loc}." if biz_loc else "")
+            + (" (Not yet Delaware — likely pre-VC stage.)" if inc_state != "DE" else "")
+        ),
+        "timestamp":   file_date + "T00:00:00",
+        "_adsh":       adsh,
+        "_cik":        _cik,
+        "_name":       name,  # original full legal name for domain slug
+    }
+
+
 def search_recent_delaware_entities(
     days_back: int = 7,
     max_results: int = 200,
     check_domains: bool = True,
-    max_filings: int = 1000,
+    max_filings: int = 6000,
 ) -> dict:
     """
-    Fetch recent Form D filings from consumer-keyword-matched companies via
-    SEC EDGAR (free, no API key required) — all 50 US states.
+    Fetch recent Form D filings from consumer companies via SEC EDGAR (free,
+    no API key required) — all 50 US states.
 
-    Form D = first outside capital raise (friends/family, angels, pre-seed) —
-    filed within 15 days of first securities sale, before any public announcement.
-    This is the earliest verifiable signal a stealth brand is becoming real.
+    Strategy:
+    BROAD SWEEP — probe for the true Form D count in the window, then page
+    through the FULL universe (up to max_filings). At ~0.25% consumer rate,
+    a 7-day window (~1,400 filings) yields ~3–4 consumer brands per run.
+    Targeted keyword queries were tried and removed: EDGAR full-text search
+    matches officer names and addresses, not just company names, so terms
+    like "food" or "beauty" return near-zero results and add no signal.
+    Invented-name brands (Fascent, Rivalz, Mosh) are only findable by
+    sweeping the full universe with _is_consumer_candidate filtering.
 
-    Previously filtered to Delaware-incorporated entities only; now catches all
-    states so we see founders who haven't yet converted to Delaware for VC.
-
-    `max_filings` bounds how many raw Form D filings we inspect per run (default
-    1000, EDGAR page size 100). This is separate from `max_results`, which caps
-    the consumer-brand *signals* emitted. Raising the filing window (from the old
-    200) is what lets low-profile consumer raises through — they were being
-    crowded out by real-estate/fund filings before ever reaching the name filter.
+    DOMAIN CHECK — for each consumer brand found, cross-reference .com
+    domain registration (corroborates stealth; adds a second signal).
 
     Returns:
         {
             "signals":      list of signal dicts,
             "total_found":  int,
-            "fetched":      int,   # consumer brand Form D filings found
-            "domain_hits":  int,   # companion domain signals
+            "fetched":      int (Form D signals only),
+            "domain_hits":  int,
             "error":        str | None,
         }
     """
-    end_dt   = datetime.utcnow()
-    start_dt = end_dt - timedelta(days=days_back)
+    end_dt    = datetime.utcnow()
+    start_dt  = end_dt - timedelta(days=days_back)
     start_str = start_dt.strftime("%Y-%m-%d")
     end_str   = end_dt.strftime("%Y-%m-%d")
-
-    # Inspect up to `max_filings` raw Form D filings — NOT capped at `max_results`.
-    # Form D volume is thousands/week across every industry (real estate, funds,
-    # oil & gas); consumer brands are a small slice, so a shallow 200-filing window
-    # (the pre-2026-07 default) crowded them out entirely — e.g. Austelle (filed
-    # 2026-05-13) and Algae Cooking Club (2026-05-11) both had Form Ds the scanner
-    # never saw. page_size 100 is EDGAR's max; we page deep, then the consumer
-    # name filter (below) trims to the handful of real candidates before enrichment.
-    page_size   = 100
-    pages_to_fetch = max(1, min(20, -(-max_filings // page_size)))
 
     signals     = []
     total_found = 0
     domain_hits = 0
     seen_names  = set()
+    page_size   = 100
+    error       = None
 
-    for page in range(pages_to_fetch):
+    # ── Probe: discover true Form D count in this window ──────────────────────
+    try:
+        probe       = _edgar_query("", start_str, end_str, 0, 1)
+        total_found = probe.get("hits", {}).get("total", {}).get("value", 0)
+    except requests.RequestException as exc:
+        return {"signals": [], "total_found": 0,
+                "fetched": 0, "domain_hits": 0, "error": str(exc)}
+
+    # ── Broad sweep: cover the full universe up to max_filings ────────────────
+    pages_needed = (total_found + page_size - 1) // page_size
+    pages_cap    = (max_filings + page_size - 1) // page_size
+    pages_broad  = min(pages_needed, pages_cap)
+
+    for page in range(pages_broad):
+        if len(signals) >= max_results:
+            break
         try:
-            resp = requests.get(
-                EDGAR_SEARCH_URL,
-                params={
-                    "q":         "",
-                    "forms":     "D",
-                    "dateRange": "custom",
-                    "startdt":   start_str,
-                    "enddt":     end_str,
-                    "from":      page * page_size,
-                    "size":      page_size,
-                },
-                headers={
-                    "User-Agent": "Bullish Stealth Finder research@bullish.co",
-                    "Accept":     "application/json",
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            data = _edgar_query("", start_str, end_str, page * page_size, page_size)
         except requests.RequestException as exc:
-            if page == 0:
-                return {
-                    "signals": [], "total_found": 0,
-                    "fetched": 0, "domain_hits": 0,
-                    "error": str(exc),
-                }
+            error = str(exc)
             break
 
-        hits_obj = data.get("hits", {})
-        if page == 0:
-            total_found = hits_obj.get("total", {}).get("value", 0)
-
-        raw_hits = hits_obj.get("hits", [])
+        raw_hits = data.get("hits", {}).get("hits", [])
         if not raw_hits:
             break
 
         for hit in raw_hits:
-            src = hit.get("_source", {})
-
-            # Accept all US states — Form D is a federal filing, not state-specific.
-            # Delaware incorporation is a proxy for VC-track intent but many early
-            # founders incorporate in their home state first and convert later.
-            inc_states = [s.upper() for s in (src.get("inc_states") or [])]
-            inc_state  = inc_states[0] if inc_states else "US"
-
-            # Extract name (EDGAR returns a list like ["BRAND LLC  (CIK 0001234)"])
-            display_names = src.get("display_names") or []
-            raw_name = display_names[0] if display_names else ""
-            # Strip the "(CIK XXXXXXXX)" suffix EDGAR appends
-            name = re.sub(r'\s*\(CIK\s*[\d]+\)\s*$', '', raw_name).strip()
-
-            if not name or name in seen_names:
-                continue
-
-            items_list = src.get("items") or []
-            if not _is_consumer_candidate(name, items_list):
-                continue
-
-            seen_names.add(name)
-
-            brand      = _strip_legal_suffix(name)
-            category   = _infer_category(brand)
-            file_date  = src.get("file_date", end_dt.strftime("%Y-%m-%d"))
-            biz_loc    = (src.get("biz_locations") or [""])[0]
-            adsh       = src.get("adsh", "")
-            edgar_url  = (
-                f"https://www.sec.gov/Archives/edgar/data/"
-                f"{(src.get('ciks') or [''])[0]}/{adsh.replace('-', '')}/{adsh}-index.htm"
-                if adsh else "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=D"
-            )
-
-            _cik = (src.get("ciks") or [""])[0]
-            signals.append({
-                "companyName": brand,
-                "signal_type": "delaware",
-                "category":    category,
-                "score_boost": 5,
-                "description": (
-                    f"{name} — {inc_state} Corp/LLC — Form D filed {file_date}"
-                    + (f" — {biz_loc}" if biz_loc else "")
-                ),
-                "url":         edgar_url,
-                "notes":       (
-                    f"Angel/pre-seed signal. {name} filed Form D (Reg D exemption) "
-                    f"on {file_date}. Incorporated in {inc_state}."
-                    + (f" Operating from {biz_loc}." if biz_loc else "")
-                    + (" (Not yet Delaware — likely pre-VC stage.)" if inc_state != "DE" else "")
-                ),
-                "timestamp":   file_date + "T00:00:00",
-                # Stored for related-persons lookup in routes.py — not displayed
-                "_adsh":       adsh,
-                "_cik":        _cik,
-            })
-
-            # Domain cross-reference
-            if check_domains and len(signals) <= 60:
-                slug = _brand_slug(name)
-                if slug and len(slug) >= 3:
-                    domain_info = check_domain(slug, days_back=120)
-                    if domain_info:
-                        domain_hits += 1
-                        signals.append({
-                            "companyName": brand,
-                            "signal_type": "domain",
-                            "category":    category,
-                            "score_boost": 3,
-                            "description": (
-                                f"{domain_info['domain']} — registered {domain_info['registered']}"
-                                f" — corroborates Form D filing for {name}"
-                            ),
-                            "url":         domain_info["url"],
-                            "notes":       (
-                                f"Domain registered {domain_info['registered']}, "
-                                f"matching Form D entity {name}."
-                            ),
-                            "timestamp":   file_date + "T00:00:00",
-                        })
-                    time.sleep(0.4)
-
-            if len([s for s in signals if s["signal_type"] == "delaware"]) >= max_results:
+            if len(signals) >= max_results:
                 break
+            sig = _extract_signal(hit.get("_source", {}), seen_names, end_dt)
+            if sig:
+                seen_names.add(sig["_name"])
+                signals.append(sig)
 
-        if len([s for s in signals if s["signal_type"] == "delaware"]) >= max_results:
-            break
+        time.sleep(0.5)
 
-        time.sleep(0.5)   # be polite to EDGAR
+    # ── Domain cross-reference ─────────────────────────────────────────────────
+    # signals is all Form D at this point; iterate a snapshot before appending domains
+    formd_signals = list(signals)
+    if check_domains:
+        for sig in formd_signals[:60]:
+            slug = _brand_slug(sig.get("_name", sig["companyName"]))
+            if not slug or len(slug) < 3:
+                continue
+            domain_info = check_domain(slug, days_back=120)
+            if domain_info:
+                domain_hits += 1
+                signals.append({
+                    "companyName": sig["companyName"],
+                    "signal_type": "domain",
+                    "category":    sig["category"],
+                    "score_boost": 3,
+                    "description": (
+                        f"{domain_info['domain']} — registered {domain_info['registered']}"
+                        f" — corroborates Form D filing for {sig.get('_name', sig['companyName'])}"
+                    ),
+                    "url":         domain_info["url"],
+                    "notes":       (
+                        f"Domain registered {domain_info['registered']}, "
+                        f"matching Form D entity {sig.get('_name', sig['companyName'])}."
+                    ),
+                    "timestamp":   sig["timestamp"],
+                })
+            time.sleep(0.4)
 
-    formd_count = len([s for s in signals if s["signal_type"] == "delaware"])
+    # Strip internal-only keys before returning
+    for s in signals:
+        s.pop("_name", None)
+
     return {
         "signals":     signals,
         "total_found": total_found,
-        "fetched":     formd_count,
+        "fetched":     len(formd_signals),
         "domain_hits": domain_hits,
-        "error":       None,
+        "error":       error,
     }
 
 
