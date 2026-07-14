@@ -39,16 +39,20 @@ CRTSH_URL = "https://crt.sh/"
 # Each entry is a crt.sh query string (% = wildcard).
 
 SEARCH_PATTERNS = [
-    # Brand-starter prefixes (tight — DTC naming conventions)
+    # Brand-starter prefixes (tight — DTC naming conventions) — both .co and .com
     "get%.co", "try%.co", "join%.co",
+    "get%.com", "try%.com", "join%.com",
     # Beverage / food
     "%sip%.co", "%brew%.co", "%snack%.co",
+    "%sip%.com", "%brew%.com", "%snack%.com",
     # Beauty / personal care
     "%glow%.co", "%balm%.co",
+    "%glow%.com", "%balm%.com",
     # Wellness
     "%vita%.co", "%ritual%.co",
+    "%vita%.com", "%ritual%.com",
     # Pet
-    "%paw%.co",
+    "%paw%.co", "%paw%.com",
     # DTC-signature TLDs
     "%.fun",      # board.fun — the example from the spec
     "%.health",
@@ -103,10 +107,13 @@ def _looks_like_brand(domain: str) -> bool:
     return True
 
 
-def _query_crtsh(pattern: str, days_back: int) -> list[str]:
+def _query_crtsh(pattern: str, days_back: int) -> list[tuple]:
     """
     Query crt.sh for domains matching pattern with certs issued in last N days.
-    Returns list of unique root domain strings.
+    Returns list of (not_before, domain) tuples for recency-based sorting upstream.
+
+    Important: recency filter runs BEFORE the cap so stale certs don't silently
+    consume the MAX_PER_PATTERN budget.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
 
@@ -129,8 +136,9 @@ def _query_crtsh(pattern: str, days_back: int) -> list[str]:
     if not isinstance(data, list):
         return []
 
-    domains = set()
-    for entry in data[:MAX_PER_PATTERN]:
+    # Filter first (recency), then cap — never cap before filter
+    hits: dict = {}  # domain → newest not_before seen
+    for entry in data:
         not_before_str = entry.get("not_before", "")
         try:
             not_before = datetime.fromisoformat(not_before_str.replace("Z", "+00:00"))
@@ -139,7 +147,6 @@ def _query_crtsh(pattern: str, days_back: int) -> list[str]:
         except (ValueError, AttributeError):
             continue
 
-        # Extract domain from common_name and name_value
         for field in ("common_name", "name_value"):
             raw = entry.get(field, "")
             for line in raw.split("\n"):
@@ -147,9 +154,14 @@ def _query_crtsh(pattern: str, days_back: int) -> list[str]:
                 if not line:
                     continue
                 if _is_root_domain(line) and _looks_like_brand(line):
-                    domains.add(line)
+                    if line not in hits or not_before > hits[line]:
+                        hits[line] = not_before
 
-    return list(domains)
+        # Safety cap: stop scanning input once we've collected enough fresh hits
+        if len(hits) >= MAX_PER_PATTERN:
+            break
+
+    return list(hits.items())  # [(domain, not_before), ...]
 
 
 def search_recent_ct_domains(days_back: int = 14, max_results: int = 100) -> dict:
@@ -171,25 +183,34 @@ def search_recent_ct_domains(days_back: int = 14, max_results: int = 100) -> dic
     days_back   = max(1, min(days_back, 30))
     max_results = max(1, min(max_results, MAX_TOTAL))
 
-    all_domains: set[str] = set()
+    # domain → newest not_before seen across all patterns
+    all_domain_hits: dict = {}
     errors = []
 
     for pattern in SEARCH_PATTERNS:
         try:
             found = _query_crtsh(pattern, days_back)
-            all_domains.update(found)
+            for domain, not_before in found:
+                if domain not in all_domain_hits or not_before > all_domain_hits[domain]:
+                    all_domain_hits[domain] = not_before
             logger.debug("CT pattern '%s' → %d domains", pattern, len(found))
         except Exception as exc:
             errors.append(f"{pattern}: {exc}")
 
-    if not all_domains and errors:
+    if not all_domain_hits and errors:
         return {"signals": [], "total_found": 0, "fetched": 0, "error": errors[0]}
+
+    # Cap by recency (newest first) — not alphabetically
+    sorted_domains = [
+        domain for domain, _ in
+        sorted(all_domain_hits.items(), key=lambda x: x[1], reverse=True)
+    ][:max_results]
 
     # Build signals from domains
     signals = []
     now_ts = datetime.now(timezone.utc).isoformat()
 
-    for domain in sorted(all_domains)[:max_results]:
+    for domain in sorted_domains:
         # Derive a rough brand name from the domain (strip TLD, title-case)
         brand_name = domain.split(".")[0].replace("-", " ").replace("_", " ").title()
         tld = "." + ".".join(domain.split(".")[1:])
@@ -211,7 +232,7 @@ def search_recent_ct_domains(days_back: int = 14, max_results: int = 100) -> dic
 
     return {
         "signals":     signals,
-        "total_found": len(all_domains),
+        "total_found": len(all_domain_hits),
         "fetched":     len(signals),
         "error":       errors[0] if errors and not signals else None,
     }
