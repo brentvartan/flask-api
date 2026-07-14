@@ -28,11 +28,19 @@ Status legend: ✅ shipped · 🔨 in progress · ⬜ planned
 - `GET /api/admin/scheduler/status` → `{last_run, hours_since, is_healthy}` (healthy = < 30h).
 - Settings → Schedules tab shows green/amber health pill; turns green after 06:00 UTC tomorrow.
 
-## Workstream 3 — Scoring / surfacing calibration  ✅ (partial, 2026-07-13)
+## Workstream 3 — Scoring / surfacing calibration  ✅ (2026-07-14)
 **Finding: the numeric score is NOT a hidden gate** — `GET /api/items` is unfiltered; frontend `minScore` defaults to 0. A mis-scored brand is buried, not hidden. The real *automatic* "scanned-but-invisible" bug is category-driven:
 - ✅ **CONSUMER_CATEGORIES allow-list drop** fixed: added `'Pet'` to `CONSUMER_CATEGORIES` (`Dashboard.jsx:12`). Backend `categories.py` emits `"Pet"` for pet/dog/cat signals; dashboard now renders them.
 - ✅ **Dead gate filter** fixed: `Dashboard.jsx:292` path corrected from `enrichment.gate_passed` (always undefined) to `enrichment.founder_score.gate_passed`. B2B gate now actually filters.
-- ✅ **Delaware default category** fixed 2026-07-13: `delaware.py:77` changed from `"Consumer AI"` to `"Home/Lifestyle"` — keyword-miss Form Ds now get a neutral catch-all category that shows on the dashboard and won't pollute the Consumer AI filter.
+- ✅ **Delaware default category** fixed: `delaware.py` changed from `"Consumer AI"` to `"Home/Lifestyle"` fallback.
+- ✅ **Delaware EDGAR foundational rewrite** (2026-07-14) — three root-cause bugs fixed:
+  - `_FUND_ITEMS` incorrectly blocked 06a/06b/06c (standard Reg D codes used by every operating company incl. consumer brands). Fixed to only include true Investment Company Act codes (3c, 3c.1, 3c.5, 3c.7). This was rejecting ~99% of all consumer brand Form D filings.
+  - Phase 1 keyword queries (food/beauty/etc.) removed — EDGAR full-text search matches officer names and addresses, returning 0-2 results per term with no consumer brand signal.
+  - Broad sweep now probes for `total_found` first and covers ALL Form Ds in the window (was capped at 20 pages with no probe, missing 40-60% of universe).
+  - Extended `_FUND_NUMERAL_RE` to Roman numerals II–XLIX (was only II–XII).
+  - Added BVI (D8) and Luxembourg (N4) jurisdiction filter.
+  - Expanded `_NON_CONSUMER_BLOCKLIST` with " lp", "pllc", "spv", "co-invest", "co-investing", "a series of", "gaingels", "holdco", "reit", "qozb", "bancorp", "villas", "scsp", "investco", "moonrock", "biosystems", " metals", "storwell", "credit union" and more.
+  - **Net effect:** ~3 consumer brand candidates per 1000 Form Ds → ~20-25 per 1000 (~7-8x coverage increase with the same enrichment budget).
 - ⬜ Detection query: count saved `signal` items vs. count the dashboard actually renders — the delta is the invisible population.
 
 ## Workstream 4 — CT-logs net widening  ✅ (shipped 2026-07-13)
