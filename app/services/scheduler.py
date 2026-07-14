@@ -122,7 +122,7 @@ def _parse_article_date(date_str: str):
 
 # ─── Core: run a single scan now ──────────────────────────────────────────────
 
-def run_scan_now(scan, user_id: int) -> dict:
+def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     """
     Execute a ScheduledScan immediately:
       1. Fetch new USPTO trademark filings
@@ -130,12 +130,18 @@ def run_scan_now(scan, user_id: int) -> dict:
       3. Enrich with Bullish AI
       4. Email HOT-signal alert if any found
 
+    days_back_override: when set (by the scheduler's catch-up logic), overrides
+    scan.days_back so a post-outage run covers the full gap.
+
     Returns a result dict suitable for the API response.
     """
     from ..models.item import Item
     from ..services.trademarks import search_recent_trademarks
     from ..services.enrichment import enrich_signal
     from ..extensions import db
+
+    # Effective window — widened by the scheduler on catch-up runs
+    days_back = days_back_override if days_back_override is not None else scan.days_back
 
     # ── 1. Fetch signals based on scan_type ───────────────────────────────────
     from ..services.delaware import search_recent_delaware_entities
@@ -148,7 +154,7 @@ def run_scan_now(scan, user_id: int) -> dict:
     if scan_type in ('full', 'trademark'):
         sources_ran.append('trademark')
         tm_result = search_recent_trademarks(
-            days_back=scan.days_back,
+            days_back=days_back,
             max_results=scan.max_results,
         )
         if not tm_result.get("error"):
@@ -160,7 +166,7 @@ def run_scan_now(scan, user_id: int) -> dict:
     if scan_type in ('full', 'delaware'):
         sources_ran.append('delaware')
         de_result = search_recent_delaware_entities(
-            days_back=scan.days_back,
+            days_back=days_back,
             max_results=150,
             check_domains=True,
         )
@@ -175,7 +181,7 @@ def run_scan_now(scan, user_id: int) -> dict:
         try:
             from ..services.producthunt import search_recent_producthunt
             ph_result = search_recent_producthunt(
-                days_back=scan.days_back,
+                days_back=days_back,
                 max_results=scan.max_results,
             )
             if not ph_result.get("error"):
@@ -192,7 +198,7 @@ def run_scan_now(scan, user_id: int) -> dict:
         try:
             from ..services.app_store import search_recent_app_store
             as_result = search_recent_app_store(
-                days_back=scan.days_back,
+                days_back=days_back,
                 max_results=scan.max_results,
             )
             if not as_result.get("error"):
@@ -209,7 +215,7 @@ def run_scan_now(scan, user_id: int) -> dict:
         try:
             from ..services.newswire import search_recent_newswire
             nw_result = search_recent_newswire(
-                days_back=scan.days_back,
+                days_back=days_back,
                 max_results=scan.max_results,
             )
             if not nw_result.get("error"):
@@ -226,7 +232,7 @@ def run_scan_now(scan, user_id: int) -> dict:
         try:
             from ..services.ctlogs import search_recent_ct_domains
             ct_result = search_recent_ct_domains(
-                days_back=scan.days_back,
+                days_back=days_back,
                 max_results=scan.max_results,
             )
             if not ct_result.get("error"):
@@ -243,7 +249,7 @@ def run_scan_now(scan, user_id: int) -> dict:
         try:
             from ..services.press_stealth import search_recent_press_stealth
             ps_result = search_recent_press_stealth(
-                days_back=scan.days_back,
+                days_back=days_back,
                 max_results=scan.max_results,
             )
             if not ps_result.get("error"):
@@ -537,6 +543,55 @@ def run_scan_now(scan, user_id: int) -> dict:
 
 # ─── APScheduler daily job ────────────────────────────────────────────────────
 
+_MAX_CATCHUP_DAYS = 30  # hard ceiling so no single catch-up floods the enrichment budget
+
+
+def _write_scheduler_heartbeat(app):
+    """Persist a heartbeat after a successful scheduler run so status endpoints can report health."""
+    from ..models.item import Item
+    from ..extensions import db
+    title = "__scheduler_heartbeat__"
+    now = datetime.now(timezone.utc)
+    with app.app_context():
+        try:
+            row = Item.query.filter_by(title=title, item_type="system").first()
+            if row:
+                row.description = json.dumps({"last_run": now.isoformat()})
+            else:
+                db.session.add(Item(
+                    title=title, item_type="system", owner_id=1,
+                    description=json.dumps({"last_run": now.isoformat()}),
+                ))
+            db.session.commit()
+        except Exception as exc:
+            logger.warning("Heartbeat write failed: %s", exc)
+
+
+def get_scheduler_heartbeat(app) -> dict:
+    """Return the last scheduler heartbeat and derived health status."""
+    from ..models.item import Item
+    now = datetime.now(timezone.utc)
+    with app.app_context():
+        try:
+            row = Item.query.filter_by(title="__scheduler_heartbeat__", item_type="system").first()
+            if not row:
+                return {"last_run": None, "hours_since": None, "is_healthy": False}
+            meta = json.loads(row.description or "{}")
+            last_run_str = meta.get("last_run")
+            if not last_run_str:
+                return {"last_run": None, "hours_since": None, "is_healthy": False}
+            last_run = datetime.fromisoformat(last_run_str)
+            hours_since = (now - last_run).total_seconds() / 3600
+            return {
+                "last_run": last_run_str,
+                "hours_since": round(hours_since, 1),
+                "is_healthy": hours_since < 30,  # should run every 24h; 30h = one missed + buffer
+            }
+        except Exception as exc:
+            logger.warning("Heartbeat read failed: %s", exc)
+            return {"last_run": None, "hours_since": None, "is_healthy": False}
+
+
 def _run_all_scheduled(app):
     """APScheduler job — executes every enabled scan for every user."""
     from ..models.scheduled_scan import ScheduledScan
@@ -564,11 +619,26 @@ def _run_all_scheduled(app):
                 if age < timedelta(hours=cooldown_hours):
                     logger.info("Skipping scan %s — ran %s ago", scan.id, age)
                     continue
+
+            # Catch-up: if we've been down longer than the normal window, widen days_back
+            # so filings from the gap aren't permanently lost.
+            days_back_override = None
+            if scan.last_run_at:
+                gap_days = (datetime.now(timezone.utc) - scan.last_run_at).days
+                if gap_days > scan.days_back:
+                    days_back_override = min(gap_days + 2, _MAX_CATCHUP_DAYS)
+                    logger.info(
+                        "Scan %s: %d-day gap detected — widening days_back %d → %d for catch-up",
+                        scan.id, gap_days, scan.days_back, days_back_override,
+                    )
+
             try:
                 logger.info("Running scheduled scan %s for user %s", scan.id, scan.owner_id)
-                run_scan_now(scan, scan.owner_id)
+                run_scan_now(scan, scan.owner_id, days_back_override=days_back_override)
             except Exception as exc:
                 logger.error("Scheduled scan %s failed: %s", scan.id, exc)
+
+    _write_scheduler_heartbeat(app)
 
 
 def _send_weekly_digest(app):

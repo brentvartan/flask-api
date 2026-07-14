@@ -971,3 +971,14 @@ def update_founder_profile(profile_id):
     from ...extensions import db as _db
     _db.session.commit()
     return jsonify(fp.to_dict()), 200
+
+
+@bp.route("/scheduler/status", methods=["GET"])
+@admin_required()
+def scheduler_status():
+    """Return the last scheduler heartbeat and health status."""
+    from ...services.scheduler import get_scheduler_heartbeat
+    from flask_jwt_extended import verify_jwt_in_request
+    verify_jwt_in_request()
+    result = get_scheduler_heartbeat(current_app._get_current_object())
+    return jsonify(result), 200
