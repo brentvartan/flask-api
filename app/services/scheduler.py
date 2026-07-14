@@ -221,6 +221,40 @@ def run_scan_now(scan, user_id: int) -> dict:
             logger.warning("Newswire import/scan failed: %s", exc)
             errors.append(f"Newswire: {exc}")
 
+    if scan_type in ('full', 'ctlogs'):
+        sources_ran.append('ctlogs')
+        try:
+            from ..services.ctlogs import search_recent_ct_domains
+            ct_result = search_recent_ct_domains(
+                days_back=scan.days_back,
+                max_results=scan.max_results,
+            )
+            if not ct_result.get("error"):
+                signals.extend(ct_result["signals"])
+            else:
+                logger.warning("CT logs scan error: %s", ct_result["error"])
+                errors.append(f"CTLogs: {ct_result['error']}")
+        except Exception as exc:
+            logger.warning("CT logs import/scan failed: %s", exc)
+            errors.append(f"CTLogs: {exc}")
+
+    if scan_type in ('full', 'press_stealth'):
+        sources_ran.append('press_stealth')
+        try:
+            from ..services.press_stealth import search_recent_press_stealth
+            ps_result = search_recent_press_stealth(
+                days_back=scan.days_back,
+                max_results=scan.max_results,
+            )
+            if not ps_result.get("error"):
+                signals.extend(ps_result["signals"])
+            else:
+                logger.warning("Press stealth scan error: %s", ps_result["error"])
+                errors.append(f"PressStealth: {ps_result['error']}")
+        except Exception as exc:
+            logger.warning("Press stealth import/scan failed: %s", exc)
+            errors.append(f"PressStealth: {exc}")
+
     sources_ran_str = ",".join(sources_ran)
 
     if not signals:
