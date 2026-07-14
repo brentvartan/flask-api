@@ -25,6 +25,7 @@ import re
 import urllib.request
 import urllib.error
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from datetime import datetime, timezone, timedelta
 
@@ -184,18 +185,23 @@ def search_recent_ct_domains(days_back: int = 14, max_results: int = 100) -> dic
     max_results = max(1, min(max_results, MAX_TOTAL))
 
     # domain → newest not_before seen across all patterns
+    # Patterns run concurrently so total wall-clock ≈ slowest single pattern (~15s)
+    # rather than sequential (18 × 15s = 270s which exceeds Railway's proxy timeout).
     all_domain_hits: dict = {}
     errors = []
 
-    for pattern in SEARCH_PATTERNS:
-        try:
-            found = _query_crtsh(pattern, days_back)
-            for domain, not_before in found:
-                if domain not in all_domain_hits or not_before > all_domain_hits[domain]:
-                    all_domain_hits[domain] = not_before
-            logger.debug("CT pattern '%s' → %d domains", pattern, len(found))
-        except Exception as exc:
-            errors.append(f"{pattern}: {exc}")
+    with ThreadPoolExecutor(max_workers=len(SEARCH_PATTERNS)) as pool:
+        futures = {pool.submit(_query_crtsh, p, days_back): p for p in SEARCH_PATTERNS}
+        for future in as_completed(futures):
+            pattern = futures[future]
+            try:
+                found = future.result()
+                for domain, not_before in found:
+                    if domain not in all_domain_hits or not_before > all_domain_hits[domain]:
+                        all_domain_hits[domain] = not_before
+                logger.debug("CT pattern '%s' → %d domains", pattern, len(found))
+            except Exception as exc:
+                errors.append(f"{pattern}: {exc}")
 
     if not all_domain_hits and errors:
         return {"signals": [], "total_found": 0, "fetched": 0, "error": errors[0]}
