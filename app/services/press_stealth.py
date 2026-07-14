@@ -48,7 +48,8 @@ FEEDS = [
     ("glossy",          "https://www.glossy.co/feed/"),
     ("beauty_independent", "https://www.beautyindependent.com/feed/"),
     ("food_dive",       "https://www.fooddive.com/feeds/news/"),
-    ("food_navigator",  "https://www.foodnavigator-usa.com/Info/RSS-Feeds/RSS-Content"),
+    # food_navigator removed 2026-07-14: domain migrated to foodnavigator.com
+    # with no public RSS; food/bev space covered by food_dive, nosh, bevnet.
 
     # Added 2026-07 (inbox-audit coverage fix): trade outlets where funded
     # consumer brands surface first — the food/bev + funded-beauty blind spots.
@@ -249,8 +250,15 @@ def _fetch_feed(source: str, url: str, cutoff: datetime) -> list[dict]:
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as e:
-        logger.warning("Press stealth: XML parse error for '%s': %s", source, e)
-        return []
+        # Some feeds (e.g. citybiz) use namespace-prefixed elements like
+        # <content:encoded> without declaring xmlns:content at the top.
+        # Strip all prefixes and retry once before giving up.
+        try:
+            cleaned = re.sub(rb'(</?)[a-zA-Z][a-zA-Z0-9_]*:', rb'\1', xml_bytes)
+            root = ET.fromstring(cleaned)
+        except ET.ParseError:
+            logger.warning("Press stealth: XML parse error for '%s': %s", source, e)
+            return []
 
     items = root.findall(".//item")
     results = []
