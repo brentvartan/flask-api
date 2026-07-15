@@ -783,6 +783,11 @@ def _check_founder_news(app):
             if not founder_name or not company:
                 continue
 
+            # Skip muted entries (e.g. brands marked "too far along" or "too established").
+            # Set muted:true on the watchlist item meta to suppress without deleting.
+            if meta.get('muted'):
+                continue
+
             try:
                 # Search for forward-looking news about this founder.
                 # Omit the company name (which may be their OLD company) to avoid
@@ -806,6 +811,9 @@ def _check_founder_news(app):
                 now = datetime.now(timezone.utc)
                 cutoff = now - timedelta(days=180)
 
+                # Normalised company name for confirmation matching (lowercase, no punctuation).
+                company_slug = company.lower().replace('-', ' ').replace("'", "")
+
                 for result in data.get('news_results', []):
                     title = result.get('title', '')
                     link  = result.get('link', '')
@@ -820,6 +828,23 @@ def _check_founder_news(app):
                     # obituaries for people with the same name). Rolling 6-month window.
                     article_date = _parse_article_date(date_str)
                     if article_date is not None and article_date < cutoff:
+                        continue
+
+                    # Company-name confirmation: require the brand/company to appear in
+                    # title or snippet. This prevents name-collision false positives where
+                    # a different person with the same name appears in unrelated articles
+                    # (e.g. an obituary for a different "Vu Nguyen"). Only skip if the
+                    # article has neither the company name nor strong stealth/new-venture
+                    # language — articles like "Nguyen left Musely to build X" pass even
+                    # if the new company name is unknown.
+                    full_text = (title + " " + snippet).lower()
+                    has_company = company_slug in full_text
+                    has_new_venture = any(kw in full_text for kw in [
+                        'building', 'new startup', 'new company', 'new brand',
+                        'seed round', 'pre-seed', 'left to found', 'left to build',
+                        'co-founded', 'announced today', 'stealth',
+                    ])
+                    if not has_company and not has_new_venture:
                         continue
 
                     new_articles.append({

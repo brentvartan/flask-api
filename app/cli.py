@@ -121,6 +121,37 @@ def register_commands(app):
 
         click.echo(f"\nDone. updated={counters['updated']} skipped={counters['skipped']} errors={counters['errors']}")
 
+    @app.cli.command("watchlist-mute")
+    @click.argument("founder_name")
+    @click.option("--unmute", is_flag=True, default=False, help="Remove muted flag instead")
+    def watchlist_mute(founder_name, unmute):
+        """Set or clear muted:true on a watchlist entry by founder name.
+
+        Usage: flask watchlist-mute "Charlotte Tilbury"
+               flask watchlist-mute "Charlotte Tilbury" --unmute
+        """
+        from .models.item import Item
+
+        rows = Item.query.filter(Item.item_type == 'watchlist').all()
+        updated = 0
+        for row in rows:
+            try:
+                meta = json.loads(row.description or '{}')
+            except Exception:
+                continue
+            if meta.get('name', '').lower() == founder_name.lower():
+                if unmute:
+                    meta.pop('muted', None)
+                else:
+                    meta['muted'] = True
+                row.description = json.dumps(meta)
+                db.session.commit()
+                action = "unmuted" if unmute else "muted"
+                click.echo(f"✓ {action} watchlist item id={row.id} name='{meta['name']}'")
+                updated += 1
+        if updated == 0:
+            click.echo(f"No watchlist items found with name='{founder_name}'")
+
     @app.cli.command("create-admin")
     @click.option("--email", prompt=True, help="Admin email address")
     @click.option("--password", prompt=True, hide_input=True,
