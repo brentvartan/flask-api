@@ -152,6 +152,116 @@ def register_commands(app):
         if updated == 0:
             click.echo(f"No watchlist items found with name='{founder_name}'")
 
+    @app.cli.command("export-form-d-officers")
+    @click.option("--output", default="form_d_officers.csv", show_default=True, help="Output CSV path")
+    @click.option("--limit", default=0, show_default=True, help="Max signals to process (0 = all)")
+    @click.option("--workers", default=8, show_default=True, help="Parallel EDGAR fetch workers")
+    def export_form_d_officers(output, limit, workers):
+        """Export officer/director names from stored Form D signals as a Clay/Apollo seed list.
+
+        Queries all delaware-type signals, re-fetches officer names from EDGAR XML,
+        deduplicates by name, and writes a CSV ready to upload to Clay or Apollo.
+
+        Usage: flask export-form-d-officers
+               flask export-form-d-officers --output ~/Desktop/seed_list.csv --limit 200
+        """
+        import csv
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .models.item import Item
+        from .services.delaware import fetch_form_d_related_persons
+
+        rows = Item.query.filter(Item.item_type == 'signal').order_by(Item.created_at.desc()).all()
+
+        # Filter to Form D signals that have _adsh + _cik
+        form_d_signals = []
+        for row in rows:
+            try:
+                meta = json.loads(row.description or '{}')
+            except Exception:
+                continue
+            if meta.get('signal_type') != 'delaware':
+                continue
+            adsh = meta.get('_adsh', '')
+            cik  = meta.get('_cik', '')
+            if not adsh or not cik:
+                continue
+            form_d_signals.append({
+                'id':          row.id,
+                'company':     meta.get('companyName') or row.title,
+                'adsh':        adsh,
+                'cik':         cik,
+                'file_date':   (meta.get('timestamp') or '')[:10],
+                'description': meta.get('description', ''),
+            })
+
+        if limit:
+            form_d_signals = form_d_signals[:limit]
+
+        total = len(form_d_signals)
+        click.echo(f"Found {total} Form D signals. Fetching officer names from EDGAR ({workers} workers)…")
+
+        results = []
+        lock = threading.Lock()
+        counter = {'done': 0}
+        flask_app = current_app._get_current_object()
+
+        def fetch_one(sig):
+            persons = fetch_form_d_related_persons(sig['adsh'], sig['cik'])
+            rows_out = []
+            for p in persons:
+                rows_out.append({
+                    'name':          p['name'],
+                    'relationships': ', '.join(p.get('relationships') or []),
+                    'company':       sig['company'],
+                    'form_d_date':   sig['file_date'],
+                    'edgar_adsh':    sig['adsh'],
+                    'edgar_cik':     sig['cik'],
+                })
+            with lock:
+                counter['done'] += 1
+                n = counter['done']
+                if n % 25 == 0 or n == total:
+                    click.echo(f"  {n}/{total} processed…")
+            return rows_out
+
+        with flask_app.app_context():
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(fetch_one, sig): sig for sig in form_d_signals}
+                for future in as_completed(futures):
+                    batch = future.result()
+                    if batch:
+                        results.extend(batch)
+
+        # Deduplicate: keep first occurrence of each name (case-insensitive),
+        # but track all companies they appeared in.
+        seen = {}
+        for r in results:
+            key = r['name'].lower().strip()
+            if key not in seen:
+                seen[key] = r.copy()
+                seen[key]['all_companies'] = [r['company']]
+            else:
+                if r['company'] not in seen[key]['all_companies']:
+                    seen[key]['all_companies'].append(r['company'])
+
+        deduped = []
+        for entry in seen.values():
+            entry['all_companies'] = ' | '.join(entry['all_companies'])
+            deduped.append(entry)
+
+        # Sort: most recent filings first, then alphabetically by name
+        deduped.sort(key=lambda r: (r['form_d_date'], r['name']), reverse=True)
+
+        fieldnames = ['name', 'relationships', 'company', 'all_companies', 'form_d_date', 'edgar_adsh', 'edgar_cik']
+        with open(output, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(deduped)
+
+        click.echo(f"\n✓ Wrote {len(deduped)} unique officers/directors to {output}")
+        click.echo(f"  (from {total} Form D signals, {len(results)} total name mentions)")
+
     @app.cli.command("create-admin")
     @click.option("--email", prompt=True, help="Admin email address")
     @click.option("--password", prompt=True, hide_input=True,
