@@ -242,11 +242,12 @@ def fetch_form_d_related_persons(adsh: str, cik: str) -> list[dict]:
         return []
 
     adsh_clean = adsh.replace("-", "")
-    # SEC URLs accept both padded and stripped CIK; strip leading zeros for reliability.
+    # Strip leading zeros from CIK for SEC URLs.
     cik_int = str(int(cik)) if cik.lstrip("0") else cik
+    # Form D XML is always named primary_doc.xml (not {adsh}.xml).
     url = (
         f"https://www.sec.gov/Archives/edgar/data/"
-        f"{cik_int}/{adsh_clean}/{adsh}.xml"
+        f"{cik_int}/{adsh_clean}/primary_doc.xml"
     )
     try:
         # Retry up to 3 times with backoff on 429 (SEC rate limit: 10 req/s).

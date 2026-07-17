@@ -213,8 +213,12 @@ def register_commands(app):
             time.sleep(0.2)
             rows_out = []
             for p in persons:
+                name = p['name']
+                # Skip corporate entities masquerading as persons (firstName "N/A").
+                if name.lower().startswith('n/a ') or name.strip().lower() == 'n/a':
+                    continue
                 rows_out.append({
-                    'name':          p['name'],
+                    'name':          name,
                     'relationships': ', '.join(p.get('relationships') or []),
                     'company':       sig['company'],
                     'form_d_date':   sig['file_date'],
