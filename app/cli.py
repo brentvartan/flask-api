@@ -155,7 +155,7 @@ def register_commands(app):
     @app.cli.command("export-form-d-officers")
     @click.option("--output", default="form_d_officers.csv", show_default=True, help="Output CSV path")
     @click.option("--limit", default=0, show_default=True, help="Max signals to process (0 = all)")
-    @click.option("--workers", default=8, show_default=True, help="Parallel EDGAR fetch workers")
+    @click.option("--workers", default=2, show_default=True, help="Parallel EDGAR fetch workers (SEC allows 10 req/s)")
     def export_form_d_officers(output, limit, workers):
         """Export officer/director names from stored Form D signals as a Clay/Apollo seed list.
 
@@ -166,6 +166,7 @@ def register_commands(app):
                flask export-form-d-officers --output ~/Desktop/seed_list.csv --limit 200
         """
         import csv
+        import time
         import threading
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .models.item import Item
@@ -208,6 +209,8 @@ def register_commands(app):
 
         def fetch_one(sig):
             persons = fetch_form_d_related_persons(sig['adsh'], sig['cik'])
+            # Throttle to stay under SEC's 10 req/s limit across all workers.
+            time.sleep(0.2)
             rows_out = []
             for p in persons:
                 rows_out.append({

@@ -242,18 +242,28 @@ def fetch_form_d_related_persons(adsh: str, cik: str) -> list[dict]:
         return []
 
     adsh_clean = adsh.replace("-", "")
+    # SEC URLs accept both padded and stripped CIK; strip leading zeros for reliability.
+    cik_int = str(int(cik)) if cik.lstrip("0") else cik
     url = (
         f"https://www.sec.gov/Archives/edgar/data/"
-        f"{cik}/{adsh_clean}/{adsh}.xml"
+        f"{cik_int}/{adsh_clean}/{adsh}.xml"
     )
     try:
-        resp = requests.get(
-            url,
-            headers={"User-Agent": "Bullish Stealth Finder research@bullish.co"},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            logger.debug("Form D XML fetch HTTP %d for %s", resp.status_code, adsh)
+        # Retry up to 3 times with backoff on 429 (SEC rate limit: 10 req/s).
+        import time as _time
+        resp = None
+        for attempt in range(3):
+            resp = requests.get(
+                url,
+                headers={"User-Agent": "Bullish Stealth Finder research@bullish.co"},
+                timeout=10,
+            )
+            if resp.status_code == 429:
+                _time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                continue
+            break
+        if resp is None or resp.status_code != 200:
+            logger.debug("Form D XML fetch HTTP %d for %s", resp.status_code if resp else 0, adsh)
             return []
 
         root = ET.fromstring(resp.content)
