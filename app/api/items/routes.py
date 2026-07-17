@@ -185,3 +185,41 @@ def delete_item(item_id):
     db.session.delete(item)
     db.session.commit()
     return jsonify({"message": "Item deleted"}), 200
+
+
+@bp.route("/bulk", methods=["POST"])
+@jwt_required()
+def bulk_create_items():
+    """Bulk-create items in a single transaction (max 5000).
+
+    Used for LinkedIn CSV import and other seed-list imports.
+    Accepts {"items": [{"title": str, "description": str}, ...]}
+    Returns {"created": N}
+    """
+    import json as _json
+    data = request.get_json() or {}
+    raw_items = data.get("items")
+
+    if not raw_items or not isinstance(raw_items, list):
+        return jsonify({"error": "items must be a non-empty list"}), 422
+    if len(raw_items) > 5000:
+        return jsonify({"error": "max 5000 items per request"}), 422
+
+    user_id = int(get_jwt_identity())
+    created_count = 0
+
+    for entry in raw_items:
+        title = (entry.get("title") or "").strip()
+        if not title:
+            continue
+        raw_desc = entry.get("description") or ""
+        try:
+            _parsed_type = _json.loads(raw_desc).get("_type") if raw_desc else None
+        except Exception:
+            _parsed_type = None
+        item = Item(title=title, description=raw_desc, item_type=_parsed_type, owner_id=user_id)
+        db.session.add(item)
+        created_count += 1
+
+    db.session.commit()
+    return jsonify({"created": created_count}), 201
