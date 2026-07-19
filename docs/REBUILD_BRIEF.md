@@ -2,6 +2,8 @@
 
 *Work order. Hand this to Claude Code inside the `flask-api` repo. Build-side companion to "Stealth Startup Finder — Fresh Look" (the strategic rationale). Where this brief and the Fresh Look disagree on detail, follow this brief.*
 
+**What changed in v4:** Task 7 is no longer an open A/B — it's a concrete low-cost spec (replace NinjaPear with a by-URL LinkedIn source, run a monthly watchlist sweep, look people up by the `linkedin_url` captured in the seed CSV). Seed schema gains `source_url` + `linkedin_url`.
+
 **What changed in v3:** the watchlist keeps its **two designations — founder and alumni** — as an explicit tag on every entry (Task 8). Added a "Protected invariants" section making the triangulation/confluence design a do-not-remove rule.
 
 **What changed in v2:** Crunchbase is now a full removal (not a demotion). Added Task 8 — reset the tracked-people lists down to top consumer-exit names of the last 10 years and consolidate them into a single hand-curated watchlist. Added an explicit "Wiring to remove or consolidate" section mapping every trim to the two jobs.
@@ -133,15 +135,20 @@ The repo's existing `CLAUDE.md` is stale (describes a generic CRUD API). Task 0 
 
 ---
 
-## Task 7 — Fix or retire NinjaPear founder enrichment  ⚠️ needs Brent's decision  *(Job 2)*
+## Task 7 — Replace NinjaPear with a by-URL LinkedIn source (lowest-cost, monthly watchlist sweep)  *(Job 2)*
 
-**Why:** `proxycurl.py` now calls NinjaPear/Nubela, which aggregates from **X/Twitter, not LinkedIn**, returns no LinkedIn URLs, and 400s on invented brand names. The batch pull proves the gap (`found: false` for Martin Hoffmann, Tara Bosch, Morgan Zanotti). It silently degrades every founder score.
+**Why:** `proxycurl.py` currently calls NinjaPear/Nubela, which aggregates from **X/Twitter, not LinkedIn**, so it returns `found: false` for exactly the operators we track (Martin Hoffmann, Tara Bosch, Morgan Zanotti) and silently degrades founder scores. The fix is *not* a bigger provider — at our volume the LinkedIn check is a thin early-warning layer on top of the free Form D / trademark / press net, so it should be the cheapest thing that actually reads LinkedIn.
 
-**Decision required before implementing — do not guess:**
-- **Option A (free-first — recommended default):** drop NinjaPear from scoring. Score founders from Form D related persons + watchlist matches + Haiku-on-press. No paid founder data.
-- **Option B (paid):** replace NinjaPear with a real LinkedIn-grade provider (People Data Labs, Coresignal, or Proxycurl's actual LinkedIn API) behind the same interface.
+**Spec (decided — build this, no A/B):**
+1. **Swap the source, keep the interface.** Behind `proxycurl.py`'s existing function signatures, replace the Twitter-based NinjaPear calls with a **by-URL LinkedIn lookup** (a per-profile endpoint that takes a LinkedIn profile URL — e.g. a ScrapIn / Scrapingdog-class API; Proxycurl itself is shut down). Provider + API key behind config so it's swappable. Callers don't change.
+2. **Identity is pre-resolved — use it.** Each watchlist person carries a `linkedin_url` in `data/watchlist_seed.csv`. Look them up **by that URL**. This makes the cheapest scraper as accurate as an expensive dataset provider, because the name→person resolution was already done by hand. Do not pay a provider to resolve identities we already have.
+3. **Monthly watchlist sweep.** A scheduled monthly job re-fetches each watchlist person's current headline/role and flags a shift toward stealth/founding ("Stealth", "Building something new", "Founder", "unannounced", "stealth startup"). Cadence is config; **monthly is the default** — a couple weeks' latency is fine for relationship plays, and at scraper prices frequency is nearly free, so this is a "how fast do we want to know" dial, not a cost lever.
+4. **Founder enrichment on surfaced brands** uses the same by-URL source **only when a LinkedIn URL is already known** (from the watchlist or a discovered hint). When no URL is known, do **not** pay to guess — fall back to the free path (Form D related persons + press + Haiku).
+5. **Free signals stay primary.** Scrapers break and go stale silently, so Form D / trademark / press name-matching remains the main net; the LinkedIn sweep is the cheap early-warning layer, never load-bearing. If the provider errors, degrade quietly — never block a scan.
 
-**Until the decision lands:** flag NinjaPear-sourced founder data as low-confidence in output so it stops masquerading as solid. Implement A or B only on Brent's word.
+**Cost envelope (reference, not a target):** ~200 watchlist people + ~10–40 founder enrichments/month ≈ a few hundred lookups/month — cents to low single dollars at by-URL scraper rates (~$0.0015–$0.004/profile), or comfortably inside a $49–$98/mo entry plan (Coresignal Starter / PDL Pro) if a dataset provider is ever preferred. Do not architect for scale we won't hit.
+
+**Acceptance:** the NinjaPear/Twitter path is removed; a by-URL LinkedIn lookup works against a seed `linkedin_url` (fixture test); the monthly sweep detects a headline change on a fixture and flags it; a brand with no known URL never triggers a paid lookup; provider errors degrade without blocking a scan.
 
 ---
 
@@ -159,7 +166,7 @@ Nothing else belongs on the list. No investors, board-only members, category "au
 
 1. **Archive first (reversible).** Before removing anything: copy the current `CONVICTION_FOUNDERS` and `EXIT_ALUMNI` dicts into `docs/archive/people_lists_pre_reset_2026-07.md` (verbatim), and export all current DB `watchlist` items to `docs/archive/watchlist_export_pre_reset_2026-07.csv`.
 
-2. **Create one source of truth.** Add a single hand-curated data file — `data/watchlist_seed.csv` — with columns: `name, designation (founder|alumni), role, exit_brand, exit_type (acquisition|IPO|majority), exit_year, category, notes`. This file, not the code dicts, becomes the authoritative watchlist. Load it via a `flask load-watchlist` CLI command into the existing watchlist mechanism. Carry `designation` through matching so the UI can badge a hit **FOUNDER** vs **ALUMNI** (the ALUMNI badge already exists in `exit_watch.py`).
+2. **Create one source of truth.** A hand-curated data file — `data/watchlist_seed.csv` — already exists (193 people: 148 founders + 45 alumni across 97 top consumer exits, 2016–2026). Columns: `name, designation (founder|alumni), role, exit_brand, exit_type (acquisition|IPO|majority), exit_year, category, notes, source_url, linkedin_url`. This file, not the code dicts, is the authoritative watchlist. Load it via a `flask load-watchlist` CLI command into the existing watchlist mechanism. Carry `designation` through matching so the UI can badge a hit **FOUNDER** vs **ALUMNI** (the ALUMNI badge already exists in `exit_watch.py`). The `linkedin_url` column is filled by hand and is what Task 7's monthly sweep looks up.
 
 3. **Keep rule (apply to the current lists, then discard the rest):** retain a person **only if** they cleanly fit one of the two designations above **and** the brand had a **major liquidity event (acquisition, IPO, or majority/control sale) in 2016–2026.** `founder` = they founded it; `alumni` = they held a #2–4 operating seat and helped build it. Drop everyone else — authorities with no exit, pre-2016 exits, generic portfolio adds, investors, speculative names. When in doubt, drop it; the list is meant to be small and deliberate, and Brent will add back by hand.
 
@@ -180,7 +187,7 @@ Handle these as their own small PRs after Tasks 1–8. Order: confident removals
 **Remove (confident — serve neither job):**
 - **Crunchbase** — Task 6. Post-announcement.
 - **DomainsDB check in `delaware.py`** — Task 4. Redundant with CT logs.
-- **NinjaPear** — Task 7, pending A/B.
+- **NinjaPear (Twitter-based)** — Task 7: replaced by a by-URL LinkedIn source, not retained.
 
 **Verify overlap, then merge to one (likely redundant):**
 - **`domain_checker.py` vs `ctlogs.py`** — both touch domains. Confirm what each does; keep the CT-log path (real cert transparency), fold or delete the other.
@@ -207,6 +214,6 @@ Handle these as their own small PRs after Tasks 1–8. Order: confident removals
 6. Task 6 — remove Crunchbase.
 7. Task 5 — coverage metric.
 8. "Wiring to remove or consolidate" — the verify-then-merge and pause PRs.
-9. Task 7 — NinjaPear, after Brent picks A or B.
+9. Task 7 — replace NinjaPear with the by-URL LinkedIn source + monthly sweep (needs a chosen scraper provider + the `linkedin_url` column populated in the seed).
 
 Stop after each task and report: what changed, what the tests cover, and the measured effect where observable (consumer candidates per 1,000 Form Ds, watchlist hits per scan, services still firing on a full scan).

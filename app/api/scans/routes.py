@@ -11,7 +11,7 @@ from . import bp
 from ...extensions import db, limiter
 from ...models.item import Item
 from ...services.trademarks import search_recent_trademarks
-from ...services.delaware import search_recent_delaware_entities, check_domain, _brand_slug, check_domains_in_background
+from ...services.delaware import search_recent_delaware_entities
 from ...services.producthunt import search_recent_producthunt
 from ...services.app_store import search_recent_app_store
 from ...services.newswire import search_recent_newswire
@@ -40,10 +40,17 @@ def _commit_and_spawn(new_items, user_id, signal_type):
     app = current_app._get_current_object()
     new_ids = [i.id for i in new_items]
     _spawn(_enrich_items_in_background, app, new_ids)
+    from ...services.confluence import extract_person_keys, extract_coined_term_keys
     for item in new_items:
         meta = json.loads(item.description or "{}")
+        person_names = (
+            [rp["name"] for rp in meta.get("related_persons", []) if rp.get("name")]
+            + [n for n in [meta.get("owner"), meta.get("filer_name")] if n]
+        )
+        p_keys = extract_person_keys(person_names)
+        c_keys = extract_coined_term_keys(meta.get("company_name") or item.title)
         _spawn(_check_confluence_in_background, app, item.id, user_id,
-               item.title, signal_type, meta.get("url"))
+               item.title, signal_type, meta.get("url"), p_keys, c_keys)
 
 
 def _get_alert_emails() -> list:
@@ -63,7 +70,9 @@ def _get_alert_emails() -> list:
 
 def _check_confluence_in_background(app, item_id: int, owner_id: int,
                                      brand_name: str, signal_type: str,
-                                     source_url: str = None):
+                                     source_url: str = None,
+                                     person_keys: list = None,
+                                     coined_term_keys: list = None):
     """Background thread: record signal event and fire confluence alert if triggered."""
     from ...services.confluence import record_signal_and_check_confluence, send_confluence_alert_for_hit
 
@@ -75,6 +84,8 @@ def _check_confluence_in_background(app, item_id: int, owner_id: int,
                 brand_name=brand_name,
                 signal_type=signal_type,
                 source_url=source_url,
+                person_keys=person_keys,
+                coined_term_keys=coined_term_keys,
             )
             if result["is_confluence"]:
                 alert_emails = _get_alert_emails()
@@ -479,7 +490,7 @@ def run_trademark_scan():
 @limiter.limit("10 per minute")
 def run_delaware_scan():
     """
-    Fetch real Delaware LLC/Corp filings and cross-reference matching domains.
+    Fetch recent Form D filings from SEC EDGAR and surface consumer brand signals.
 
     Request body (all optional):
         days_back    int   Days of filings to search (1–30, default 7)
@@ -488,8 +499,7 @@ def run_delaware_scan():
     Response:
         {
             "total_found": int,
-            "fetched":     int,   // DE entities returned
-            "domain_hits": int,   // companion domain signals added
+            "fetched":     int,   // Form D signals returned
             "new_saved":   int,
             "skipped":     int,
             "error":       null | str
@@ -500,20 +510,16 @@ def run_delaware_scan():
     days_back   = max(1, min(int(data.get("days_back",   7)),   30))
     max_results = max(1, min(int(data.get("max_results", 500)), 2000))
 
-    # ── 1. Fetch Form D filings — domain cross-reference runs in background ───
-    # check_domains=False keeps this synchronous call fast. Domain hits are
-    # checked asynchronously per entity in _check_domains_in_background so a
-    # slow DomainsDB response (up to 20s × 60 entities) doesn't block the route.
+    # ── 1. Fetch Form D filings ───────────────────────────────────────────────
     result = search_recent_delaware_entities(
         days_back=days_back,
         max_results=max_results,
-        check_domains=False,
     )
 
     if result.get("error"):
         return jsonify({
             "total_found": 0, "fetched": 0,
-            "domain_hits": 0, "new_saved": 0, "skipped": 0,
+            "new_saved": 0, "skipped": 0,
             "error": result["error"],
         }), 502
 
@@ -560,30 +566,11 @@ def run_delaware_scan():
     new_saved = len(new_items)
     _commit_and_spawn(new_items, user_id, "delaware")
     if new_saved > 0:
-        # Domain cross-reference — runs fully async so the route doesn't block
-        form_d_tuples = []
-        for _item in new_items:
-            _meta = json.loads(_item.description or "{}")
-            if _meta.get("signal_type") == "delaware":
-                form_d_tuples.append((
-                    _item.id,
-                    _item.title,
-                    _meta.get("category", "Consumer AI"),
-                    _meta.get("timestamp", ""),
-                ))
-        if form_d_tuples:
-            _spawn(check_domains_in_background, current_app._get_current_object(), user_id, form_d_tuples, _enrich_items_in_background)
-            logger.info(
-                "Delaware scan: %d new signals saved; domain check for %d entities running in background",
-                new_saved, len(form_d_tuples),
-            )
-        else:
-            logger.info("Delaware scan: %d new signals queued for enrichment + confluence check", new_saved)
+        logger.info("Delaware scan: %d new signals queued for enrichment + confluence check", new_saved)
 
     return jsonify({
         "total_found": total_found,
         "fetched":     result["fetched"],
-        "domain_hits": 0,   # domain hits saved async — appear on next dashboard load
         "new_saved":   new_saved,
         "skipped":     skipped,
         "error":       None,

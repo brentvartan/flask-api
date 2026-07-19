@@ -3,17 +3,16 @@ exit_watch.py
 -------------
 Tracks two things:
 
-1. EXIT_ALUMNI — hand-curated early operators (#2–4) from notable consumer exits who
-   are NOT already in the conviction founders list. Matched by name against signal text
-   (same mechanism as conviction.py). Gives a +8 boost and an ALUMNI badge in the UI.
+1. EXIT_ALUMNI — alumni-designation entries from data/watchlist_seed.csv (#2–4 operators
+   from notable consumer exits). Matched by name against signal text (same mechanism as
+   conviction.py). Gives a +8 boost and an ALUMNI badge in the UI.
 
 2. EXIT_WATCH_BRANDS — notable acquired/pivoted consumer brands whose alumni are
    worth flagging when found in future signals. Auto-populated from acquisition
    language detected in press/newswire signals; persisted in Redis.
 
 HOW TO ADD AN ALUMNI:
-  Add to EXIT_ALUMNI below. Format is identical to conviction.py:
-    "Firstname Lastname": ("one-line reason", ["Known Brand 1", "Known Brand 2"]),
+  Add a row to data/watchlist_seed.csv with designation=alumni.
   Both first and last name must appear in signal text (prevents false matches).
 
 HOW TO ADD A WATCHED BRAND:
@@ -21,6 +20,7 @@ HOW TO ADD A WATCHED BRAND:
   brands stored in Redis. Used by check_exit_alumni(past_companies) after a Proxycurl
   lookup returns a person's work history.
 """
+import csv
 import json
 import logging
 import os
@@ -28,109 +28,49 @@ import re
 
 logger = logging.getLogger(__name__)
 
+_CSV_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'watchlist_seed.csv')
+)
+
+
+def _load_watchlist_alumni() -> dict[str, tuple[str, list[str]]]:
+    """Load alumni-designation rows from watchlist_seed.csv as an exit-alumni dict."""
+    result: dict[str, tuple[str, list[str]]] = {}
+    try:
+        with open(_CSV_PATH, newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                if row.get('designation', '').strip().lower() != 'alumni':
+                    continue
+                name = row.get('name', '').strip()
+                if not name:
+                    continue
+                exit_brand = row.get('exit_brand', '').strip()
+                role       = row.get('role', '').strip()
+                exit_type  = row.get('exit_type', '').strip()
+                exit_year  = row.get('exit_year', '').strip()
+                parts  = [p for p in [role, exit_brand] if p]
+                reason = ' at '.join(parts) if parts else name
+                if exit_type or exit_year:
+                    suffix = ' '.join(p for p in [exit_type, exit_year] if p)
+                    reason += f" ({suffix})"
+                result[name] = (reason, [exit_brand] if exit_brand else [])
+    except FileNotFoundError:
+        logger.warning(
+            "watchlist_seed.csv not found at %s — alumni list will be empty", _CSV_PATH
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not load watchlist_seed.csv: %s — alumni list will be empty", exc
+        )
+    return result
+
+
 # ── Early operators / alumni to match by name ─────────────────────────────────
-# People who were #2–4 at notable exits but aren't in the main conviction list.
-# Match logic is identical to conviction.py — both first AND last name must appear.
+# Populated at import time from data/watchlist_seed.csv (designation=alumni rows).
+# Prior hard-coded contents archived in docs/archive/people_lists_pre_reset_2026-07.md.
+# Match logic: both first AND last name must appear in signal text.
 
-EXIT_ALUMNI: dict[str, tuple[str, list[str]]] = {
-
-    # ── Glossier ──────────────────────────────────────────────────────────────
-    "Bryan Mahoney":    ("Glossier CTO; built the tech stack behind a $1B DTC brand", ["Glossier"]),
-
-    # ── Peloton ───────────────────────────────────────────────────────────────
-    "Robin Arzón":      ("Peloton VP Fitness Programming; the most recognizable face of the brand outside the CEO", ["Peloton"]),
-
-    # ── Away ──────────────────────────────────────────────────────────────────
-    "Selby Drummond":   ("Away Head of Brand (former Vogue editor); early brand architect at Away", ["Away"]),
-
-    # ── Bala Weights ──────────────────────────────────────────────────────────
-    "Natalie Holloway": ("Bala Weights co-founder; design-forward fitness accessories brand, Shark Tank success", ["Bala"]),
-    "Max Kislevitz":    ("Bala Weights co-founder; premium fitness accessories — Shark Tank deal", ["Bala"]),
-
-    # ── Media / community founders with DTC crossover ─────────────────────────
-    "Jaclyn Johnson":   ("Create & Cultivate founder; female entrepreneurship media + events brand", ["Create & Cultivate"]),
-    "Amanda Goetz":     ("House of Wise founder; ex-TheKnot.com VP Marketing turned wellness brand founder", ["House of Wise"]),
-
-    # ── On Running ────────────────────────────────────────────────────────────
-    "Martin Hoffmann":  ("On Running CEO; stepped down May 2026 — led On's global expansion to $11B valuation", ["On Running"]),
-    "Marc Maurer":      ("On Running Co-CEO; departed 2025 — co-ran the brand during its IPO and breakout years", ["On Running"]),
-    "David Allemann":   ("On Running co-founder + CMO; brand and creative force behind On's identity", ["On Running"]),
-    "Caspar Coppetti":  ("On Running co-founder; led partnerships and go-to-market since founding", ["On Running"]),
-
-    # ── Glossier ──────────────────────────────────────────────────────────────
-    "Kyle Leahy":       ("Glossier CEO post-Emily Weiss; ran the brand through its post-2022 reset", ["Glossier"]),
-    "Nikki Neuburger":  ("Glossier Chief Brand Officer until 2023; helped rebuild post-layoff brand reputation", ["Glossier"]),
-    "Julie Bowerman":   ("Glossier CMO until 2024; ran marketing for one of the most talked-about beauty brands", ["Glossier"]),
-    "Colin Walsh":      ("Glossier CEO (current); rebuilding the brand — worth tracking as alumni disperse", ["Glossier"]),
-
-    # ── Poppi ─────────────────────────────────────────────────────────────────
-    "Chris Hall":       ("Poppi CEO during PepsiCo acquisition; ran the commercial side of the $1.95B exit", ["Poppi"]),
-    "Rohan Oza":        ("Poppi board + investor; ex-Coca-Cola (managed Vitaminwater acquisition) — serial brand exits", ["Poppi", "Vitaminwater"]),
-
-    # ── Gymshark ──────────────────────────────────────────────────────────────
-    "Steve Hewitt":     ("Gymshark CEO; scaled Gymshark from Ben Francis's bedroom brand to a $1.3B+ brand", ["Gymshark"]),
-    "Mat Dunn":         ("Gymshark President; operational leader during the brand's international scale-up", ["Gymshark"]),
-    "Noel Mack":        ("Gymshark Chief Brand Officer; built one of the most imitated fitness brand playbooks", ["Gymshark"]),
-    "Mark Gillett":     ("Gymshark Chief Brand Officer until 2024; brand architect for Gymshark's athlete partnerships", ["Gymshark"]),
-
-    # ── Savage X Fenty ────────────────────────────────────────────────────────
-    "Hillary Super":    ("Savage X Fenty CEO; built the brand's commercial machine post-launch", ["Savage X Fenty"]),
-    "Christiane Pendarvis": ("Savage X Fenty President + CCO; brand and creative lead for the Rihanna lingerie brand", ["Savage X Fenty"]),
-
-    # ── HeyDude ───────────────────────────────────────────────────────────────
-    "Terence Reilly":   ("HeyDude CEO; ex-Crocs CMO who brought the same cultural moment playbook to Hey Dude", ["HeyDude", "Crocs"]),
-    "David Butler":     ("HeyDude President until 2024; ran operations during the Crocs acquisition integration", ["HeyDude"]),
-
-    # ── Rare Beauty ───────────────────────────────────────────────────────────
-    "Scott Friedman":   ("Rare Beauty CEO; built the brand infrastructure and retail partnerships behind Selena's brand", ["Rare Beauty"]),
-    "Katie Welch":      ("Rare Beauty Chief Marketing Officer; architected the community-first brand playbook", ["Rare Beauty"]),
-
-    # ── Bombas ────────────────────────────────────────────────────────────────
-    "Jason LaRose":     ("Bombas CEO (incoming); scaling the next chapter post-Shark Tank founders", ["Bombas"]),
-
-    # ── DECIEM / The Ordinary ─────────────────────────────────────────────────
-    "Nicola Kilner":    ("DECIEM CEO; built The Ordinary into a cult brand and navigated the turbulent founder era", ["DECIEM", "The Ordinary"]),
-
-    # ── Therabody ─────────────────────────────────────────────────────────────
-    "Monty Sharma":     ("Therabody CEO; scaled the brand post-Jason Wersland; led the Theragun expansion era", ["Therabody"]),
-
-    # ── Honest Company ────────────────────────────────────────────────────────
-    "Nick Vlahos":      ("Honest Company CEO until 2023; scaled the brand post-Jessica Alba; now at Rhode", ["Honest Company", "Rhode"]),
-
-    # ── Liquid Death ──────────────────────────────────────────────────────────
-    "John Shea":        ("Liquid Death President until 2024; scaled distribution and retail for the water brand", ["Liquid Death"]),
-
-    # ── Athleta ───────────────────────────────────────────────────────────────
-    "Nancy Green":      ("Athleta CEO; built Athleta into Gap's most culturally relevant brand — women's activewear", ["Athleta"]),
-    "Sally Gilligan":   ("Athleta CEO until 2023; led during the brand's peak relevance period", ["Athleta"]),
-
-    # ── Daily Harvest ─────────────────────────────────────────────────────────
-    "Ricky Silver":     ("Daily Harvest CEO (post-founder); ran operations after Rachel Drori stepped back", ["Daily Harvest"]),
-
-    # ── Dollar Shave Club ─────────────────────────────────────────────────────
-    "Jason Goldberger": ("Dollar Shave Club CEO until 2024; led Unilever-owned brand's DTC-to-retail evolution", ["Dollar Shave Club"]),
-
-    # ── SmartSweets ───────────────────────────────────────────────────────────
-    "Heidi Dorosin":    ("SmartSweets CEO post-acquisition; ran the brand after Tara Bosch stepped back", ["SmartSweets"]),
-
-    # ── Primal Kitchen ────────────────────────────────────────────────────────
-    "Morgan Zanotti":   ("Primal Kitchen Co-Founder + President; left ~5 years post-Kraft Heinz acquisition", ["Primal Kitchen"]),
-
-    # ── Catalina Crunch ───────────────────────────────────────────────────────
-    "Krishna Kaliannan": ("Catalina Crunch founder + CEO until 2024; built the keto cereal brand from scratch", ["Catalina Crunch"]),
-
-    # ── Super Coffee ──────────────────────────────────────────────────────────
-    "Tyler Ricks":      ("Super Coffee CEO until 2024; led commercial operations for the DeCicco family brand", ["Super Coffee"]),
-
-    # ── Moon Juice ────────────────────────────────────────────────────────────
-    "Nina Fuhrman":     ("Moon Juice CEO until 2025; scaled the adaptogenic supplement brand commercially", ["Moon Juice"]),
-
-    # ── NotCo ─────────────────────────────────────────────────────────────────
-    "Fernando Machado": ("NotCo CMO; ex-Burger King CMO who brought challenger-brand marketing to alt-protein", ["NotCo", "Burger King"]),
-
-    # ── Add more here ──────────────────────────────────────────────────────────
-    # "Firstname Lastname": ("reason", ["Brand"]),
-}
+EXIT_ALUMNI: dict[str, tuple[str, list[str]]] = _load_watchlist_alumni()
 
 # ── Brands whose alumni are worth tracking ────────────────────────────────────
 # When we have Proxycurl data for a person (past_companies list), we check
@@ -346,7 +286,12 @@ def check_exit_alumni_match(text: str) -> dict | None:
         last  = parts[-1].lower()
         if first in text_lower and last in text_lower:
             logger.info("Exit alumni match: '%s' found in signal text", full_name)
-            return {"name": full_name, "reason": reason, "known_brands": known_brands}
+            return {
+                "name":         full_name,
+                "reason":       reason,
+                "known_brands": known_brands,
+                "designation":  "alumni",
+            }
     return None
 
 

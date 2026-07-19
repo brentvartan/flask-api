@@ -168,7 +168,6 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         de_result = search_recent_delaware_entities(
             days_back=days_back,
             max_results=max(500, scan.max_results),
-            check_domains=True,
         )
         if not de_result.get("error"):
             signals.extend(de_result["signals"])
@@ -176,7 +175,9 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             logger.warning("Delaware scan error: %s", de_result["error"])
             errors.append(f"Delaware: {de_result['error']}")
 
-    if scan_type in ('full', 'producthunt'):
+    # Product Hunt — default-off in full scans (post-stealth corroborator; set
+    # ENABLE_PRODUCTHUNT_SCAN=true to include in full scans).
+    if scan_type == 'producthunt' or (scan_type == 'full' and os.environ.get('ENABLE_PRODUCTHUNT_SCAN')):
         sources_ran.append('producthunt')
         try:
             from ..services.producthunt import search_recent_producthunt
@@ -192,8 +193,12 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         except Exception as exc:
             logger.warning("Product Hunt import/scan failed: %s", exc)
             errors.append(f"ProductHunt: {exc}")
+    elif scan_type == 'full':
+        logger.debug("Product Hunt skipped in full scan (ENABLE_PRODUCTHUNT_SCAN not set)")
 
-    if scan_type in ('full', 'app_store'):
+    # App Store — default-off in full scans (post-stealth corroborator; set
+    # ENABLE_APP_STORE_SCAN=true to include in full scans).
+    if scan_type == 'app_store' or (scan_type == 'full' and os.environ.get('ENABLE_APP_STORE_SCAN')):
         sources_ran.append('app_store')
         try:
             from ..services.app_store import search_recent_app_store
@@ -209,6 +214,8 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         except Exception as exc:
             logger.warning("App Store import/scan failed: %s", exc)
             errors.append(f"AppStore: {exc}")
+    elif scan_type == 'full':
+        logger.debug("App Store skipped in full scan (ENABLE_APP_STORE_SCAN not set)")
 
     if scan_type in ('full', 'newswire'):
         sources_ran.append('newswire')
@@ -313,6 +320,12 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 "url":              sig["url"],
                 "notes":            sig.get("notes", ""),
                 "timestamp":        sig["timestamp"],
+                # Form D enrichment — present only when _enrich_related_persons ran
+                "related_persons":  sig.get("related_persons") or [],
+                "filer_name":       sig.get("filer_name"),
+                "conviction_match": sig.get("conviction_match"),
+                "total_offering":   sig.get("total_offering"),
+                "amount_sold":      sig.get("amount_sold"),
             }, separators=(",", ":")),
         )
         db.session.add(item)
@@ -354,11 +367,12 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         try:
             meta = json.loads(item.description or "{}")
             enrichment = enrich_signal({
-                "companyName": meta.get("company_name", item.title),
-                "category":    meta.get("category", ""),
-                "signal_type": "trademark",
-                "description": meta.get("description", ""),
-                "notes":       meta.get("notes", ""),
+                "companyName":      meta.get("company_name", item.title),
+                "category":         meta.get("category", ""),
+                "signal_type":      meta.get("signal_type", "trademark"),
+                "description":      meta.get("description", ""),
+                "notes":            meta.get("notes", ""),
+                "conviction_match": meta.get("conviction_match"),
             })
             if enrichment.get("enriched"):
                 meta["enrichment"] = enrichment
@@ -394,7 +408,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                             meta.get("company_name", item.title),
                             meta.get("category", ""),
                             enrichment.get("one_line_thesis", ""),
-                            filer_name=None,
+                            filer_name=meta.get("filer_name") or None,
                             alert_emails=_fe_alert_emails,
                         )
                         founders_queued += 1
@@ -433,6 +447,11 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             try:
                 meta = json.loads(item.description or "{}")
                 enrichment = meta.get("enrichment") or {}
+                from ..services.confluence import extract_person_keys, extract_coined_term_keys
+                _person_names = (
+                    [rp["name"] for rp in meta.get("related_persons", []) if rp.get("name")]
+                    + [n for n in [meta.get("owner"), meta.get("filer_name")] if n]
+                )
                 result = record_signal_and_check_confluence(
                     item_id=item_id,
                     owner_id=user_id,
@@ -440,6 +459,10 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                     signal_type=meta.get("signal_type", "trademark"),
                     source_url=meta.get("url"),
                     enrichment=enrichment if enrichment.get("enriched") else None,
+                    person_keys=extract_person_keys(_person_names),
+                    coined_term_keys=extract_coined_term_keys(
+                        meta.get("company_name") or item.title
+                    ),
                 )
                 if result["is_confluence"] and result.get("hit_id") and confluence_alert_emails:
                     send_confluence_alert_for_hit(result["hit_id"], confluence_alert_emails)
@@ -968,6 +991,132 @@ def _run_press_monitor(app):
         logger.info("Press monitor: updated %d brands with new press mentions", updated)
 
 
+def _run_watchlist_headline_sweep(app):
+    """
+    Monthly job (1st of month, 08:00 UTC): fetch current LinkedIn headlines for
+    every watchlist person with a known linkedin_url and flag stealth-shift language.
+
+    Stores each person's last seen headline in their watchlist item metadata.
+    Fires an email alert when a headline changes to stealth-sounding language.
+    Degrades silently if FreshData is unavailable or PROXYCURL_API_KEY is unset.
+    """
+    if not _acquire_job_lock(app, "watchlist_headline_sweep", ttl_seconds=60 * 60 * 24 * 25):
+        logger.info("Watchlist headline sweep: already ran this month — skipping")
+        return
+
+    from ..models.item import Item
+    from ..extensions import db
+
+    with app.app_context():
+        from .proxycurl import fetch_linkedin_headline, is_stealth_headline
+
+        api_key = os.environ.get("PROXYCURL_API_KEY", "")
+        if not api_key:
+            logger.info("Watchlist headline sweep: PROXYCURL_API_KEY not set — skipping")
+            return
+
+        rows = Item.query.filter_by(item_type="watchlist").all()
+
+        candidates = []
+        for row in rows:
+            try:
+                meta = json.loads(row.description or "{}")
+                url = meta.get("linkedin_url") or meta.get("linkedin") or ""
+                if url and url.startswith("http"):
+                    candidates.append((row, meta, url))
+            except Exception:
+                pass
+
+        if not candidates:
+            logger.info("Watchlist headline sweep: no watchlist people with linkedin_url — skipping")
+            return
+
+        logger.info("Watchlist headline sweep: checking %d people", len(candidates))
+
+        stealth_hits = []
+        checked = 0
+
+        for row, meta, linkedin_url in candidates:
+            result = fetch_linkedin_headline(linkedin_url)
+            checked += 1
+            if not result:
+                continue
+
+            headline      = result.get("headline", "")
+            prev_headline = meta.get("_last_headline", "")
+
+            meta["_last_headline"]       = headline
+            meta["_headline_checked_at"] = datetime.now(timezone.utc).isoformat()
+            row.description = json.dumps(meta, separators=(",", ":"))
+
+            if is_stealth_headline(headline) and headline != prev_headline:
+                person_name = meta.get("name") or row.title
+                stealth_hits.append({
+                    "name":         person_name,
+                    "headline":     headline,
+                    "prev_headline": prev_headline,
+                    "linkedin_url": linkedin_url,
+                    "designation":  meta.get("designation", ""),
+                    "exit_brand":   meta.get("exit_brand", ""),
+                })
+                logger.warning(
+                    "Watchlist headline sweep: STEALTH SHIFT — %s → %r",
+                    person_name, headline,
+                )
+
+        db.session.commit()
+        logger.info(
+            "Watchlist headline sweep: checked %d people, %d stealth-shift hits",
+            checked, len(stealth_hits),
+        )
+
+        if not stealth_hits:
+            return
+
+        # Email alert — reuse founder_news_alert format (each hit = one synthetic article)
+        alert_emails = os.environ.get("ALERT_EMAILS", "").strip()
+        try:
+            settings = Item.query.filter_by(title="__bullish_settings__").first()
+            if settings:
+                s = json.loads(settings.description or "{}")
+                if s.get("alert_emails"):
+                    alert_emails = ",".join(s["alert_emails"])
+        except Exception:
+            pass
+
+        if not alert_emails:
+            return
+
+        try:
+            from .email import send_founder_news_alert
+            for hit in stealth_hits:
+                articles = [{
+                    "title":   f"LinkedIn headline: {hit['headline']}",
+                    "link":    hit["linkedin_url"],
+                    "snippet": (
+                        f"Was: {hit['prev_headline'] or 'unknown'} | "
+                        f"Designation: {hit['designation']} | "
+                        f"Exit brand: {hit['exit_brand'] or 'n/a'}"
+                    ),
+                    "date":   datetime.now(timezone.utc).strftime("%b %d, %Y"),
+                    "source": "LinkedIn Watchlist Sweep",
+                }]
+                for addr in [e.strip() for e in alert_emails.split(",") if e.strip()]:
+                    try:
+                        send_founder_news_alert(
+                            addr,
+                            founder_name=hit["name"],
+                            company=hit["exit_brand"] or "stealth",
+                            bullish_score=None,
+                            new_articles=articles,
+                            linkedin_url=hit["linkedin_url"],
+                        )
+                    except Exception as exc:
+                        logger.warning("Watchlist stealth alert email failed to %s: %s", addr, exc)
+        except Exception as exc:
+            logger.warning("Watchlist stealth alert: could not send email: %s", exc)
+
+
 def _log_inbox_audit_reminder(app):
     """
     Monthly job (1st of month, 07:00 UTC): log a reminder that the Gmail
@@ -1022,7 +1171,7 @@ def _send_linkedin_poll_reminder(app):
             except Exception:
                 continue
 
-        estimated_cost = round(eligible * 3 * 0.01, 2)
+        estimated_cost = round(eligible * 0.0025, 2)  # FreshData: ~$0.0025/profile
         settings_url   = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend") + "/#/settings"
 
         for u in User.query.filter_by(role='admin').all():
@@ -1145,6 +1294,14 @@ def start_scheduler(app):
             misfire_grace_time=86400,
         )
         _scheduler.add_job(
+            _run_watchlist_headline_sweep,
+            trigger=CronTrigger(day=1, hour=8, minute=0, timezone="UTC"),
+            args=[app],
+            id="monthly_watchlist_headline_sweep",
+            replace_existing=True,
+            misfire_grace_time=86400,
+        )
+        _scheduler.add_job(
             _send_linkedin_poll_reminder,
             trigger=CronTrigger(month="1,4,7,10", day=1, hour=9, minute=0, timezone="UTC"),
             args=[app],
@@ -1164,7 +1321,7 @@ def start_scheduler(app):
         logger.info(
             "Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC, "
             "founder news Wed 08:00 UTC, press monitor Thu 08:00 UTC, "
-            "inbox audit reminder 1st of month 07:00 UTC, "
+            "inbox audit reminder 1st 07:00 UTC, watchlist headline sweep 1st 08:00 UTC, "
             "quarterly LinkedIn poll reminder Jan/Apr/Jul/Oct 1 09:00 UTC, "
             "quarterly Founder Radar poll reminder Jan/Apr/Jul/Oct 1 09:30 UTC"
         )

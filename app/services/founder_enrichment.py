@@ -5,7 +5,6 @@ Ties together:
   - founder_discovery  → identify who the founder is
   - proxycurl          → fetch their LinkedIn profile
   - enrichment         → rescore_founder_with_linkedin (Claude Haiku)
-  - crunchbase         → optional company data (if CRUNCHBASE_API_KEY is set)
   - DB update          → persist results to item.meta["enrichment"]["founder"]
 
 Entry points:
@@ -34,7 +33,7 @@ def run_founder_enrichment(
     Flow:
       1. discover_founder  → who is the founder? (includes exit background search)
       2. proxycurl: use linkedin_url_hint if available, else search → fetch LinkedIn profile
-      3. Inject exit background + Crunchbase data into profile text
+      3. Inject exit background into profile text
       4. rescore_founder_with_linkedin  → score via Claude Haiku
       5. Persist results to DB
 
@@ -49,7 +48,6 @@ def run_founder_enrichment(
     from .founder_discovery import discover_founder
     from . import proxycurl
     from .enrichment import rescore_founder_with_linkedin
-    from .crunchbase import lookup_company, is_available as crunchbase_available
 
     # ── 1. Discover founder ───────────────────────────────────────────────────
     discovery = discover_founder(brand_name, filer_name, category)
@@ -100,8 +98,8 @@ def run_founder_enrichment(
 
     linkedin_url = linkedin_data.get("linkedin_url") or linkedin_url_hint or ""
 
-    # ── 3. Build augmented profile text with exit background + Crunchbase ─────
-    # Pass a modified linkedin_context that includes exit background and Crunchbase
+    # ── 3. Build augmented profile text with exit background ──────────────────
+    # Pass a modified linkedin_context that includes exit background
     # We use a shallow copy and inject extra fields for rescore_founder_with_linkedin
     augmented_context = dict(linkedin_data)
 
@@ -111,24 +109,6 @@ def run_founder_enrichment(
         augmented_context["_exit_background_text"] = f"BRAND EXIT BACKGROUND: {exit_info['details']}"
     else:
         augmented_context["_exit_background_text"] = "BRAND EXIT BACKGROUND: No prior exit background found."
-
-    # Crunchbase data (optional)
-    crunchbase_text = ""
-    _crunchbase_enriched = False
-    if crunchbase_available():
-        try:
-            cb_data = lookup_company(brand_name)
-            if cb_data:
-                _crunchbase_enriched = True
-                crunchbase_text = f"\n\nCRUNCHBASE: {cb_data.get('description', '')}. "
-                if cb_data.get("total_funding"):
-                    crunchbase_text += f"Total funding: ${cb_data['total_funding']:,.0f}. "
-                if cb_data.get("last_funding_type"):
-                    crunchbase_text += f"Last round: {cb_data['last_funding_type']}."
-        except Exception as exc:
-            logger.warning("Crunchbase enrichment failed for '%s': %s", brand_name, exc)
-
-    augmented_context["_crunchbase_text"] = crunchbase_text
 
     # ── 4. Rescore with Claude ────────────────────────────────────────────────
     rescore = rescore_founder_with_linkedin(
@@ -169,9 +149,6 @@ def run_founder_enrichment(
             meta = json.loads(item.description or "{}")
             if "enrichment" not in meta:
                 meta["enrichment"] = {}
-
-            if _crunchbase_enriched:
-                meta["crunchbase_enriched"] = True
 
             # Merge the founder data into meta.enrichment
             meta["enrichment"]["founder"] = {

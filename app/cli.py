@@ -269,6 +269,116 @@ def register_commands(app):
         click.echo(f"\n✓ Wrote {len(deduped)} unique officers/directors to {output}")
         click.echo(f"  (from {total} Form D signals, {len(results)} total name mentions)")
 
+    @app.cli.command("load-watchlist")
+    @click.option("--dry-run", is_flag=True, default=False, help="Preview without writing to DB")
+    def load_watchlist(dry_run):
+        """Load data/watchlist_seed.csv into DB as person watchlist items.
+
+        Upserts all 193 rows by name. Purges person watchlist rows whose name is
+        no longer in the CSV. Does NOT touch brand watchlist rows (those have no
+        watchlist_kind field in their description JSON).
+
+        Usage: flask load-watchlist
+               flask load-watchlist --dry-run
+        """
+        import csv as _csv
+        import os
+        from datetime import datetime, timezone
+        from .models.item import Item
+
+        csv_path = os.path.normpath(
+            os.path.join(current_app.root_path, '..', 'data', 'watchlist_seed.csv')
+        )
+
+        if not os.path.exists(csv_path):
+            raise click.ClickException(f"CSV not found: {csv_path}")
+
+        admin = User.query.filter_by(role='admin').order_by(User.id).first()
+        if not admin:
+            raise click.ClickException("No admin user found — run 'flask create-admin' first.")
+
+        seed_names = set()
+        seed_rows = []
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            for row in _csv.DictReader(f):
+                name = row.get('name', '').strip()
+                if not name:
+                    continue
+                seed_names.add(name)
+                seed_rows.append(row)
+
+        click.echo(f"{'[DRY RUN] ' if dry_run else ''}Seed: {len(seed_rows)} people from {csv_path}")
+
+        upserted = 0
+        for row in seed_rows:
+            name        = row['name'].strip()
+            designation = row.get('designation', '').strip().lower()
+            payload = {
+                "_type":         "watchlist",
+                "watchlist_kind": "person",
+                "name":          name,
+                "designation":   designation,
+                "role":          row.get('role', '').strip(),
+                "exit_brand":    row.get('exit_brand', '').strip(),
+                "exit_type":     row.get('exit_type', '').strip(),
+                "exit_year":     row.get('exit_year', '').strip(),
+                "category":      row.get('category', '').strip(),
+                "notes":         row.get('notes', '').strip(),
+                "source_url":    row.get('source_url', '').strip(),
+                "linkedin_url":  row.get('linkedin_url', '').strip(),
+                "loaded_at":     datetime.now(timezone.utc).isoformat(),
+            }
+            if dry_run:
+                click.echo(f"  UPSERT {designation:8s} {name}")
+                upserted += 1
+                continue
+
+            existing = (
+                Item.query
+                .filter_by(item_type='watchlist', owner_id=admin.id, title=name)
+                .filter(Item.description.like('%"watchlist_kind": "person"%'))
+                .first()
+            )
+            if existing:
+                existing.description = json.dumps(payload)
+            else:
+                item = Item(
+                    title=name,
+                    item_type='watchlist',
+                    owner_id=admin.id,
+                    description=json.dumps(payload),
+                )
+                db.session.add(item)
+            upserted += 1
+
+        # Purge person rows whose name is no longer in the seed
+        purged = 0
+        all_person_rows = (
+            Item.query
+            .filter_by(item_type='watchlist', owner_id=admin.id)
+            .filter(Item.description.like('%"watchlist_kind": "person"%'))
+            .all()
+        )
+        for row in all_person_rows:
+            try:
+                meta = json.loads(row.description or '{}')
+            except Exception:
+                continue
+            if meta.get('watchlist_kind') == 'person' and meta.get('name') not in seed_names:
+                if dry_run:
+                    click.echo(f"  PURGE  {meta.get('name', '?')}")
+                else:
+                    db.session.delete(row)
+                purged += 1
+
+        if not dry_run:
+            db.session.commit()
+
+        click.echo(
+            f"{'[DRY RUN] ' if dry_run else ''}Done. "
+            f"upserted={upserted} purged={purged}"
+        )
+
     @app.cli.command("create-admin")
     @click.option("--email", prompt=True, help="Admin email address")
     @click.option("--password", prompt=True, hide_input=True,
