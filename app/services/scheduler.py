@@ -984,6 +984,60 @@ def _log_inbox_audit_reminder(app):
         )
 
 
+def _send_linkedin_poll_reminder(app):
+    """Quarterly job (Jan/Apr/Jul/Oct 1 at 09:00 UTC): email admins to run the LinkedIn network poll."""
+    logger.info("Running quarterly LinkedIn poll reminder")
+
+    # ~85-day TTL prevents double-firing if the scheduler restarts near a quarter boundary
+    if not _acquire_job_lock(app, "quarterly_linkedin_poll_reminder", ttl_seconds=60 * 60 * 24 * 85):
+        return
+
+    with app.app_context():
+        from ..models.user import User
+        from ..models.item import Item
+        from ..services.email import send_linkedin_poll_reminder_email
+        from datetime import timezone, timedelta
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=365 * 3)
+        rows   = Item.query.filter(Item.item_type == 'watchlist').all()
+        eligible = 0
+        for row in rows:
+            try:
+                meta = json.loads(row.description or '{}')
+                if meta.get('_type') != 'watchlist':
+                    continue
+                if meta.get('source') != 'linkedin_import':
+                    continue
+                if not meta.get('linkedin'):
+                    continue
+                cd = meta.get('connected_date', '')
+                if cd:
+                    try:
+                        from datetime import timezone as _tz
+                        if datetime.strptime(cd, '%d %b %Y').replace(tzinfo=_tz.utc) < cutoff:
+                            continue
+                    except ValueError:
+                        pass
+                eligible += 1
+            except Exception:
+                continue
+
+        estimated_cost = round(eligible * 3 * 0.01, 2)
+        settings_url   = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend") + "/#/settings"
+
+        for u in User.query.filter_by(role='admin').all():
+            try:
+                send_linkedin_poll_reminder_email(
+                    to_email=u.email,
+                    eligible_count=eligible,
+                    estimated_cost=estimated_cost,
+                    settings_url=settings_url,
+                )
+                logger.info("LinkedIn poll reminder sent to %s", u.email)
+            except Exception as exc:
+                logger.warning("Failed to send LinkedIn poll reminder to %s: %s", u.email, exc)
+
+
 def start_scheduler(app):
     """Start the APScheduler background scheduler (once per process).
 
@@ -1052,6 +1106,14 @@ def start_scheduler(app):
             trigger=CronTrigger(day=1, hour=7, minute=0, timezone="UTC"),
             args=[app],
             id="monthly_inbox_audit_reminder",
+            replace_existing=True,
+            misfire_grace_time=86400,
+        )
+        _scheduler.add_job(
+            _send_linkedin_poll_reminder,
+            trigger=CronTrigger(month="1,4,7,10", day=1, hour=9, minute=0, timezone="UTC"),
+            args=[app],
+            id="quarterly_linkedin_poll_reminder",
             replace_existing=True,
             misfire_grace_time=86400,
         )

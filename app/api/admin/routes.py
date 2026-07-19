@@ -973,6 +973,163 @@ def update_founder_profile(profile_id):
     return jsonify(fp.to_dict()), 200
 
 
+# ── LinkedIn quarterly network poll ───────────────────────────────────────────
+
+_POLL_CUTOFF_YEARS  = 3
+_CREDITS_PER_LOOKUP = 3
+_COST_PER_CREDIT    = 0.01
+
+
+def _eligible_poll_contacts():
+    """
+    All watchlist items eligible for the quarterly LinkedIn poll:
+      - source == 'linkedin_import'
+      - has a linkedin URL
+      - connected_date within the last POLL_CUTOFF_YEARS years
+    """
+    from datetime import timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=365 * _POLL_CUTOFF_YEARS)
+
+    rows = Item.query.filter(Item.item_type == 'watchlist').all()
+    eligible = []
+    for row in rows:
+        try:
+            meta = json.loads(row.description or '{}')
+        except Exception:
+            continue
+        if meta.get('_type') != 'watchlist':
+            continue
+        if meta.get('source') != 'linkedin_import':
+            continue
+        linkedin_url = meta.get('linkedin', '')
+        if not linkedin_url:
+            continue
+        connected_date_str = meta.get('connected_date', '')
+        if connected_date_str:
+            try:
+                from datetime import timezone as _tz
+                connected_dt = datetime.strptime(connected_date_str, '%d %b %Y').replace(tzinfo=_tz.utc)
+                if connected_dt < cutoff:
+                    continue
+            except ValueError:
+                pass  # unparseable date → include anyway
+        eligible.append({'item': row, 'meta': meta, 'linkedin_url': linkedin_url})
+    return eligible
+
+
+@bp.route("/linkedin-poll/estimate", methods=["GET"])
+@admin_required()
+def linkedin_poll_estimate():
+    """Return eligible contact count and estimated Proxycurl cost for the quarterly poll."""
+    from ...services.proxycurl import _api_key
+
+    eligible = _eligible_poll_contacts()
+    n = len(eligible)
+    credits_needed  = n * _CREDITS_PER_LOOKUP
+    estimated_cost  = round(credits_needed * _COST_PER_CREDIT, 2)
+
+    credits_available = None
+    if _api_key():
+        try:
+            resp = requests.get(
+                "https://nubela.co/api/v1/meta/credit-balance",
+                headers={"Authorization": f"Bearer {_api_key()}"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                credits_available = resp.json().get("credit_balance")
+        except Exception:
+            pass
+
+    return jsonify({
+        "eligible_contacts":  n,
+        "credits_needed":     credits_needed,
+        "estimated_cost_usd": estimated_cost,
+        "credits_available":  credits_available,
+        "cutoff_years":       _POLL_CUTOFF_YEARS,
+    }), 200
+
+
+@bp.route("/linkedin-poll/run", methods=["POST"])
+@admin_required()
+def linkedin_poll_run():
+    """Trigger the quarterly LinkedIn headline poll. Runs in the background — admin only."""
+    import threading
+    from datetime import timezone
+    from ...services.proxycurl import fetch_linkedin_headline, is_stealth_headline
+
+    eligible = _eligible_poll_contacts()
+    if not eligible:
+        return jsonify({"error": "No eligible contacts found"}), 400
+
+    flask_app = current_app._get_current_object()
+
+    def _run_poll():
+        stealth_found = []
+        polled  = 0
+        errors  = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        with flask_app.app_context():
+            from ...models.item import Item as _Item
+            from ...extensions import db as _db
+
+            for entry in eligible:
+                try:
+                    result = fetch_linkedin_headline(entry['linkedin_url'])
+                    if result is None:
+                        continue
+                    polled += 1
+
+                    meta          = entry['meta']
+                    prev_headline = meta.get('last_headline', '')
+                    new_headline  = result.get('headline', '')
+                    stealth       = is_stealth_headline(new_headline) and not is_stealth_headline(prev_headline)
+
+                    meta['last_headline']    = new_headline
+                    meta['last_polled_at']   = now_iso
+                    meta['headline_changed'] = new_headline != prev_headline
+                    if stealth:
+                        meta['stealth_detected'] = True
+                        stealth_found.append({
+                            'name':         meta.get('name', ''),
+                            'linkedin':     entry['linkedin_url'],
+                            'old_headline': prev_headline,
+                            'new_headline': new_headline,
+                        })
+
+                    obj = _db.session.get(_Item, entry['item'].id)
+                    if obj:
+                        obj.description = json.dumps(meta)
+                        _db.session.commit()
+
+                except Exception as exc:
+                    logger.warning("LinkedIn poll error for %s: %s", entry.get('linkedin_url'), exc)
+                    errors += 1
+
+            try:
+                from ...models.user import User as _User
+                from ...services.email import send_linkedin_poll_complete_email
+                for u in _User.query.filter_by(role='admin').all():
+                    send_linkedin_poll_complete_email(
+                        to_email=u.email,
+                        polled=polled,
+                        stealth_count=len(stealth_found),
+                        stealth_contacts=stealth_found[:10],
+                        errors=errors,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to send LinkedIn poll completion email: %s", exc)
+
+    threading.Thread(target=_run_poll, daemon=True).start()
+
+    return jsonify({
+        "status":   "started",
+        "contacts": len(eligible),
+        "message":  f"Polling {len(eligible):,} contacts in the background. You'll get an email summary when it's done.",
+    }), 202
+
+
 @bp.route("/scheduler/status", methods=["GET"])
 @admin_required()
 def scheduler_status():

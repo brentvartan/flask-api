@@ -926,3 +926,151 @@ Bullish Brand Fund III · Stealth Startup Finder
             "List-Unsubscribe": f"<mailto:{from_address}?subject=unsubscribe>",
         },
     })
+
+
+def send_linkedin_poll_reminder_email(
+    to_email: str,
+    eligible_count: int,
+    estimated_cost: float,
+    settings_url: str,
+) -> None:
+    """Quarterly reminder to admins: time to run the LinkedIn network poll."""
+    from_address   = _resend_client()
+    from_with_name = f"Bullish <{from_address}>"
+    subject        = f"⏰ Quarterly LinkedIn Network Poll — {eligible_count:,} contacts, ~${estimated_cost:.2f} estimated"
+
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="font-family:Arial,sans-serif;background:#F5F0EB;margin:0;padding:40px 20px;">
+  <div style="max-width:540px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;border:1px solid #E5E5E0;">
+    <div style="background:#052EF0;padding:28px 32px;">
+      <p style="color:rgba(255,255,255,.7);font-size:11px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 6px;">Bullish Stealth Startup Finder</p>
+      <h1 style="color:white;font-size:22px;font-weight:700;margin:0;">Quarterly LinkedIn Poll</h1>
+      <p style="color:rgba(255,255,255,.8);font-size:13px;margin:8px 0 0;">Time to check your network for stealth founders.</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <p style="color:#333;font-size:14px;line-height:1.6;margin:0 0 20px;">
+        The quarterly LinkedIn headline poll scans your imported connections for people who've quietly changed
+        their title to <strong>Founder</strong>, <strong>Building</strong>, <strong>CEO</strong>, or other
+        stealth signals — before any press announcement.
+      </p>
+      <div style="background:#F5F0EB;border-radius:6px;padding:16px 20px;margin-bottom:24px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;">Eligible contacts</td>
+            <td style="font-size:14px;font-weight:700;color:#052EF0;text-align:right;">{eligible_count:,}</td>
+          </tr>
+          <tr>
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;">Credits needed</td>
+            <td style="font-size:14px;font-weight:700;color:#333;text-align:right;">{eligible_count * 3:,}</td>
+          </tr>
+          <tr style="border-top:1px solid #E5E5E0;">
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:8px 0 4px;">Estimated cost</td>
+            <td style="font-size:16px;font-weight:700;color:#333;text-align:right;padding-top:8px;">${estimated_cost:.2f}</td>
+          </tr>
+        </table>
+      </div>
+      <p style="color:#666;font-size:13px;line-height:1.6;margin:0 0 24px;">
+        Log in to see the live estimate (including current credit balance) and click <strong>Approve &amp; Run</strong>.
+        Only admins can trigger the poll — no credits are spent until you confirm.
+      </p>
+      <a href="{settings_url}" style="display:inline-block;background:#052EF0;color:white;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:12px 24px;border-radius:4px;text-decoration:none;">
+        Review &amp; Approve →
+      </a>
+    </div>
+    <div style="padding:16px 32px;border-top:1px solid #E5E5E0;">
+      <p style="color:#999;font-size:11px;margin:0;">Bullish Brand Fund III · Confidential · bullish.co</p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    resend.Emails.send({
+        "from":    from_with_name,
+        "to":      [to_email],
+        "subject": subject,
+        "html":    html,
+    })
+
+
+def send_linkedin_poll_complete_email(
+    to_email: str,
+    polled: int,
+    stealth_count: int,
+    stealth_contacts: list,
+    errors: int,
+) -> None:
+    """Summary email to admins when the quarterly LinkedIn poll finishes."""
+    from_address   = _resend_client()
+    from_with_name = f"Bullish <{from_address}>"
+    subject        = f"{'✅' if stealth_count > 0 else '📊'} LinkedIn Poll Complete — {stealth_count} stealth signal{'s' if stealth_count != 1 else ''} detected"
+
+    stealth_rows = ""
+    for c in (stealth_contacts or []):
+        stealth_rows += (
+            f"<tr>"
+            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:13px;color:#333;'>{c.get('name','')}</td>"
+            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:12px;color:#666;'>{c.get('old_headline','') or '—'}</td>"
+            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:12px;font-weight:600;color:#052EF0;'>{c.get('new_headline','')}</td>"
+            f"</tr>"
+        )
+
+    stealth_section = (
+        "<h3 style='font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#333;margin:24px 0 12px;'>Stealth Signals Detected</h3>"
+        "<table style='width:100%;border-collapse:collapse;'>"
+        "<thead><tr>"
+        "<th style='text-align:left;font-size:11px;color:#999;text-transform:uppercase;letter-spacing:.08em;padding-bottom:6px;'>Name</th>"
+        "<th style='text-align:left;font-size:11px;color:#999;text-transform:uppercase;letter-spacing:.08em;padding-bottom:6px;'>Old Headline</th>"
+        "<th style='text-align:left;font-size:11px;color:#999;text-transform:uppercase;letter-spacing:.08em;padding-bottom:6px;'>New Headline</th>"
+        "</tr></thead>"
+        f"<tbody>{stealth_rows}</tbody></table>"
+    ) if stealth_contacts else (
+        "<p style='color:#666;font-size:13px;line-height:1.6;margin:16px 0 0;'>"
+        "No stealth signals this quarter. Results are stored in each contact's Watchlist entry."
+        "</p>"
+    )
+
+    header_bg  = "#052EF0" if stealth_count > 0 else "#020A52"
+    errors_row = (
+        f"<tr><td style='font-size:12px;color:#999;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;'>Errors</td>"
+        f"<td style='font-size:13px;color:#999;text-align:right;'>{errors}</td></tr>"
+    ) if errors else ""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="font-family:Arial,sans-serif;background:#F5F0EB;margin:0;padding:40px 20px;">
+  <div style="max-width:540px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;border:1px solid #E5E5E0;">
+    <div style="background:{header_bg};padding:28px 32px;">
+      <p style="color:rgba(255,255,255,.7);font-size:11px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 6px;">Bullish Stealth Startup Finder</p>
+      <h1 style="color:white;font-size:22px;font-weight:700;margin:0;">LinkedIn Poll Complete</h1>
+      <p style="color:rgba(255,255,255,.8);font-size:13px;margin:8px 0 0;">Scanned {polled:,} contacts · {stealth_count} stealth signal{'s' if stealth_count != 1 else ''} detected</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <div style="background:#F5F0EB;border-radius:6px;padding:16px 20px;margin-bottom:20px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;">Profiles scanned</td>
+            <td style="font-size:14px;font-weight:700;color:#333;text-align:right;">{polled:,}</td>
+          </tr>
+          <tr>
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;">Stealth signals</td>
+            <td style="font-size:14px;font-weight:700;color:#052EF0;text-align:right;">{stealth_count}</td>
+          </tr>
+          {errors_row}
+        </table>
+      </div>
+      {stealth_section}
+    </div>
+    <div style="padding:16px 32px;border-top:1px solid #E5E5E0;">
+      <p style="color:#999;font-size:11px;margin:0;">Bullish Brand Fund III · Confidential · bullish.co</p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    resend.Emails.send({
+        "from":    from_with_name,
+        "to":      [to_email],
+        "subject": subject,
+        "html":    html,
+    })

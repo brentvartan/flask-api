@@ -1,5 +1,6 @@
 """
 NinjaPear professional profile enrichment — WARM+ signals only.
+Also provides fetch_linkedin_headline() for the quarterly network poll.
 (Replaces the now-sunset Proxycurl API; same API key, new endpoints at nubela.co/api/)
 
 Only fires when ALL of these are true:
@@ -174,6 +175,63 @@ def enrich_founder(founder_name: str, brand_name: str) -> dict:
         len(ctx.get("education", [])),
     )
     return ctx
+
+
+# ── Quarterly network poll helpers ────────────────────────────────────────────
+
+_STEALTH_KEYWORDS = frozenset([
+    "founder", "co-founder", "cofounder", "ceo", "chief executive",
+    "building", "stealth", "new venture", "entrepreneur",
+    "starting", "launching", "operator",
+])
+
+
+def is_stealth_headline(headline: str | None) -> bool:
+    """Return True if headline suggests the person is founding / going stealth."""
+    if not headline:
+        return False
+    h = headline.lower()
+    return any(kw in h for kw in _STEALTH_KEYWORDS)
+
+
+def fetch_linkedin_headline(linkedin_url: str) -> dict | None:
+    """
+    Fetch a LinkedIn profile by URL via the Nubela Person Profile endpoint.
+    GET https://nubela.co/proxycurl/api/v2/linkedin?url=<url>
+    Costs 3 credits per successful call.
+    Returns {"headline": str, "full_name": str} or None on any failure / 402.
+    """
+    key = _api_key()
+    if not key or not linkedin_url:
+        return None
+
+    try:
+        resp = requests.get(
+            f"{_BASE}/proxycurl/api/v2/linkedin",
+            params={"url": linkedin_url},
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        logger.warning("Proxycurl LinkedIn profile request failed for %s: %s", linkedin_url, exc)
+        return None
+
+    if resp.status_code == 402:
+        logger.warning("Proxycurl: insufficient credits for %s", linkedin_url)
+        return None
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        logger.warning("Proxycurl profile %s → HTTP %d: %s", linkedin_url, resp.status_code, resp.text[:200])
+        return None
+
+    data      = resp.json()
+    first     = data.get("first_name") or ""
+    last      = data.get("last_name")  or ""
+    return {
+        "headline":  data.get("headline") or data.get("occupation") or "",
+        "full_name": f"{first} {last}".strip(),
+    }
 
 
 # ── Compatibility aliases used by founder_enrichment.py ───────────────────────
