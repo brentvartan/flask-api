@@ -3,12 +3,28 @@ Confluence Detection Service
 
 When a new signal is saved, this service:
   1. Normalises the brand name into a stable brand_key
-  2. Records the signal in signal_events
-  3. Checks if a NEW distinct signal type has appeared for this brand
-  4. If yes → creates a ConfluenceHit and fires an alert email
+  2. Extracts optional person keys and coined-term keys for cross-brand clustering
+  3. Records the signal in signal_events
+  4. Checks if a NEW distinct signal type has appeared for this brand CLUSTER
+     — cluster = all events sharing brand_key OR a person key OR a coined-term key
+  5. If yes → creates a ConfluenceHit and fires an alert email
 
 Brand key normalisation strips legal suffixes (LLC, INC, CORP…) and
 punctuation so "NEURO GUM LLC" and "NEURO GUM" match the same key.
+
+Person key clustering catches same-founder signals under different entity names:
+  Form D "Lightyear Incorporated" naming John Doe  +
+  Trademark "Filament Sciences" also naming John Doe
+  → both cluster via person key "john doe" → one confluence hit.
+
+Coined-term clustering catches same-brand signals with slightly different entity names:
+  Trademark "OLIPOP"                → coined key "olipop"
+  Form D "OLIPOP BEVERAGES LLC"    → coined key "olipop"
+  → cluster even though brand_keys differ ("olipop" vs "olipop beverages").
+
+Guardrail: a wrong merge is worse than a missed link.
+  - Person keys require BOTH first AND last name.
+  - Coined terms must be ≥5 chars, purely alphabetic, and NOT in the common-word blocklist.
 """
 import json
 import logging
@@ -36,6 +52,253 @@ def normalize_brand(name: str) -> str:
     return re.sub(r'\s+', ' ', cleaned).strip().lower()
 
 
+# ── Person key helpers ────────────────────────────────────────────────────────
+
+_ENTITY_WORDS = re.compile(
+    r'\b(llc|inc|corp|ltd|lp|llp|pllc|trust|estate|holdings|group|n/a)\b',
+    re.IGNORECASE,
+)
+
+
+def normalize_person(name: str) -> str | None:
+    """
+    Return a stable person key or None if name doesn't look like a real person.
+
+    Format: "firstname lastname" (lowercase, both required).
+    Handles "Last, First" form. Rejects corporate entities, N/A values, names
+    with digits, and names with fewer than 2 or more than 5 parts.
+    """
+    if not name or not name.strip():
+        return None
+    cleaned = name.strip()
+    if _ENTITY_WORDS.search(cleaned):
+        return None
+    if re.search(r'\d', cleaned):
+        return None
+    if cleaned.lower().strip() in {'n/a', 'n/a n/a', 'na', 'unknown', 'see filing', ''}:
+        return None
+    # Handle "Last, First" form
+    if ',' in cleaned:
+        parts = [p.strip() for p in cleaned.split(',', 1)]
+        if len(parts) == 2:
+            cleaned = f"{parts[1]} {parts[0]}"
+    parts = cleaned.split()
+    if len(parts) < 2 or len(parts) > 5:
+        return None
+    return f"{parts[0].lower()} {parts[-1].lower()}"
+
+
+def extract_person_keys(names: list[str]) -> list[str]:
+    """
+    Given a list of name strings, return normalized person keys for all that
+    look like real persons. Deduplicates. Empty list if no valid names.
+    """
+    seen: set[str] = set()
+    keys: list[str] = []
+    for name in (names or []):
+        key = normalize_person(name)
+        if key and key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys
+
+
+# ── Coined-term key helpers ───────────────────────────────────────────────────
+
+# Purely alphabetic 5+ char tokens that are common English words or generic
+# brand modifiers — NOT coined/invented. A token NOT in this set is a candidate
+# coined term. Err on the side of including words (conservative = fewer false
+# merges). Deliberately does NOT include invented brand tokens like "lightyear",
+# "filament", "olipop", "oura", etc.
+_COMMON_WORDS: frozenset[str] = frozenset({
+    'about', 'above', 'after', 'again', 'ahead', 'alive', 'along', 'among',
+    'apart', 'areas', 'aside', 'asset', 'avoid', 'aware', 'badly', 'basic',
+    'basis', 'began', 'begin', 'being', 'below', 'birth', 'black', 'blank',
+    'blend', 'block', 'blood', 'bloom', 'blown', 'boost', 'bound', 'brand',
+    'brave', 'break', 'brief', 'bring', 'broad', 'broke', 'brown', 'build',
+    'built', 'buyer', 'calls', 'carry', 'cases', 'catch', 'cause', 'chain',
+    'chair', 'cheap', 'check', 'chief', 'chose', 'civic', 'civil', 'claim',
+    'class', 'clean', 'clear', 'click', 'close', 'coast', 'color', 'comes',
+    'costs', 'could', 'count', 'court', 'cover', 'craft', 'crash', 'cream',
+    'cross', 'crowd', 'crown', 'curve', 'cycle', 'daily', 'dance', 'debut',
+    'delay', 'depth', 'detox', 'doing', 'doors', 'doubt', 'draft', 'drama',
+    'drawn', 'dream', 'dress', 'dried', 'drink', 'drive', 'drops', 'dying',
+    'eager', 'early', 'earth', 'eight', 'elite', 'empty', 'ended', 'enjoy',
+    'enter', 'entry', 'equal', 'error', 'event', 'every', 'exact', 'exist',
+    'extra', 'falls', 'false', 'fancy', 'farms', 'fatal', 'fault', 'feast',
+    'fiber', 'fifth', 'fifty', 'filed', 'files', 'fills', 'final', 'fired',
+    'first', 'fixed', 'flair', 'flame', 'flash', 'flesh', 'float', 'floor',
+    'flora', 'flour', 'fluid', 'flush', 'focus', 'force', 'forte', 'forty',
+    'forum', 'found', 'frame', 'frank', 'fresh', 'front', 'frost', 'fruit',
+    'fully', 'funds', 'gains', 'games', 'ghost', 'given', 'glass', 'globe',
+    'gloss', 'going', 'grace', 'grade', 'grain', 'grand', 'grant', 'grasp',
+    'grass', 'great', 'green', 'grind', 'group', 'grown', 'guard', 'guess',
+    'guide', 'guilt', 'happy', 'heads', 'heart', 'heavy', 'helps', 'herbs',
+    'holes', 'homes', 'honor', 'hours', 'house', 'human', 'ideal', 'image',
+    'inner', 'issue', 'items', 'joint', 'juice', 'keeps', 'kinds', 'known',
+    'label', 'large', 'later', 'layer', 'leads', 'learn', 'legal', 'level',
+    'light', 'limit', 'links', 'lists', 'lives', 'local', 'looks', 'loose',
+    'lower', 'lucky', 'lunch', 'magic', 'major', 'makes', 'match', 'media',
+    'might', 'minds', 'model', 'money', 'month', 'moral', 'moved', 'moves',
+    'multi', 'named', 'needs', 'never', 'night', 'noble', 'noise', 'north',
+    'notes', 'novel', 'nurse', 'offer', 'often', 'opens', 'order', 'other',
+    'outer', 'owned', 'owner', 'pages', 'paint', 'parts', 'pasta', 'patch',
+    'paths', 'phase', 'phone', 'photo', 'picks', 'piece', 'pilot', 'plain',
+    'plane', 'plans', 'plant', 'plays', 'point', 'posed', 'posts', 'power',
+    'press', 'price', 'pride', 'prime', 'print', 'proof', 'proud', 'pulse',
+    'quick', 'quiet', 'quite', 'quote', 'raise', 'range', 'rapid', 'reach',
+    'ready', 'realm', 'renew', 'reset', 'right', 'risks', 'roots', 'rough',
+    'round', 'royal', 'rules', 'rural', 'saved', 'scale', 'scene', 'score',
+    'scout', 'seven', 'shake', 'shall', 'share', 'sharp', 'sheer', 'shift',
+    'ships', 'shore', 'shots', 'sight', 'since', 'sixth', 'sized', 'skill',
+    'slate', 'sleep', 'slide', 'slick', 'small', 'smart', 'smile', 'solar',
+    'solid', 'solve', 'sound', 'south', 'space', 'spark', 'speak', 'speed',
+    'spend', 'sport', 'spray', 'squad', 'stack', 'stage', 'stake', 'stand',
+    'stark', 'start', 'state', 'steps', 'stick', 'still', 'stock', 'store',
+    'storm', 'story', 'sugar', 'suite', 'sunny', 'super', 'sweet', 'swift',
+    'table', 'takes', 'taste', 'teams', 'thing', 'think', 'three', 'tight',
+    'times', 'today', 'token', 'tools', 'total', 'touch', 'towns', 'track',
+    'trade', 'trail', 'train', 'trend', 'trial', 'tribe', 'trick', 'tried',
+    'trust', 'truth', 'twice', 'ultra', 'under', 'union', 'unite', 'until',
+    'upper', 'urban', 'usage', 'valid', 'value', 'vault', 'vital', 'vivid',
+    'vocal', 'voice', 'voter', 'water', 'waves', 'weeks', 'wells', 'white',
+    'whole', 'wider', 'winds', 'women', 'works', 'world', 'worry', 'worth',
+    'would', 'write', 'years', 'young', 'yours',
+    # Common wellness / beauty / food / brand modifiers
+    'amino', 'apple', 'aroma', 'berry', 'brush', 'cacao', 'cedar', 'cells',
+    'chill', 'citro', 'cocoa', 'coral', 'crisp', 'dandy', 'earthy', 'elixir',
+    'fauna', 'feels', 'floss', 'flows', 'foods', 'forge', 'gummy', 'haven',
+    'herby', 'honey', 'hydra', 'kefir', 'lemon', 'linen', 'liver', 'maple',
+    'melon', 'merry', 'milky', 'minty', 'moist', 'mossy', 'musky', 'nervy',
+    'ocean', 'omega', 'onion', 'ozone', 'peach', 'pearl', 'peppy', 'perky',
+    'petal', 'piney', 'plant', 'plump', 'plush', 'popsy', 'potty', 'prune',
+    'puffy', 'pulpy', 'relax', 'resin', 'rinse', 'roast', 'rocky', 'rosie',
+    'rusty', 'salty', 'sandy', 'savor', 'seedy', 'silky', 'sleek', 'smoky',
+    'snack', 'soapy', 'spicy', 'stony', 'straw', 'syrup', 'tangy', 'tasty',
+    'thyme', 'tonic', 'tummy', 'vegan', 'vigor', 'vital', 'wheat', 'whole',
+    'wispy', 'woody', 'yummy', 'zesty', 'zingy', 'zippy',
+    # Additional suffixes / generic words that appear in brand-name entity filings
+    'beverages', 'brands', 'bureau', 'center', 'circle', 'clouds', 'coding', 'colony',
+    'coming', 'common', 'corner', 'create', 'design', 'direct', 'driven',
+    'during', 'effect', 'enable', 'ending', 'engine', 'entity', 'evolve',
+    'expand', 'expert', 'fabric', 'factor', 'family', 'fields', 'finger',
+    'finish', 'flying', 'follow', 'foster', 'future', 'garden', 'gather',
+    'gender', 'genius', 'gentle', 'giving', 'global', 'grants', 'growth',
+    'happen', 'harbor', 'harder', 'health', 'helper', 'herbal', 'higher',
+    'holder', 'honest', 'impact', 'inside', 'intent', 'island', 'itself',
+    'joined', 'junior', 'justice', 'keeper', 'launch', 'leader', 'legacy',
+    'living', 'loving', 'making', 'manage', 'manner', 'market', 'master',
+    'matter', 'method', 'middle', 'modern', 'mother', 'motion', 'moving',
+    'native', 'nature', 'nearby', 'needed', 'nourish', 'number', 'offers',
+    'origin', 'output', 'parent', 'people', 'plenty', 'portal', 'pretty',
+    'primal', 'prompt', 'proper', 'public', 'purely', 'pursue', 'putting',
+    'radius', 'rather', 'really', 'recall', 'recent', 'record', 'reduce',
+    'refine', 'relief', 'remain', 'repair', 'repeat', 'report', 'rescue',
+    'result', 'return', 'reveal', 'reward', 'rising', 'robust', 'rolled',
+    'safety', 'sample', 'school', 'search', 'second', 'select', 'sender',
+    'series', 'simple', 'single', 'sister', 'sitting', 'skills', 'smooth',
+    'source', 'spirit', 'spread', 'spring', 'square', 'stable', 'static',
+    'status', 'steady', 'stream', 'street', 'strong', 'studio', 'submit',
+    'summer', 'supply', 'system', 'target', 'tested', 'theory', 'throws',
+    'toward', 'travel', 'united', 'unless', 'update', 'useful', 'vision',
+    'visual', 'within', 'wonder', 'wooden', 'worked', 'writer', 'yellow',
+})
+
+# Also strip these from brand names before coined-term extraction
+_ENTITY_SUFFIX_RE = re.compile(
+    r'\s*,?\s*(LLC|L\.L\.C\.?|Inc\.?|Corp\.?|Corporation|Company|Co\.?'
+    r'|Ltd\.?|Limited|L\.P\.?|LLP|PLLC|PC|P\.C\.|Sciences|Labs?\.?'
+    r'|Brands?|Studios?|Ventures?|Holdings?|Group)\s*$',
+    re.IGNORECASE,
+)
+
+
+def extract_coined_term_keys(brand_name: str) -> list[str]:
+    """
+    Extract distinctive coined-term keys from a brand name.
+
+    A coined term is a token that:
+    - Is purely alphabetic (no digits, no punctuation)
+    - Is 5–20 characters long
+    - Is NOT a common English word or generic brand modifier
+    - Is NOT a legal entity suffix
+
+    Conservative by design — a missed link is better than a wrong merge.
+    """
+    if not brand_name:
+        return []
+    clean = _ENTITY_SUFFIX_RE.sub('', brand_name.strip()).strip()
+    keys: list[str] = []
+    for token in re.split(r'[\s\-_&,\.]+', clean):
+        token = token.strip()
+        if not token.isalpha():
+            continue
+        if len(token) < 5 or len(token) > 20:
+            continue
+        lower = token.lower()
+        if lower in _COMMON_WORDS:
+            continue
+        keys.append(lower)
+    return keys
+
+
+# ── Cluster resolution ────────────────────────────────────────────────────────
+
+def _find_cluster(
+    owner_id: int,
+    brand_key: str,
+    person_keys: list[str],
+    coined_term_keys: list[str],
+):
+    """
+    Find all existing SignalEvents in the same logical brand cluster.
+
+    Matches by: brand_key equality, OR shared person key, OR shared coined-term key.
+    Returns (canonical_brand_key: str, canonical_brand_name: str, matching_events: list).
+
+    canonical_brand_key = earliest-detected event's brand_key; falls back to current
+    brand_key if no existing events found.
+    """
+    from ..models.signal_event import SignalEvent
+
+    # Fast path: direct brand_key match
+    direct = SignalEvent.query.filter_by(owner_id=owner_id, brand_key=brand_key).all()
+
+    # Cross-key matches: only scan when we have keys
+    cross = []
+    if person_keys or coined_term_keys:
+        pkey_set = set(person_keys or [])
+        ckey_set = set(coined_term_keys or [])
+        # Load events with different brand_keys (direct already covers same key)
+        candidates = (
+            SignalEvent.query
+            .filter_by(owner_id=owner_id)
+            .filter(SignalEvent.brand_key != brand_key)
+            .all()
+        )
+        for ev in candidates:
+            matched = False
+            if pkey_set:
+                ev_pkeys = set(json.loads(ev.person_keys or '[]'))
+                if pkey_set & ev_pkeys:
+                    matched = True
+            if not matched and ckey_set:
+                ev_ckeys = set(json.loads(ev.coined_term_keys or '[]'))
+                if ckey_set & ev_ckeys:
+                    matched = True
+            if matched:
+                cross.append(ev)
+
+    all_matching = direct + cross
+    if not all_matching:
+        return brand_key, None, []
+
+    earliest = min(all_matching, key=lambda e: e.detected_at)
+    return earliest.brand_key, earliest.brand_name, all_matching
+
+
+# ── Main entry point ──────────────────────────────────────────────────────────
+
 def record_signal_and_check_confluence(
     item_id: int,
     owner_id: int,
@@ -43,9 +306,16 @@ def record_signal_and_check_confluence(
     signal_type: str,
     source_url: str = None,
     enrichment: dict = None,
+    person_keys: list[str] = None,
+    coined_term_keys: list[str] = None,
 ) -> dict:
     """
     Record a new signal event and check for confluence.
+
+    person_keys: normalized person name keys (e.g. ["john smith"]) for cross-brand
+        clustering. Extract via extract_person_keys() before calling.
+    coined_term_keys: distinctive coined-term keys (e.g. ["lightyear"]) for
+        cross-entity clustering. Extract via extract_coined_term_keys() before calling.
 
     Returns:
         {
@@ -63,7 +333,10 @@ def record_signal_and_check_confluence(
     if not brand_key:
         return {"is_confluence": False, "signal_count": 1, "signal_types": [signal_type], "hit_id": None}
 
-    # ── 1. Record this signal ─────────────────────────────────────────────────
+    person_keys      = list(person_keys or [])
+    coined_term_keys = list(coined_term_keys or [])
+
+    # ── 1. Record this signal event ───────────────────────────────────────────
     event = SignalEvent(
         item_id=item_id,
         owner_id=owner_id,
@@ -72,37 +345,41 @@ def record_signal_and_check_confluence(
         signal_type=signal_type,
         source_url=source_url,
         detected_at=datetime.now(timezone.utc),
+        person_keys=json.dumps(person_keys) if person_keys else None,
+        coined_term_keys=json.dumps(coined_term_keys) if coined_term_keys else None,
     )
     db.session.add(event)
     db.session.flush()  # get id without committing
 
-    # ── 2. Count distinct signal types for this brand (including new one) ─────
-    existing = (
-        SignalEvent.query
-        .filter_by(owner_id=owner_id, brand_key=brand_key)
-        .with_entities(SignalEvent.signal_type)
-        .all()
+    # ── 2. Resolve the cluster (brand_key + cross-key matches) ───────────────
+    canonical_key, canonical_brand_name, cluster_events = _find_cluster(
+        owner_id, brand_key, person_keys, coined_term_keys,
     )
-    all_types = list({row.signal_type for row in existing} | {signal_type})
+
+    # Union of all signal types in the cluster (including the new one just flushed)
+    all_types = list({ev.signal_type for ev in cluster_events} | {signal_type})
     signal_count = len(all_types)
 
-    # ── 3. Only fire confluence if we've gained a NEW signal type ─────────────
-    # (i.e. the previous max distinct count was one less than current)
-    previous_count = signal_count - 1
-    is_confluence = previous_count >= 1  # 1→2 or 2→3 etc. (at least one existed before)
+    # ── 3. Only fire confluence if a NEW signal type has appeared ─────────────
+    # previous_count = union size BEFORE adding this new event
+    existing_types = {ev.signal_type for ev in cluster_events if ev.id != event.id}
+    is_new_type    = signal_type not in existing_types
+    is_confluence  = is_new_type and len(existing_types) >= 1
 
     if not is_confluence:
         db.session.commit()
         return {"is_confluence": False, "signal_count": signal_count, "signal_types": all_types, "hit_id": None}
 
     # ── 4. Log the confluence hit ─────────────────────────────────────────────
-    bullish_score = enrichment.get("bullish_score") if enrichment else None
-    watch_level   = enrichment.get("watch_level")   if enrichment else None
+    hit_brand_key  = canonical_key
+    hit_brand_name = canonical_brand_name or brand_name
+    bullish_score  = enrichment.get("bullish_score") if enrichment else None
+    watch_level    = enrichment.get("watch_level")   if enrichment else None
 
     hit = ConfluenceHit(
         owner_id=owner_id,
-        brand_key=brand_key,
-        brand_name=brand_name,
+        brand_key=hit_brand_key,
+        brand_name=hit_brand_name,
         signal_count=signal_count,
         signal_types=json.dumps(sorted(all_types)),
         bullish_score=bullish_score,
@@ -113,8 +390,8 @@ def record_signal_and_check_confluence(
     db.session.commit()
 
     logger.info(
-        "⚡ Confluence: %s — %d signals %s (score: %s)",
-        brand_name, signal_count, all_types, bullish_score,
+        "⚡ Confluence: %s (cluster_key=%s) — %d signals %s (score: %s)",
+        hit_brand_name, hit_brand_key, signal_count, all_types, bullish_score,
     )
 
     # Trigger re-score if brand is on watchlist
@@ -123,7 +400,7 @@ def record_signal_and_check_confluence(
         from .watchlist import trigger_rescore_if_watchlisted
         trigger_rescore_if_watchlisted(
             current_app._get_current_object().app_context(),
-            brand_name=brand_name,
+            brand_name=hit_brand_name,
             new_signal_type=signal_type,
             owner_id=owner_id,
         )

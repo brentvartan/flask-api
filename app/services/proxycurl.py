@@ -1,18 +1,21 @@
 """
-NinjaPear professional profile enrichment — WARM+ signals only.
-Also provides fetch_linkedin_headline() for the quarterly network poll.
-(Replaces the now-sunset Proxycurl API; same API key, new endpoints at nubela.co/api/)
+LinkedIn profile enrichment via FreshData (RapidAPI) — by-URL, identity-pre-resolved.
 
-Only fires when ALL of these are true:
-  - bullish_score >= 50  (WARM tier or above)
-  - founder.name is not null
-  - founder.confidence != 'unknown'
+Replaces NinjaPear/Nubela (shut down July 2025, LinkedIn lawsuit) with a by-URL
+LinkedIn scraper. Identity is pre-resolved: every watchlist person carries a
+linkedin_url in data/watchlist_seed.csv, so we never pay to resolve a name → URL.
+
+Cost: ~$0.0025/profile (FreshData Basic, $25/mo for 10k calls).
+At ~200 watchlist people/month + ~10-40 founder enrichments: ~$0.50-$0.60/month.
+
+Provider: Fresh LinkedIn Profile Data — https://rapidapi.com/freshdata-freshdata-default/api/fresh-linkedin-profile-data
+Endpoint: GET https://fresh-linkedin-profile-data.p.rapidapi.com/get-linkedin-profile
+Auth: X-RapidAPI-Key header (env var: PROXYCURL_API_KEY — reused from prior provider).
+
+Only fires when:
   - PROXYCURL_API_KEY is set in environment
-
-Cost: 3 credits per profile = ~$0.04/founder
-At ~10 WARM signals/week: ~$1.60/month
-
-Flow: single GET /api/v2/employee/profile with first_name + last_name + employer_website
+  - A linkedin_url is already known (watchlist seed or discovered hint)
+  Never pays to resolve an unknown name → URL.
 """
 
 import os
@@ -22,162 +25,177 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_BASE    = "https://nubela.co"
-_TIMEOUT = 40   # NinjaPear averages 10.5s (fast) to 38.7s (detailed)
+_BASE    = "https://fresh-linkedin-profile-data.p.rapidapi.com"
+_HOST    = "fresh-linkedin-profile-data.p.rapidapi.com"
+_TIMEOUT = 30
 
 
 def _api_key() -> str | None:
     return os.environ.get("PROXYCURL_API_KEY")
 
 
-def should_enrich_founder(enrichment: dict) -> bool:
-    """Return True if this enrichment result qualifies for a profile lookup."""
-    if not _api_key():
-        return False
-
-    score   = enrichment.get("bullish_score") or 0
-    founder = enrichment.get("founder") or {}
-
-    if score < 50:
-        return False
-    if not founder.get("name"):
-        return False
-    if founder.get("confidence") == "unknown":
-        return False
-
-    return True
+def _headers() -> dict:
+    return {
+        "X-RapidAPI-Key":  _api_key() or "",
+        "X-RapidAPI-Host": _HOST,
+    }
 
 
-def _fetch_profile(founder_name: str, brand_name: str) -> dict | None:
+def _fetch_by_url(linkedin_url: str) -> dict | None:
     """
-    Call NinjaPear /api/v2/employee/profile with name + employer.
-    Returns the raw API response dict or None on failure.
+    Fetch a LinkedIn profile by URL from FreshData.
+    Returns raw API response dict or None on any failure.
     """
     key = _api_key()
-    if not key:
+    if not key or not linkedin_url:
         return None
-
-    parts      = founder_name.strip().split()
-    first_name = parts[0] if parts else ""
-    last_name  = " ".join(parts[1:]) if len(parts) > 1 else ""
 
     try:
         resp = requests.get(
-            f"{_BASE}/api/v2/employee/profile",
-            params={
-                "first_name":       first_name,
-                "last_name":        last_name,
-                "employer_website": brand_name,   # accepts company name or website URL
-            },
-            headers={"Authorization": f"Bearer {key}"},
+            f"{_BASE}/get-linkedin-profile",
+            params={"linkedin_url": linkedin_url, "include_skills": "false"},
+            headers=_headers(),
             timeout=_TIMEOUT,
         )
     except requests.RequestException as exc:
-        logger.warning("NinjaPear profile request failed for %s: %s", founder_name, exc)
+        logger.warning("FreshData profile request failed for %s: %s", linkedin_url, exc)
         return None
 
-    if resp.status_code == 402:
-        logger.warning("NinjaPear: insufficient credits")
+    if resp.status_code == 429:
+        logger.warning("FreshData: rate limit hit for %s", linkedin_url)
         return None
     if resp.status_code == 404:
-        return None   # not found — normal, not an error
-    if resp.status_code == 400:
-        # NinjaPear returns 400 when it can't resolve a company name to a website URL.
-        # Brand names passed as employer_website (e.g. "Poppi") may fail; website URLs work best.
-        logger.info("NinjaPear: could not resolve company for %s / %s (400)", founder_name, brand_name)
         return None
     if resp.status_code != 200:
-        logger.warning("NinjaPear profile %s → HTTP %d: %s", founder_name, resp.status_code, resp.text[:200])
+        logger.warning(
+            "FreshData profile %s → HTTP %d: %s",
+            linkedin_url, resp.status_code, resp.text[:200],
+        )
         return None
 
     return resp.json()
 
 
-def search_person(founder_name: str, brand_name: str) -> str | None:
-    """
-    NinjaPear has no separate search step and doesn't return LinkedIn URLs.
-    Compatibility shim — always returns None so callers fall through to enrich_founder.
-    """
-    return None
+# ── Public interface ──────────────────────────────────────────────────────────
 
-
-def get_profile(linkedin_url: str) -> dict | None:
-    """
-    Legacy interface. NinjaPear doesn't accept LinkedIn URLs as lookup keys.
-    Returns None — founder_enrichment.py falls back to enrich_founder(name, brand).
-    """
-    return None
+def should_enrich_founder(enrichment: dict) -> bool:
+    """Return True if this enrichment result qualifies for a LinkedIn profile lookup."""
+    if not _api_key():
+        return False
+    score   = enrichment.get("bullish_score") or 0
+    founder = enrichment.get("founder") or {}
+    if score < 50:
+        return False
+    # Requires a pre-resolved URL — never pays for name-based search
+    if not founder.get("linkedin_url"):
+        return False
+    return True
 
 
 def build_context(profile: dict) -> dict:
     """
-    Extract the fields Claude needs for founder re-scoring from a raw
-    NinjaPear profile dict.  Keeps it small — only what maps to the
-    5-signal scoring model.
+    Map a raw FreshData profile dict to the standard context dict
+    consumed by rescore_founder_with_linkedin.
     """
-    # Work history: last 5 roles, most recent first
     experiences = []
-    for exp in (profile.get("work_experience") or [])[:5]:
-        start = (exp.get("start_date") or "")[:4]   # "YYYY-MM" → "YYYY"
-        end   = (exp.get("end_date")   or "")[:4]
+    for exp in (profile.get("experiences") or [])[:5]:
+        start_obj = exp.get("starts_at") or {}
+        end_obj   = exp.get("ends_at")   or {}
         experiences.append({
-            "company": exp.get("company_name"),
-            "title":   exp.get("role"),
-            "start":   start or None,
-            "end":     end or "present",
+            "company": exp.get("company"),
+            "title":   exp.get("title"),
+            "start":   str(start_obj["year"]) if start_obj.get("year") else None,
+            "end":     str(end_obj["year"]) if end_obj.get("year") else "present",
         })
 
-    # Education: last 3 institutions
     education = []
     for edu in (profile.get("education") or [])[:3]:
         education.append({
             "school": edu.get("school"),
-            "degree": edu.get("major"),   # NinjaPear folds degree+field into 'major'
-            "field":  None,
+            "degree": edu.get("degree_name"),
+            "field":  edu.get("field_of_study"),
         })
 
-    # NinjaPear aggregates from X/Twitter; no LinkedIn URL is returned
-    slug = profile.get("slug")
-    linkedin_url = f"https://nubela.co/people/{slug}" if slug else None
-
     return {
-        "linkedin_url":    linkedin_url,
-        "headline":        profile.get("bio"),
-        "summary":         (profile.get("bio") or "")[:600],
+        "linkedin_url":    profile.get("profile_url") or "",
+        "headline":        profile.get("headline") or profile.get("occupation") or "",
+        "summary":         (profile.get("about") or "")[:600],
         "follower_count":  profile.get("follower_count"),
-        "connections":     None,   # NinjaPear does not return LinkedIn connection count
+        "connections":     profile.get("connections"),
         "experiences":     experiences,
         "education":       education,
         "recommendations": 0,
     }
 
 
-def enrich_founder(founder_name: str, brand_name: str) -> dict:
+def enrich_founder(founder_name: str, brand_name: str, linkedin_url: str = None) -> dict:
     """
-    Full NinjaPear flow: single profile fetch → structured context dict.
+    Fetch LinkedIn profile for a founder — by URL only.
 
-    Returns a context dict (possibly with found=False if nothing was found).
-    The caller passes this to the Claude founder re-score function.
+    When no linkedin_url is provided, returns {"found": False} without any
+    network call. The caller should pass linkedin_url from watchlist_seed.csv
+    or a previously discovered hint; never pay to resolve an unknown URL.
     """
     empty = {"found": False}
 
-    profile = _fetch_profile(founder_name, brand_name)
+    if not linkedin_url:
+        logger.info(
+            "LinkedIn enrichment: no URL known for %s / %s — skipping",
+            founder_name, brand_name,
+        )
+        return empty
+
+    profile = _fetch_by_url(linkedin_url)
     if not profile:
-        logger.info("NinjaPear: no profile found for %s / %s", founder_name, brand_name)
+        logger.info(
+            "LinkedIn enrichment: no profile returned for %s (%s)",
+            founder_name, linkedin_url,
+        )
         return empty
 
     ctx          = build_context(profile)
     ctx["found"] = True
     logger.info(
-        "NinjaPear: enriched %s (%s) — %d experiences, %d education",
-        founder_name, brand_name,
-        len(ctx.get("experiences", [])),
-        len(ctx.get("education", [])),
+        "LinkedIn enrichment: enriched %s (%s) — %d experiences",
+        founder_name, linkedin_url, len(ctx.get("experiences", [])),
     )
     return ctx
 
 
-# ── Quarterly network poll helpers ────────────────────────────────────────────
+def fetch_linkedin_profile(linkedin_url: str) -> dict | None:
+    """
+    Fetch a profile by URL and return the full context dict.
+    Used by founder_enrichment.py when a linkedin_url_hint is available.
+    Returns None on failure.
+    """
+    if not linkedin_url:
+        return None
+    profile = _fetch_by_url(linkedin_url)
+    if not profile:
+        return None
+    ctx = build_context(profile)
+    ctx["found"] = True
+    return ctx
+
+
+def fetch_linkedin_headline(linkedin_url: str) -> dict | None:
+    """
+    Fetch just the current headline for a person by their LinkedIn URL.
+    Used by the monthly watchlist sweep in scheduler.py.
+    Returns {"headline": str, "full_name": str} or None on any failure.
+    """
+    if not linkedin_url:
+        return None
+    profile = _fetch_by_url(linkedin_url)
+    if not profile:
+        return None
+    return {
+        "headline":  profile.get("headline") or profile.get("occupation") or "",
+        "full_name": profile.get("full_name") or "",
+    }
+
+
+# ── Stealth-shift detection ───────────────────────────────────────────────────
 
 _STEALTH_KEYWORDS = frozenset([
     "founder", "co-founder", "cofounder", "ceo", "chief executive",
@@ -187,95 +205,28 @@ _STEALTH_KEYWORDS = frozenset([
 
 
 def is_stealth_headline(headline: str | None) -> bool:
-    """Return True if headline suggests the person is founding / going stealth."""
+    """Return True if a LinkedIn headline suggests the person is founding / going stealth."""
     if not headline:
         return False
     h = headline.lower()
     return any(kw in h for kw in _STEALTH_KEYWORDS)
 
 
-def fetch_linkedin_headline(linkedin_url: str) -> dict | None:
-    """
-    Fetch a LinkedIn profile by URL via the Nubela Person Profile endpoint.
-    GET https://nubela.co/proxycurl/api/v2/linkedin?url=<url>
-    Costs 3 credits per successful call.
-    Returns {"headline": str, "full_name": str} or None on any failure / 402.
-    """
-    key = _api_key()
-    if not key or not linkedin_url:
-        return None
+# ── Compatibility shims ───────────────────────────────────────────────────────
+# NinjaPear had name-based search; FreshData requires a URL.
+# These return None so callers fall through to their existing no-result paths.
 
-    try:
-        resp = requests.get(
-            f"{_BASE}/proxycurl/api/v2/linkedin",
-            params={"url": linkedin_url},
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        logger.warning("Proxycurl LinkedIn profile request failed for %s: %s", linkedin_url, exc)
-        return None
-
-    if resp.status_code == 402:
-        logger.warning("Proxycurl: insufficient credits for %s", linkedin_url)
-        return None
-    if resp.status_code == 404:
-        return None
-    if resp.status_code != 200:
-        logger.warning("Proxycurl profile %s → HTTP %d: %s", linkedin_url, resp.status_code, resp.text[:200])
-        return None
-
-    data      = resp.json()
-    first     = data.get("first_name") or ""
-    last      = data.get("last_name")  or ""
-    return {
-        "headline":  data.get("headline") or data.get("occupation") or "",
-        "full_name": f"{first} {last}".strip(),
-    }
-
-
-# ── Founder Radar quarterly poll ──────────────────────────────────────────────
-
-def fetch_person_profile(name: str, brand: str) -> dict | None:
-    """
-    Look up a named person by name + former brand via NinjaPear.
-    Returns {"headline": str, "current_company": str|None, "current_title": str|None}
-    or None if not found / API unavailable.
-    Used by the quarterly Founder Radar poll.
-    """
-    profile = _fetch_profile(name, brand)
-    if not profile:
-        return None
-
-    bio = profile.get("bio") or ""
-    current_company = None
-    current_title   = None
-    for exp in (profile.get("work_experience") or []):
-        if exp.get("end_date") is None:
-            current_company = exp.get("company_name")
-            current_title   = exp.get("role")
-            break
-
-    return {
-        "headline":        bio,
-        "current_company": current_company,
-        "current_title":   current_title,
-    }
-
-
-# ── Compatibility aliases used by founder_enrichment.py ───────────────────────
-
-def find_linkedin_url(name: str, brand_name: str = None) -> str | None:
-    """
-    NinjaPear doesn't expose LinkedIn URLs. Returns None.
-    founder_enrichment.py falls back to enrich_founder(name, brand_name).
-    """
+def search_person(founder_name: str, brand_name: str) -> str | None:
     return None
 
 
-def fetch_linkedin_profile(linkedin_url: str) -> dict | None:
-    """
-    NinjaPear doesn't accept LinkedIn URLs as input. Returns None.
-    founder_enrichment.py has a fallback path that calls enrich_founder instead.
-    """
+def get_profile(linkedin_url: str) -> dict | None:
+    return fetch_linkedin_profile(linkedin_url)
+
+
+def find_linkedin_url(name: str, brand_name: str = None) -> str | None:
+    return None
+
+
+def fetch_person_profile(name: str, brand: str) -> dict | None:
     return None

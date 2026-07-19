@@ -173,7 +173,6 @@ _PROXYCURL_COST_PER_LOOKUP   = 0.01    # ~1 credit per profile fetch @ $0.01/cre
 _SERPAPI_COST_PER_SEARCH     = 0.00    # free plan (250/mo); paid plan ~$0.01/search
 _ANTHROPIC_COST_PER_SIGNAL   = 0.03    # claude-sonnet avg per enrichment call
 _ANTHROPIC_HAIKU_PER_RESCORE = 0.005   # claude-haiku founder re-score call
-_CRUNCHBASE_COST_PER_LOOKUP  = 0.0    # TBD — depends on plan tier; update when known
 _RESEND_COST_PER_EMAIL       = 0.0    # Free tier: 3,000/mo; update if upgraded
 
 
@@ -315,10 +314,6 @@ def get_spend():
     anthropic_month   = _count_signals_this_month('"enriched":true')
     anthropic_alltime = _count_signals_all_time('"enriched":true')
 
-    # Crunchbase enrichment counts
-    crunchbase_month   = _count_signals_this_month('"crunchbase_enriched":true')
-    crunchbase_alltime = _count_signals_all_time('"crunchbase_enriched":true')
-
     # Resend email counts
     resend = _resend_email_stats()
 
@@ -338,9 +333,6 @@ def get_spend():
         (linkedin_alltime  * _ANTHROPIC_HAIKU_PER_RESCORE), 2
     )
 
-    crunchbase_cost_month   = round(crunchbase_month   * _CRUNCHBASE_COST_PER_LOOKUP, 2)
-    crunchbase_cost_alltime = round(crunchbase_alltime * _CRUNCHBASE_COST_PER_LOOKUP, 2)
-
     resend_cost_month   = round(resend["emails_this_month"] * _RESEND_COST_PER_EMAIL, 2)
     resend_cost_alltime = round(resend["emails_all_time"]   * _RESEND_COST_PER_EMAIL, 2)
 
@@ -348,8 +340,8 @@ def get_spend():
     manual_entries = _get_manual_spend_entries()
     manual_total   = round(sum(e.get("amount", 0) for e in manual_entries), 2)
 
-    total_cost_month   = round(proxycurl_cost_month   + serpapi_cost_month   + anthropic_cost_month   + crunchbase_cost_month   + resend_cost_month,   2)
-    total_cost_alltime = round(proxycurl_cost_alltime + serpapi_cost_alltime + anthropic_cost_alltime + crunchbase_cost_alltime + resend_cost_alltime + manual_total, 2)
+    total_cost_month   = round(proxycurl_cost_month   + serpapi_cost_month   + anthropic_cost_month   + resend_cost_month,   2)
+    total_cost_alltime = round(proxycurl_cost_alltime + serpapi_cost_alltime + anthropic_cost_alltime + resend_cost_alltime + manual_total, 2)
 
     result_dict = {
         "proxycurl": {
@@ -378,14 +370,6 @@ def get_spend():
             "estimated_cost_this_month": anthropic_cost_month,
             "estimated_cost_all_time":   anthropic_cost_alltime,
             "cost_per_enrichment":       _ANTHROPIC_COST_PER_SIGNAL,
-        },
-        "crunchbase": {
-            "lookups_this_month":        crunchbase_month,
-            "lookups_all_time":          crunchbase_alltime,
-            "estimated_cost_this_month": crunchbase_cost_month,
-            "estimated_cost_all_time":   crunchbase_cost_alltime,
-            "cost_per_lookup":           _CRUNCHBASE_COST_PER_LOOKUP,
-            "active":                    bool(os.environ.get("CRUNCHBASE_API_KEY")),
         },
         "resend": {
             "emails_this_month":         resend["emails_this_month"],
@@ -1284,4 +1268,46 @@ def scheduler_status():
     from flask_jwt_extended import verify_jwt_in_request
     verify_jwt_in_request()
     result = get_scheduler_heartbeat(current_app._get_current_object())
+    return jsonify(result), 200
+
+
+@bp.route("/coverage", methods=["GET"])
+@admin_required()
+def get_coverage():
+    """
+    GET /api/admin/coverage?days_back=90
+
+    Returns two standing coverage metrics:
+      - inbox_recall: % of deals-inbox brands the scanner surfaced first (from latest audit)
+      - lead_time: for brands caught before press, days-before and median/mean
+    """
+    days_back = max(7, min(int(request.args.get("days_back", 90)), 365))
+    from ...services.coverage import get_coverage_metrics
+    return jsonify(get_coverage_metrics(current_app._get_current_object(), days_back=days_back)), 200
+
+
+@bp.route("/coverage/press-confirm", methods=["POST"])
+@admin_required()
+def press_confirm():
+    """
+    POST /api/admin/coverage/press-confirm
+
+    Record that a brand appeared in press/newsletter on a given date.
+    Body: {"brand_name": str, "confirmed_at": "YYYY-MM-DD", "source_url": str (optional)}
+    Used to build the lead-time metric: scanner catch date vs press date.
+    """
+    body = request.get_json(silent=True) or {}
+    brand_name  = (body.get("brand_name")  or "").strip()
+    confirmed_at = (body.get("confirmed_at") or "").strip()
+    source_url   = (body.get("source_url")  or "").strip()
+    if not brand_name or not confirmed_at:
+        return jsonify({"error": "brand_name and confirmed_at are required"}), 400
+    from ...services.coverage import record_press_confirm
+    result = record_press_confirm(
+        brand_name, confirmed_at,
+        current_app._get_current_object(),
+        source_url=source_url,
+    )
+    if "error" in result:
+        return jsonify(result), 400
     return jsonify(result), 200

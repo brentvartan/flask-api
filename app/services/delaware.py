@@ -25,15 +25,7 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# Deferred imports to avoid circular dependency at module load time
-# (extensions.db and models.item.Item are only needed by check_domains_in_background)
-def _get_db_and_item():
-    from ..extensions import db
-    from ..models.item import Item
-    return db, Item
-
 EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
-DOMAINSDB_URL    = "https://api.domainsdb.info/v1/domains/search"
 REQUEST_TIMEOUT  = 20
 
 # Form D "items" codes that indicate investment funds / VC vehicles — not
@@ -178,50 +170,122 @@ def _brand_slug(name: str) -> str:
     return re.sub(r'[^a-z0-9]', '', slug.lower())
 
 
-# ─── Domain cross-reference ───────────────────────────────────────────────────
-
-def check_domain(brand_slug: str, days_back: int = 90) -> dict | None:
-    """Return domain signal dict if matching .com was recently registered."""
-    if not brand_slug or len(brand_slug) < 2:
-        return None
-
-    try:
-        resp = requests.get(
-            DOMAINSDB_URL,
-            params={"domain": brand_slug, "zone": "com", "limit": 5},
-            timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        logger.debug("DomainsDB lookup failed for %s: %s", brand_slug, exc)
-        return None
-
-    cutoff = datetime.utcnow() - timedelta(days=days_back)
-
-    for d in data.get("domains", []):
-        domain_name = d.get("domain", "")
-        create_raw  = d.get("create_date", "")
-
-        if domain_name.split(".")[0].lower() != brand_slug:
-            continue
-
-        try:
-            create_dt = datetime.fromisoformat(create_raw.replace("Z", ""))
-        except (ValueError, TypeError):
-            continue
-
-        if create_dt >= cutoff:
-            return {
-                "domain":     domain_name,
-                "registered": create_raw[:10],
-                "url":        f"https://{domain_name}",
-            }
-
-    return None
-
 
 # ─── Main service function ────────────────────────────────────────────────────
+
+def _fetch_form_d_xml_content(adsh: str, cik: str) -> bytes | None:
+    """
+    Fetch Form D primary_doc.xml from EDGAR and return raw bytes.
+    Returns None on HTTP error or network failure.
+    Retries up to 3× with exponential backoff on 429 (SEC rate limit: 10 req/s).
+    """
+    if not adsh or not cik:
+        return None
+    adsh_clean = adsh.replace("-", "")
+    cik_int = str(int(cik)) if cik.lstrip("0") else cik
+    url = (
+        f"https://www.sec.gov/Archives/edgar/data/"
+        f"{cik_int}/{adsh_clean}/primary_doc.xml"
+    )
+    import time as _time
+    resp = None
+    for attempt in range(3):
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Bullish Stealth Finder research@bullish.co"},
+            timeout=10,
+        )
+        if resp.status_code == 429:
+            _time.sleep(2 ** attempt)
+            continue
+        break
+    if resp is None or resp.status_code != 200:
+        logger.debug("Form D XML fetch HTTP %d for %s", resp.status_code if resp else 0, adsh)
+        return None
+    return resp.content
+
+
+def _parse_related_persons_from_xml(content: bytes) -> list[dict]:
+    """Parse relatedPersonInfo blocks from Form D XML bytes."""
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        logger.debug("Form D XML parse error (persons): %s", exc)
+        return []
+    persons = []
+    for elem in root.iter():
+        local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        if local != "relatedPersonInfo":
+            continue
+        first = last = ""
+        relationships: list[str] = []
+        for child in elem.iter():
+            child_local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if child_local == "firstName" and child.text:
+                first = child.text.strip()
+            elif child_local == "lastName" and child.text:
+                last = child.text.strip()
+            elif child_local == "relationship" and child.text:
+                relationships.append(child.text.strip())
+        full_name = f"{first} {last}".strip()
+        if full_name:
+            persons.append({"name": full_name, "relationships": relationships})
+    return persons
+
+
+def parse_form_d_offering_data(content: bytes) -> dict | None:
+    """
+    Parse offeringData from Form D XML bytes.
+
+    Looks for: totalOfferingAmount, totalAmountSold, minimumInvestmentAccepted.
+    Returns:
+        {
+            "total_offering":       int | None,   # USD; None = unknown / not disclosed
+            "amount_sold":          int | None,
+            "minimum_investment":   int | None,
+        }
+    or None if the XML cannot be parsed or contains no offering figures.
+
+    These are RANKING FEATURES only — never used to gate or exclude signals.
+    """
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        logger.debug("Form D XML parse error (offering): %s", exc)
+        return None
+
+    result: dict[str, int | None] = {
+        "total_offering":     None,
+        "amount_sold":        None,
+        "minimum_investment": None,
+    }
+
+    for elem in root.iter():
+        local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        text  = (elem.text or "").strip()
+
+        if local == "totalOfferingAmount":
+            # Some filings mark indefinite raises with attribute indefiniteAmount="true"
+            if elem.get("indefiniteAmount", "").lower() == "true":
+                result["total_offering"] = None
+            elif text and text.replace(".", "").lstrip("-").isdigit():
+                val = int(float(text))
+                result["total_offering"] = val if val > 0 else None
+
+        elif local == "totalAmountSold":
+            if text and text.replace(".", "").lstrip("-").isdigit():
+                val = int(float(text))
+                result["amount_sold"] = val if val > 0 else None
+
+        elif local == "minimumInvestmentAccepted":
+            if text and text.replace(".", "").lstrip("-").isdigit():
+                val = int(float(text))
+                result["minimum_investment"] = val if val > 0 else None
+
+    if all(v is None for v in result.values()):
+        return None
+    return result
+
 
 def fetch_form_d_related_persons(adsh: str, cik: str) -> list[dict]:
     """
@@ -238,69 +302,15 @@ def fetch_form_d_related_persons(adsh: str, cik: str) -> list[dict]:
     Returns:
         List of {"name": str, "relationships": list[str]}, empty list on failure.
     """
-    if not adsh or not cik:
+    content = _fetch_form_d_xml_content(adsh, cik)
+    if not content:
         return []
-
-    adsh_clean = adsh.replace("-", "")
-    # Strip leading zeros from CIK for SEC URLs.
-    cik_int = str(int(cik)) if cik.lstrip("0") else cik
-    # Form D XML is always named primary_doc.xml (not {adsh}.xml).
-    url = (
-        f"https://www.sec.gov/Archives/edgar/data/"
-        f"{cik_int}/{adsh_clean}/primary_doc.xml"
-    )
     try:
-        # Retry up to 3 times with backoff on 429 (SEC rate limit: 10 req/s).
-        import time as _time
-        resp = None
-        for attempt in range(3):
-            resp = requests.get(
-                url,
-                headers={"User-Agent": "Bullish Stealth Finder research@bullish.co"},
-                timeout=10,
-            )
-            if resp.status_code == 429:
-                _time.sleep(2 ** attempt)  # 1s, 2s, 4s
-                continue
-            break
-        if resp is None or resp.status_code != 200:
-            logger.debug("Form D XML fetch HTTP %d for %s", resp.status_code if resp else 0, adsh)
-            return []
-
-        root = ET.fromstring(resp.content)
-        persons = []
-
-        # EDGAR Form D XML uses tags like {http://...}relatedPersonInfo or plain tags
-        # depending on version — iterate all descendants and match by local name.
-        for elem in root.iter():
-            local = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-            if local != "relatedPersonInfo":
-                continue
-
-            first = last = ""
-            relationships: list[str] = []
-
-            for child in elem.iter():
-                child_local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-                if child_local == "firstName" and child.text:
-                    first = child.text.strip()
-                elif child_local == "lastName" and child.text:
-                    last = child.text.strip()
-                elif child_local == "relationship" and child.text:
-                    relationships.append(child.text.strip())
-
-            full_name = f"{first} {last}".strip()
-            if full_name:
-                persons.append({"name": full_name, "relationships": relationships})
-
+        persons = _parse_related_persons_from_xml(content)
         logger.debug("Form D %s: found %d related persons", adsh, len(persons))
         return persons
-
-    except ET.ParseError as exc:
-        logger.debug("Form D XML parse error for %s: %s", adsh, exc)
-        return []
     except Exception as exc:
-        logger.debug("Form D related persons fetch failed for %s: %s", adsh, exc)
+        logger.debug("Form D related persons parse failed for %s: %s", adsh, exc)
         return []
 
 
@@ -386,11 +396,104 @@ def _extract_signal(src: dict, seen_names: set, end_dt: datetime) -> dict | None
     }
 
 
+def _enrich_related_persons(
+    signals: list,
+    limit: int = 50,
+) -> None:
+    """
+    For the first `limit` Form D signals, fetch the EDGAR XML ONCE per filing
+    and attach related_persons, filer_name, and offering data in-place.
+    Throttled at ~3 req/s to stay well under SEC's 10 req/s limit.
+
+    Sets on each signal (mutates in place):
+        related_persons: list[{"name": str, "relationships": list[str],
+                               "conviction_match": dict|None,
+                               "exit_alumni_match": dict|None}]
+        filer_name: str|None  — first person-looking related person
+        total_offering: int|None   — USD raise target from offeringData
+        amount_sold: int|None      — USD amount sold so far
+        minimum_investment: int|None
+    """
+    from .conviction import check_conviction_match_multi
+    from .exit_watch import check_exit_alumni_match_multi
+    try:
+        from .founder_discovery import looks_like_person
+    except ImportError:
+        def looks_like_person(name):
+            import re as _re
+            parts = name.strip().split()
+            return (
+                2 <= len(parts) <= 4
+                and not _re.search(r'\d', name)
+                and not _re.search(
+                    r'\b(LLC|Inc|Corp|Ltd|LLP|PLLC|LP|PC)\b', name, _re.IGNORECASE
+                )
+                and name.strip().lower() not in {"n/a", "n/a n/a"}
+            )
+
+    for sig in signals[:limit]:
+        adsh = sig.get("_adsh", "")
+        cik  = sig.get("_cik", "")
+        if not adsh or not cik:
+            continue
+
+        # One HTTP request per filing — parse both persons and offering data
+        try:
+            content = _fetch_form_d_xml_content(adsh, cik)
+        except Exception as exc:
+            logger.debug("Form D XML fetch failed %s: %s", adsh, exc)
+            time.sleep(0.3)
+            continue
+
+        if not content:
+            time.sleep(0.3)
+            continue
+
+        # ── Offering data (Task 3) ────────────────────────────────────────────
+        offering = parse_form_d_offering_data(content)
+        if offering:
+            sig.update({k: v for k, v in offering.items() if v is not None})
+
+        # ── Related persons ───────────────────────────────────────────────────
+        raw = _parse_related_persons_from_xml(content)
+        if not raw:
+            time.sleep(0.3)
+            continue
+
+        enriched = []
+        filer_name = None
+        for person in raw:
+            pname = person["name"]
+            if pname.lower().startswith("n/a") or pname.strip().lower() == "n/a":
+                continue
+            p_conv   = check_conviction_match_multi([pname])
+            p_alumni = check_exit_alumni_match_multi([pname]) if not p_conv else None
+            enriched.append({
+                **person,
+                "conviction_match":  p_conv,
+                "exit_alumni_match": p_alumni,
+            })
+            if filer_name is None and looks_like_person(pname):
+                filer_name = pname
+
+        sig["related_persons"] = enriched
+        if filer_name:
+            sig["filer_name"] = filer_name
+        # Bubble up first conviction match so enrichment.py can use it directly
+        _top_conv = next(
+            (p["conviction_match"] for p in enriched if p.get("conviction_match")), None
+        )
+        if _top_conv:
+            sig["conviction_match"] = _top_conv
+
+        time.sleep(0.3)
+
+
 def search_recent_delaware_entities(
     days_back: int = 7,
     max_results: int = 2000,
-    check_domains: bool = True,
     max_filings: int = 6000,
+    related_persons_limit: int = 50,
 ) -> dict:
     """
     Fetch recent Form D filings from consumer companies via SEC EDGAR (free,
@@ -408,17 +511,19 @@ def search_recent_delaware_entities(
     Invented-name brands (Fascent, Rivalz, Mosh) are only findable by
     sweeping the full universe with _is_consumer_candidate filtering.
 
-    DOMAIN CHECK — for each consumer brand found, cross-reference .com
-    domain registration (corroborates stealth; adds a second signal).
+    Domain corroboration is handled by CT logs (ctlogs.py) — not DomainsDB.
 
     Returns:
         {
             "signals":      list of signal dicts,
             "total_found":  int,
             "fetched":      int (Form D signals only),
-            "domain_hits":  int,
             "error":        str | None,
         }
+
+    Each Form D signal dict may carry:
+        related_persons: list of {name, relationships, conviction_match, exit_alumni_match}
+        filer_name: str — first person-looking related person (skips SerpAPI in founder discovery)
     """
     end_dt    = datetime.utcnow()
     start_dt  = end_dt - timedelta(days=days_back)
@@ -427,7 +532,6 @@ def search_recent_delaware_entities(
 
     signals     = []
     total_found = 0
-    domain_hits = 0
     seen_names  = set()
     page_size   = 100
     error       = None
@@ -438,7 +542,7 @@ def search_recent_delaware_entities(
         total_found = probe.get("hits", {}).get("total", {}).get("value", 0)
     except requests.RequestException as exc:
         return {"signals": [], "total_found": 0,
-                "fetched": 0, "domain_hits": 0, "error": str(exc)}
+                "fetched": 0, "error": str(exc)}
 
     # ── Broad sweep: cover the full universe up to max_filings ────────────────
     pages_needed = (total_found + page_size - 1) // page_size
@@ -468,34 +572,10 @@ def search_recent_delaware_entities(
 
         time.sleep(0.5)
 
-    # ── Domain cross-reference ─────────────────────────────────────────────────
-    # signals is all Form D at this point; iterate a snapshot before appending domains
+    # ── Related persons: fetch XML + match watchlist for bounded batch ────────
     formd_signals = list(signals)
-    if check_domains:
-        for sig in formd_signals[:60]:
-            slug = _brand_slug(sig.get("_name", sig["companyName"]))
-            if not slug or len(slug) < 3:
-                continue
-            domain_info = check_domain(slug, days_back=120)
-            if domain_info:
-                domain_hits += 1
-                signals.append({
-                    "companyName": sig["companyName"],
-                    "signal_type": "domain",
-                    "category":    sig["category"],
-                    "score_boost": 3,
-                    "description": (
-                        f"{domain_info['domain']} — registered {domain_info['registered']}"
-                        f" — corroborates Form D filing for {sig.get('_name', sig['companyName'])}"
-                    ),
-                    "url":         domain_info["url"],
-                    "notes":       (
-                        f"Domain registered {domain_info['registered']}, "
-                        f"matching Form D entity {sig.get('_name', sig['companyName'])}."
-                    ),
-                    "timestamp":   sig["timestamp"],
-                })
-            time.sleep(0.4)
+    if related_persons_limit > 0:
+        _enrich_related_persons(formd_signals, limit=related_persons_limit)
 
     # Strip internal-only keys before returning
     for s in signals:
@@ -505,85 +585,5 @@ def search_recent_delaware_entities(
         "signals":     signals,
         "total_found": total_found,
         "fetched":     len(formd_signals),
-        "domain_hits": domain_hits,
         "error":       error,
     }
-
-
-def check_domains_in_background(app, user_id: int, form_d_items: list, enrich_fn):
-    """
-    Background thread: domain cross-reference for a batch of Form D signals.
-    enrich_fn: callable(app, item_ids) — passed from routes to avoid circular import.
-
-    form_d_items is a list of (item_id, brand_name, category, timestamp) tuples.
-    Each call hits DomainsDB with a 0.4s sleep between requests so we don't hammer
-    the API. Domain hits are saved as new 'domain' signal items and queued for
-    enrichment. This keeps the /delaware route fast (no inline domain checks).
-    """
-    import hashlib as _hashlib
-    import re as _re
-    import time as _time
-
-    db, Item = _get_db_and_item()
-
-    with app.app_context():
-        for item_id, brand_name, category, timestamp in form_d_items:
-            try:
-                slug = _brand_slug(brand_name)
-                if not slug or len(slug) < 3:
-                    continue
-
-                domain_info = check_domain(slug, days_back=120)
-                if not domain_info:
-                    _time.sleep(0.4)
-                    continue
-
-                # Inline fingerprint (avoids importing from routes)
-                _norm = _re.sub(r'\s+', ' ', brand_name.upper().strip())
-                fp = _hashlib.sha256(f"domain:{_norm}:{timestamp[:10]}".encode()).hexdigest()[:16]
-
-                already_exists = (
-                    Item.query
-                    .filter_by(owner_id=user_id)
-                    .filter(Item.description.contains(f'"fp":"{fp}"'))
-                    .first()
-                )
-                if already_exists:
-                    _time.sleep(0.4)
-                    continue
-
-                domain_item = Item(
-                    title=brand_name,
-                    owner_id=user_id,
-                    item_type="signal",
-                    description=json.dumps({
-                        "_type":        "signal",
-                        "fp":           fp,
-                        "company_name": brand_name,
-                        "signal_type":  "domain",
-                        "category":     category,
-                        "score_boost":  3,
-                        "description":  (
-                            f"{domain_info['domain']} — registered {domain_info['registered']}"
-                            f" — corroborates Form D filing for {brand_name}"
-                        ),
-                        "url":          domain_info["url"],
-                        "notes":        (
-                            f"Domain registered {domain_info['registered']}, "
-                            f"matching Form D entity {brand_name}."
-                        ),
-                        "timestamp":    timestamp,
-                    }, separators=(",", ":")),
-                )
-                db.session.add(domain_item)
-                db.session.commit()
-                logger.info(
-                    "Domain hit (bg): %s → %s saved as item %d",
-                    brand_name, domain_info["domain"], domain_item.id,
-                )
-                enrich_fn(app, [domain_item.id])
-
-            except Exception as exc:
-                logger.debug("BG domain check failed for %s: %s", brand_name, exc)
-            finally:
-                _time.sleep(0.4)

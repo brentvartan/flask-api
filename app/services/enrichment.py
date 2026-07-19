@@ -473,7 +473,7 @@ def rescore_founder_with_linkedin(
     enrichment re-run) and returns updated founder + founder_score dicts.
 
     Also incorporates exit background data from discovery_result and any
-    Crunchbase / pre-injected text fields from linkedin_context.
+    pre-injected text fields from linkedin_context.
 
     Returns {"founder": {...}, "founder_score": {...}, "linkedin_enriched": True}
     or {"error": "...", "linkedin_enriched": False} on failure.
@@ -532,11 +532,6 @@ Education:
             profile_text += "\n\nBRAND EXIT BACKGROUND: No prior exit background found."
     else:
         profile_text += "\n\nBRAND EXIT BACKGROUND: No prior exit background found."
-
-    # Append Crunchbase data if available
-    crunchbase_text = linkedin_context.get("_crunchbase_text", "")
-    if crunchbase_text:
-        profile_text += crunchbase_text
 
     profile_text += "\n\nScore this founder using the 5-signal model. Use the LinkedIn data as ground truth — this is real, not inferred."
 

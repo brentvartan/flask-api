@@ -479,7 +479,9 @@ def discover_founder(
         found_source = "filer"
 
     # ── 2–4. Parallel: web search, Product Hunt, website scraping ─────────────
-    if not found_name or not linkedin_url_hint:
+    # Skip SerpAPI cascade when filer_name already resolved to a person (high confidence).
+    # LinkedIn URL enrichment happens downstream via Proxycurl (Task 7).
+    if not found_name:
         try:
             with ThreadPoolExecutor(max_workers=3) as executor:
                 futures = {

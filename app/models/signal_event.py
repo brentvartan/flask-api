@@ -9,15 +9,18 @@ from ..extensions import db
 class SignalEvent(db.Model):
     __tablename__ = "signal_events"
 
-    id          = db.Column(db.Integer, primary_key=True)
-    item_id     = db.Column(db.Integer, db.ForeignKey("items.id", ondelete="SET NULL"), nullable=True, index=True)
-    owner_id    = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    brand_key   = db.Column(db.String(255), nullable=False, index=True)   # normalized slug for matching
-    brand_name  = db.Column(db.String(255), nullable=False)               # display name
-    signal_type = db.Column(db.String(50),  nullable=False)               # trademark|delaware|domain|producthunt
-    source_url  = db.Column(db.Text, nullable=True)
-    detected_at = db.Column(db.DateTime(timezone=True), nullable=False,
-                            default=lambda: datetime.now(timezone.utc))
+    id              = db.Column(db.Integer, primary_key=True)
+    item_id         = db.Column(db.Integer, db.ForeignKey("items.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_id        = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    brand_key       = db.Column(db.String(255), nullable=False, index=True)   # normalized slug for matching
+    brand_name      = db.Column(db.String(255), nullable=False)               # display name
+    signal_type     = db.Column(db.String(50),  nullable=False)               # trademark|delaware|domain|producthunt
+    source_url      = db.Column(db.Text, nullable=True)
+    detected_at     = db.Column(db.DateTime(timezone=True), nullable=False,
+                                default=lambda: datetime.now(timezone.utc))
+    # Task 2: cross-brand clustering keys (JSON arrays stored as text)
+    person_keys     = db.Column(db.Text, nullable=True)   # e.g. '["john smith", "jane doe"]'
+    coined_term_keys = db.Column(db.Text, nullable=True)  # e.g. '["lightyear", "filament"]'
 
     def to_dict(self):
         return {
