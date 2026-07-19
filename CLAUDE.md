@@ -137,17 +137,19 @@ flask create-admin           # Create an admin user
 **Spine — keep and strengthen:**
 `delaware.py`, `trademarks.py`, `trademark_assignments.py`, `confluence.py`, `ctlogs.py`, `press_stealth.py`, `enrichment.py`, `watchlist.py`, `founder_enrichment.py` (simplified), `inbox_audit.py`, `scheduler.py`, `email.py`, `slack.py`
 
-**Remove (confident):**
-- `crunchbase.py` — post-announcement by definition (Task 6)
-- DomainsDB path in `delaware.py` (`check_domain`, domain-append loop) — CT logs own this (Task 4)
-- NinjaPear path in `proxycurl.py` — Twitter-based, returns found:false for our key targets (Task 7)
+**Removed (complete):**
+- `crunchbase.py` — deleted; post-announcement by definition
+- DomainsDB path in `delaware.py` — removed; CT logs own domain discovery
+- NinjaPear path in `proxycurl.py` — replaced with FreshData (RapidAPI)
 
-**Verify overlap, then decide:**
-- `domain_checker.py` vs `ctlogs.py` — confirm what each does; keep CT-log path
-- `press_monitor.py` / `newswire.py` vs `press_stealth.py` — audit for overlap; `press_stealth.py` is the keeper (detects stealth language); others may be post-announcement duplicates
+**Kept (verified non-overlapping):**
+- `domain_checker.py` — domain *status* classifier (live/coming_soon/parked); runs post-collection on domain signals; not a duplicate of CT logs
+- `press_monitor.py` — validation/cross-reference layer; checks if brands already in DB appear in trade press (weekly job); different from discovery
+- `newswire.py` — PR Newswire/BusinessWire discovery; catches brands at launch/funding announcement stage; complements press_stealth.py (different timing/signal)
 
-**Default-off flags (keep code, disable in full scan):**
-- `app_store.py`, `producthunt.py` — corroborators; not core to either job
+**Default-off (already gated, no code change needed):**
+- `app_store.py` — requires `ENABLE_APP_STORE_SCAN` env var to run in full scan
+- `producthunt.py` — requires `ENABLE_PRODUCTHUNT_SCAN` env var to run in full scan
 
 **Opt-in (default off; on-demand for high-score brands):**
 - `founder_discovery.py` (SerpAPI) — expensive per-brand; largely redundant once Form D names the filer
@@ -167,7 +169,7 @@ flask create-admin           # Create an admin user
 | LLM scoring | Anthropic API (Claude) — `ANTHROPIC_API_KEY` |
 | Founder discovery | SerpAPI — `SERPAPI_API_KEY` |
 | LinkedIn enrichment | NinjaPear → **Task 7: replace** — `PROXYCURL_API_KEY` |
-| Crunchbase | **Task 6: remove** — `CRUNCHBASE_API_KEY` |
+| Crunchbase | **Removed** — `crunchbase.py` deleted; key unused |
 | Error tracking | Sentry |
 | Testing | pytest + pytest-flask |
 | WSGI | Gunicorn |
@@ -266,7 +268,7 @@ FRONTEND_URL=https://brentvartan.github.io/stealth-finder-frontend
 ANTHROPIC_API_KEY=<Railway>       # Claude brand scoring
 SERPAPI_API_KEY=<Railway>         # Founder discovery (SerpAPI)
 PROXYCURL_API_KEY=<Railway>       # LinkedIn enrichment (NinjaPear → Task 7 replaces)
-CRUNCHBASE_API_KEY=<Railway>      # REMOVING — Task 6
+CRUNCHBASE_API_KEY=<Railway>      # unused — crunchbase.py removed
 ```
 
 ---
