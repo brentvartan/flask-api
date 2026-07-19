@@ -234,6 +234,35 @@ def fetch_linkedin_headline(linkedin_url: str) -> dict | None:
     }
 
 
+# ── Founder Radar quarterly poll ──────────────────────────────────────────────
+
+def fetch_person_profile(name: str, brand: str) -> dict | None:
+    """
+    Look up a named person by name + former brand via NinjaPear.
+    Returns {"headline": str, "current_company": str|None, "current_title": str|None}
+    or None if not found / API unavailable.
+    Used by the quarterly Founder Radar poll.
+    """
+    profile = _fetch_profile(name, brand)
+    if not profile:
+        return None
+
+    bio = profile.get("bio") or ""
+    current_company = None
+    current_title   = None
+    for exp in (profile.get("work_experience") or []):
+        if exp.get("end_date") is None:
+            current_company = exp.get("company_name")
+            current_title   = exp.get("role")
+            break
+
+    return {
+        "headline":        bio,
+        "current_company": current_company,
+        "current_title":   current_title,
+    }
+
+
 # ── Compatibility aliases used by founder_enrichment.py ───────────────────────
 
 def find_linkedin_url(name: str, brand_name: str = None) -> str | None:

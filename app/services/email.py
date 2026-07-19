@@ -1074,3 +1074,187 @@ def send_linkedin_poll_complete_email(
         "subject": subject,
         "html":    html,
     })
+
+
+def send_founder_radar_poll_reminder_email(
+    to_email: str,
+    people_count: int,
+    by_tier: dict,
+    estimated_cost: float,
+    settings_url: str,
+) -> None:
+    """Quarterly reminder to admins: time to run the Founder Radar poll."""
+    from_address   = _resend_client()
+    from_with_name = f"Bullish <{from_address}>"
+    subject        = f"⚡ Quarterly Founder Radar Poll — {people_count:,} founders, ~${estimated_cost:.2f} estimated"
+
+    tier_rows = ""
+    tier_labels = {"DEPARTURE": "Recent Departures", "CONVICTION": "Conviction Founders",
+                   "ALUMNI": "Exit Alumni", "EXEC": "Brand Executives"}
+    for tier in ["DEPARTURE", "CONVICTION", "ALUMNI", "EXEC"]:
+        count = by_tier.get(tier, 0)
+        if count:
+            tier_rows += (
+                f"<tr>"
+                f"<td style='font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;'>"
+                f"{tier_labels.get(tier, tier)}</td>"
+                f"<td style='font-size:14px;font-weight:700;color:#052EF0;text-align:right;'>{count}</td>"
+                f"</tr>"
+            )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="font-family:Arial,sans-serif;background:#F5F0EB;margin:0;padding:40px 20px;">
+  <div style="max-width:540px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;border:1px solid #E5E5E0;">
+    <div style="background:#020A52;padding:28px 32px;">
+      <p style="color:rgba(255,255,255,.7);font-size:11px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 6px;">Bullish Stealth Startup Finder</p>
+      <h1 style="color:white;font-size:22px;font-weight:700;margin:0;">⚡ Quarterly Founder Radar Poll</h1>
+      <p style="color:rgba(255,255,255,.8);font-size:13px;margin:8px 0 0;">Time to check which conviction founders have gone stealth.</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <p style="color:#333;font-size:14px;line-height:1.6;margin:0 0 20px;">
+        The Founder Radar poll looks up every name in your curated founder list via NinjaPear —
+        detecting headline changes like <strong>Founder</strong>, <strong>Building</strong>, or
+        <strong>CEO at [new brand]</strong> that signal someone has quietly gone stealth.
+      </p>
+      <div style="background:#F5F0EB;border-radius:6px;padding:16px 20px;margin-bottom:24px;">
+        <table style="width:100%;border-collapse:collapse;">
+          {tier_rows}
+          <tr style="border-top:1px solid #E5E5E0;">
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:8px 0 4px;font-weight:700;">Total founders</td>
+            <td style="font-size:15px;font-weight:700;color:#020A52;text-align:right;padding-top:8px;">{people_count:,}</td>
+          </tr>
+          <tr>
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;">Credits needed</td>
+            <td style="font-size:14px;font-weight:700;color:#333;text-align:right;">{people_count * 3:,}</td>
+          </tr>
+          <tr style="border-top:1px solid #E5E5E0;">
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:8px 0 4px;">Estimated cost</td>
+            <td style="font-size:16px;font-weight:700;color:#333;text-align:right;padding-top:8px;">${estimated_cost:.2f}</td>
+          </tr>
+        </table>
+      </div>
+      <p style="color:#666;font-size:13px;line-height:1.6;margin:0 0 24px;">
+        Log in and go to <strong>Settings → Tools → Founder Radar Poll</strong> to see the live
+        estimate and click <strong>Approve &amp; Run</strong>. No credits are spent until you confirm.
+      </p>
+      <a href="{settings_url}" style="display:inline-block;background:#020A52;color:white;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:12px 24px;border-radius:4px;text-decoration:none;">
+        Review &amp; Approve →
+      </a>
+    </div>
+    <div style="padding:16px 32px;border-top:1px solid #E5E5E0;">
+      <p style="color:#999;font-size:11px;margin:0;">Bullish Brand Fund III · Confidential · bullish.co</p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    resend.Emails.send({
+        "from":    from_with_name,
+        "to":      [to_email],
+        "subject": subject,
+        "html":    html,
+    })
+
+
+def send_founder_radar_poll_complete_email(
+    to_email: str,
+    polled: int,
+    updated: int,
+    stealth_count: int,
+    stealth_people: list,
+    errors: int,
+) -> None:
+    """Summary email to admins when the quarterly Founder Radar poll finishes."""
+    from_address   = _resend_client()
+    from_with_name = f"Bullish <{from_address}>"
+    subject        = (
+        f"{'⚡' if stealth_count > 0 else '📊'} Founder Radar Poll Complete — "
+        f"{stealth_count} stealth signal{'s' if stealth_count != 1 else ''} detected"
+    )
+
+    tier_badge = {"DEPARTURE": "🚨", "CONVICTION": "⚡", "ALUMNI": "🏆", "EXEC": "👤"}
+    stealth_rows = ""
+    for p in (stealth_people or []):
+        badge = tier_badge.get(p.get("tier", ""), "")
+        stealth_rows += (
+            f"<tr>"
+            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:13px;color:#333;white-space:nowrap;'>"
+            f"{badge} {p.get('name','')}</td>"
+            f"<td style='padding:8px 6px;border-bottom:1px solid #E5E5E0;font-size:11px;color:#999;'>"
+            f"{p.get('known_brand','')}</td>"
+            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:12px;font-weight:600;color:#052EF0;'>"
+            f"{(p.get('current_company') or p.get('headline',''))[:60]}</td>"
+            f"</tr>"
+        )
+
+    stealth_section = (
+        "<h3 style='font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;"
+        "color:#333;margin:24px 0 12px;'>Stealth Signals Detected</h3>"
+        "<table style='width:100%;border-collapse:collapse;'>"
+        "<thead><tr>"
+        "<th style='text-align:left;font-size:11px;color:#999;text-transform:uppercase;"
+        "letter-spacing:.08em;padding-bottom:6px;'>Name</th>"
+        "<th style='text-align:left;font-size:11px;color:#999;text-transform:uppercase;"
+        "letter-spacing:.08em;padding-bottom:6px;'>Known Brand</th>"
+        "<th style='text-align:left;font-size:11px;color:#999;text-transform:uppercase;"
+        "letter-spacing:.08em;padding-bottom:6px;'>Now At</th>"
+        "</tr></thead>"
+        f"<tbody>{stealth_rows}</tbody></table>"
+    ) if stealth_people else (
+        "<p style='color:#666;font-size:13px;line-height:1.6;margin:16px 0 0;'>"
+        "No new stealth signals this quarter. Founder Radar profiles have been updated."
+        "</p>"
+    )
+
+    header_bg  = "#020A52" if stealth_count > 0 else "#333"
+    errors_row = (
+        f"<tr><td style='font-size:12px;color:#999;text-transform:uppercase;"
+        f"letter-spacing:.08em;padding:4px 0;'>Errors</td>"
+        f"<td style='font-size:13px;color:#999;text-align:right;'>{errors}</td></tr>"
+    ) if errors else ""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="font-family:Arial,sans-serif;background:#F5F0EB;margin:0;padding:40px 20px;">
+  <div style="max-width:540px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;border:1px solid #E5E5E0;">
+    <div style="background:{header_bg};padding:28px 32px;">
+      <p style="color:rgba(255,255,255,.7);font-size:11px;letter-spacing:.1em;text-transform:uppercase;margin:0 0 6px;">Bullish Stealth Startup Finder</p>
+      <h1 style="color:white;font-size:22px;font-weight:700;margin:0;">Founder Radar Poll Complete</h1>
+      <p style="color:rgba(255,255,255,.8);font-size:13px;margin:8px 0 0;">
+        Scanned {polled:,} founders · {stealth_count} stealth signal{'s' if stealth_count != 1 else ''} detected
+      </p>
+    </div>
+    <div style="padding:28px 32px;">
+      <div style="background:#F5F0EB;border-radius:6px;padding:16px 20px;margin-bottom:20px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;">Founders scanned</td>
+            <td style="font-size:14px;font-weight:700;color:#333;text-align:right;">{polled:,}</td>
+          </tr>
+          <tr>
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;">Profiles updated in Radar</td>
+            <td style="font-size:14px;font-weight:700;color:#333;text-align:right;">{updated:,}</td>
+          </tr>
+          <tr>
+            <td style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.08em;padding:4px 0;">Stealth signals</td>
+            <td style="font-size:14px;font-weight:700;color:#052EF0;text-align:right;">{stealth_count}</td>
+          </tr>
+          {errors_row}
+        </table>
+      </div>
+      {stealth_section}
+    </div>
+    <div style="padding:16px 32px;border-top:1px solid #E5E5E0;">
+      <p style="color:#999;font-size:11px;margin:0;">Bullish Brand Fund III · Confidential · bullish.co</p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    resend.Emails.send({
+        "from":    from_with_name,
+        "to":      [to_email],
+        "subject": subject,
+        "html":    html,
+    })

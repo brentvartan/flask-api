@@ -1038,6 +1038,41 @@ def _send_linkedin_poll_reminder(app):
                 logger.warning("Failed to send LinkedIn poll reminder to %s: %s", u.email, exc)
 
 
+def _send_founder_radar_poll_reminder(app):
+    """Quarterly job (Jan/Apr/Jul/Oct 1 at 09:30 UTC): email admins to run the Founder Radar poll."""
+    logger.info("Running quarterly Founder Radar poll reminder")
+
+    if not _acquire_job_lock(app, "quarterly_founder_radar_poll_reminder", ttl_seconds=60 * 60 * 24 * 85):
+        return
+
+    with app.app_context():
+        from ..models.user import User
+        from ..services.email import send_founder_radar_poll_reminder_email
+        from ..services.founder_radar import get_poll_people, count_by_tier
+
+        people     = get_poll_people()
+        n          = len(people)
+        by_tier    = count_by_tier()
+        est_cost   = round(n * 3 * 0.01, 2)
+        settings_url = (
+            os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
+            + "/#/settings"
+        )
+
+        for u in User.query.filter_by(role="admin").all():
+            try:
+                send_founder_radar_poll_reminder_email(
+                    to_email=u.email,
+                    people_count=n,
+                    by_tier=by_tier,
+                    estimated_cost=est_cost,
+                    settings_url=settings_url,
+                )
+                logger.info("Founder Radar poll reminder sent to %s", u.email)
+            except Exception as exc:
+                logger.warning("Failed to send Founder Radar poll reminder to %s: %s", u.email, exc)
+
+
 def start_scheduler(app):
     """Start the APScheduler background scheduler (once per process).
 
@@ -1117,11 +1152,21 @@ def start_scheduler(app):
             replace_existing=True,
             misfire_grace_time=86400,
         )
+        _scheduler.add_job(
+            _send_founder_radar_poll_reminder,
+            trigger=CronTrigger(month="1,4,7,10", day=1, hour=9, minute=30, timezone="UTC"),
+            args=[app],
+            id="quarterly_founder_radar_poll_reminder",
+            replace_existing=True,
+            misfire_grace_time=86400,
+        )
         _scheduler.start()
         logger.info(
             "Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC, "
             "founder news Wed 08:00 UTC, press monitor Thu 08:00 UTC, "
-            "inbox audit reminder 1st of month 07:00 UTC"
+            "inbox audit reminder 1st of month 07:00 UTC, "
+            "quarterly LinkedIn poll reminder Jan/Apr/Jul/Oct 1 09:00 UTC, "
+            "quarterly Founder Radar poll reminder Jan/Apr/Jul/Oct 1 09:30 UTC"
         )
     except Exception as exc:
         logger.warning("Scheduler could not start: %s", exc)

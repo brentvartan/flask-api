@@ -1130,6 +1130,152 @@ def linkedin_poll_run():
     }), 202
 
 
+# ── Founder Radar quarterly poll ──────────────────────────────────────────────
+
+@bp.route("/founder-radar-poll/estimate", methods=["GET"])
+@admin_required()
+def founder_radar_poll_estimate():
+    """Return tier breakdown and estimated NinjaPear cost for the quarterly Founder Radar poll."""
+    from ...services.founder_radar import get_poll_people, count_by_tier
+    from ...services.proxycurl import _api_key
+
+    people = get_poll_people()
+    n = len(people)
+    by_tier = count_by_tier()
+    credits_needed  = n * _CREDITS_PER_LOOKUP
+    estimated_cost  = round(credits_needed * _COST_PER_CREDIT, 2)
+
+    credits_available = None
+    if _api_key():
+        try:
+            resp = requests.get(
+                "https://nubela.co/api/v1/meta/credit-balance",
+                headers={"Authorization": f"Bearer {_api_key()}"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                credits_available = resp.json().get("credit_balance")
+        except Exception:
+            pass
+
+    return jsonify({
+        "people_count":       n,
+        "by_tier":            by_tier,
+        "credits_needed":     credits_needed,
+        "estimated_cost_usd": estimated_cost,
+        "credits_available":  credits_available,
+    }), 200
+
+
+@bp.route("/founder-radar-poll/run", methods=["POST"])
+@admin_required()
+def founder_radar_poll_run():
+    """Trigger the quarterly Founder Radar poll. Runs in the background — admin only."""
+    import threading
+    from datetime import timezone
+    from ...services.founder_radar import get_poll_people, BRAND_URLS, _PARENT_COS
+    from ...services.proxycurl import fetch_person_profile, is_stealth_headline, _api_key
+
+    if not _api_key():
+        return jsonify({"error": "PROXYCURL_API_KEY not set — configure it in Railway"}), 503
+
+    people = get_poll_people()
+    if not people:
+        return jsonify({"error": "No people in the founder radar list"}), 400
+
+    flask_app = current_app._get_current_object()
+
+    def _run_poll():
+        stealth_found = []
+        polled  = 0
+        updated = 0
+        errors  = 0
+        now_utc = datetime.now(timezone.utc)
+
+        with flask_app.app_context():
+            for person in people:
+                try:
+                    employer = BRAND_URLS.get(person["brand"], person["brand"])
+                    result   = fetch_person_profile(person["name"], employer)
+                    if result is None:
+                        continue
+                    polled += 1
+
+                    headline        = result.get("headline") or ""
+                    current_company = result.get("current_company")
+                    current_title   = result.get("current_title")
+
+                    known_lower = person["brand"].lower()
+                    curr_lower  = (current_company or "").lower()
+                    at_known   = known_lower in curr_lower or curr_lower in known_lower
+                    at_parent  = any(kw in curr_lower for kw in _PARENT_COS)
+
+                    is_stealth = (
+                        bool(current_company) and
+                        not at_known and
+                        not at_parent and
+                        (is_stealth_headline(headline) or is_stealth_headline(current_title))
+                    )
+
+                    # Upsert FounderProfile row
+                    fp = FounderProfile.query.filter_by(name=person["name"]).first()
+                    if fp:
+                        fp.current_company = current_company
+                        fp.bio             = headline
+                        fp.status          = _derive_status(current_company, person["brand"])
+                        fp.last_updated    = now_utc
+                    else:
+                        fp = FounderProfile(
+                            name=person["name"],
+                            known_brand=person["brand"],
+                            tier=person["tier"],
+                            current_company=current_company,
+                            bio=headline,
+                            status=_derive_status(current_company, person["brand"]),
+                            last_updated=now_utc,
+                            created_at=now_utc,
+                        )
+                        db.session.add(fp)
+                    db.session.commit()
+                    updated += 1
+
+                    if is_stealth:
+                        stealth_found.append({
+                            "name":            person["name"],
+                            "known_brand":     person["brand"],
+                            "tier":            person["tier"],
+                            "current_company": current_company,
+                            "headline":        headline,
+                        })
+
+                except Exception as exc:
+                    logger.warning("Founder radar poll error for %s: %s", person.get("name"), exc)
+                    errors += 1
+
+            try:
+                from ...models.user import User as _User
+                from ...services.email import send_founder_radar_poll_complete_email
+                for u in _User.query.filter_by(role="admin").all():
+                    send_founder_radar_poll_complete_email(
+                        to_email=u.email,
+                        polled=polled,
+                        updated=updated,
+                        stealth_count=len(stealth_found),
+                        stealth_people=stealth_found[:15],
+                        errors=errors,
+                    )
+            except Exception as exc:
+                logger.warning("Failed to send founder radar poll completion email: %s", exc)
+
+    threading.Thread(target=_run_poll, daemon=True).start()
+
+    return jsonify({
+        "status":  "started",
+        "people":  len(people),
+        "message": f"Polling {len(people):,} founders in the background. You'll get an email summary when it's done.",
+    }), 202
+
+
 @bp.route("/scheduler/status", methods=["GET"])
 @admin_required()
 def scheduler_status():
