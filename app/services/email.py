@@ -775,6 +775,116 @@ def send_founder_news_alert(to_email, founder_name, company, bullish_score, new_
     })
 
 
+def send_watchlist_match_alert(
+    to_email: str,
+    person_name: str,
+    match_type: str,
+    brand_name: str,
+    signal_type: str,
+    brand_score: int = None,
+    watch_level: str = None,
+    thesis: str = "",
+    match_details: dict = None,
+) -> None:
+    """
+    Immediate alert: a person from the Bullish watchlist appears as an officer/director
+    on a new brand signal (Form D, trademark, or domain registration).
+    match_type: 'CONVICTION' or 'ALUMNI'
+    """
+    if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
+        return
+    from_address = _resend_client()
+    app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
+
+    badge_color  = "#052EF0" if match_type == "CONVICTION" else "#92400E"
+    badge_label  = "⚡ CONVICTION FOUNDER" if match_type == "CONVICTION" else "🏆 EXIT ALUMNI"
+    signal_label = {
+        "delaware":      "SEC Form D (fundraise disclosure)",
+        "trademark":     "USPTO Trademark Filing",
+        "ctlogs":        "CT Log (new SSL certificate)",
+        "domain":        "Domain Registration",
+        "press_stealth": "Press Intel",
+        "newswire":      "Newswire",
+    }.get(signal_type, signal_type.upper())
+
+    level_color = "#052EF0" if (watch_level or "").lower() == "hot" else (
+        "#374151" if (watch_level or "").lower() == "warm" else "#9CA3AF"
+    )
+    score_html = ""
+    if brand_score is not None:
+        score_html = f"""
+        <div style="display:flex;gap:12px;margin-top:20px;">
+          <div style="flex:1;background:#111;border-radius:6px;padding:14px;text-align:center;">
+            <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Bullish Score</div>
+            <div style="color:#fff;font-family:monospace;font-weight:bold;font-size:28px;">{brand_score}</div>
+            <div style="background:{level_color};color:#fff;border-radius:4px;padding:2px 8px;
+                        font-family:monospace;font-size:10px;font-weight:bold;letter-spacing:1px;
+                        display:inline-block;margin-top:6px;">{(watch_level or "UNSCORED").upper()}</div>
+          </div>
+        </div>"""
+
+    thesis_html = ""
+    if thesis:
+        thesis_html = f"""
+        <div style="margin-top:16px;border-left:3px solid #052EF0;padding:10px 14px;background:#111;">
+          <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">One-Line Thesis</div>
+          <div style="color:#E5E5E0;font-size:13px;">{thesis}</div>
+        </div>"""
+
+    role_html = ""
+    if match_details and match_details.get("role"):
+        role_html = f"""
+        <div style="margin-top:12px;">
+          <span style="color:#888;font-size:11px;font-family:monospace;">Role on filing: </span>
+          <span style="color:#E5E5E0;font-size:11px;font-family:monospace;">{match_details['role']}</span>
+        </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#F5F0EB;font-family:Arial,sans-serif;">
+  <div style="max-width:600px;margin:40px auto;background:#000;border-radius:12px;overflow:hidden;">
+    <div style="background:#000;padding:28px 32px 20px;">
+      <div style="color:#052EF0;font-family:monospace;font-size:10px;letter-spacing:3px;text-transform:uppercase;margin-bottom:4px;">Bullish Stealth Finder</div>
+      <div style="color:#fff;font-size:20px;font-weight:bold;letter-spacing:-0.5px;">Watchlist Signal Detected</div>
+    </div>
+    <div style="background:#0a0a0a;padding:24px 32px;">
+      <div style="background:{badge_color};color:#fff;border-radius:6px;padding:6px 14px;
+                  font-family:monospace;font-size:11px;font-weight:bold;letter-spacing:2px;
+                  display:inline-block;margin-bottom:16px;">{badge_label}</div>
+      <div style="color:#fff;font-size:22px;font-weight:bold;margin-bottom:4px;">{person_name}</div>
+      <div style="color:#888;font-size:12px;font-family:monospace;">appears on a new {signal_label}</div>
+      <div style="margin-top:20px;padding:16px;background:#111;border-radius:8px;border:1px solid #222;">
+        <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Brand</div>
+        <div style="color:#fff;font-size:18px;font-weight:bold;font-family:monospace;">{brand_name}</div>
+        {role_html}
+      </div>
+      {score_html}
+      {thesis_html}
+      <div style="margin-top:24px;text-align:center;">
+        <a href="{app_url}" style="background:#052EF0;color:#fff;text-decoration:none;
+                                    padding:12px 28px;border-radius:6px;font-family:monospace;
+                                    font-size:12px;font-weight:bold;letter-spacing:1px;display:inline-block;">
+          OPEN FINDER →
+        </a>
+      </div>
+    </div>
+    <div style="padding:16px 32px;background:#000;border-top:1px solid #111;">
+      <div style="color:#555;font-size:10px;font-family:monospace;text-align:center;">
+        Bullish Brand Fund III · Confidential · <a href="{app_url}" style="color:#555;">bullish.co</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>"""
+
+    resend.Emails.send({
+        "from": f"Bullish <{from_address}>",
+        "to":   to_email,
+        "subject": f"⚡ {person_name} on a new {signal_label} — {brand_name}",
+        "html": html,
+    })
+
+
 def send_rescore_alert(to_email, brand_name, old_score, new_score, new_signal_type, signal_types, thesis=""):
     """Alert when a watchlisted brand's score jumps >=5 points due to a new signal."""
     if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":

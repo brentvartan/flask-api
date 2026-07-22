@@ -479,7 +479,63 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     except Exception as exc:
         logger.warning("Confluence detection block failed: %s", exc)
 
-    # ── 5b. Auto-add HOT brands to watchlist ─────────────────────────────────
+    # ── 5b. Immediate watchlist-match alerts ─────────────────────────────────
+    # Fires the moment a Form D (or other signal with person names) names someone
+    # from the 193-person conviction/alumni watchlist.  No press article needed —
+    # this is the earliest possible signal, typically 6-24 months before any coverage.
+    try:
+        from ..services.email import send_watchlist_match_alert
+
+        _wm_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
+        try:
+            _wm_settings = Item.query.filter_by(title="__bullish_settings__").first()
+            if _wm_settings:
+                _wm_sd = json.loads(_wm_settings.description or "{}")
+                _wm_el = _wm_sd.get("alert_emails", [])
+                if _wm_el:
+                    _wm_emails_str = ",".join(_wm_el)
+        except Exception:
+            pass
+        _wm_alert_emails = [e.strip() for e in _wm_emails_str.split(",") if e.strip()]
+
+        for item_id in new_item_ids:
+            item = db.session.get(Item, item_id)
+            if not item:
+                continue
+            try:
+                meta       = json.loads(item.description or "{}")
+                conviction = meta.get("conviction_match")
+                alumni     = meta.get("exit_alumni_match")
+                if not conviction and not alumni:
+                    continue
+                match      = conviction or alumni
+                match_type = "CONVICTION" if conviction else "ALUMNI"
+                enrichment = meta.get("enrichment") or {}
+                for addr in _wm_alert_emails:
+                    try:
+                        send_watchlist_match_alert(
+                            addr,
+                            person_name=match.get("name", "Unknown"),
+                            match_type=match_type,
+                            brand_name=meta.get("company_name", item.title),
+                            signal_type=meta.get("signal_type", "unknown"),
+                            brand_score=enrichment.get("bullish_score"),
+                            watch_level=enrichment.get("watch_level"),
+                            thesis=enrichment.get("one_line_thesis", ""),
+                            match_details=match,
+                        )
+                        logger.info(
+                            "Watchlist match alert sent for %s (%s match: %s)",
+                            item.title, match_type, match.get("name"),
+                        )
+                    except Exception as exc:
+                        logger.warning("Watchlist match alert failed to %s: %s", addr, exc)
+            except Exception as exc:
+                logger.warning("Watchlist match alert check failed for item %s: %s", item_id, exc)
+    except Exception as exc:
+        logger.warning("Watchlist match alert block failed: %s", exc)
+
+    # ── 5c. Auto-add HOT brands to watchlist ─────────────────────────────────
     try:
         from ..services.watchlist import auto_add_to_watchlist
         for brand in hot_brands:
@@ -736,6 +792,39 @@ def _send_weekly_digest(app):
         hot_signals.sort(key=lambda x: x.get("score") or 0, reverse=True)
         warm_signals.sort(key=lambda x: x.get("score") or 0, reverse=True)
 
+        # Filter out brands already sent in the previous digest to avoid re-sending
+        # the same list when no new signals surfaced this week.
+        try:
+            from ..models.item import Item as _SettingsItem
+            _digest_settings = _SettingsItem.query.filter_by(title="__bullish_settings__").first()
+            _prev_brands: set = set()
+            if _digest_settings:
+                _ds = json.loads(_digest_settings.description or "{}")
+                _prev_brands = set(_ds.get("digest_last_brands", []))
+        except Exception:
+            _prev_brands = set()
+
+        def _is_new(sig):
+            key = (sig.get("name") or "").upper().strip()
+            prev_score = None
+            for pb in (_prev_brands or set()):
+                if isinstance(pb, str) and pb == key:
+                    return False
+                if isinstance(pb, list) and pb[0] == key:
+                    prev_score = pb[1]
+                    break
+            return True
+
+        hot_new  = [s for s in hot_signals  if _is_new(s)]
+        warm_new = [s for s in warm_signals if _is_new(s)]
+
+        if not hot_new and not warm_new:
+            logger.info("Weekly digest: all HOT/WARM brands already sent last week — skipping")
+            return
+
+        hot_signals  = hot_new
+        warm_signals = warm_new
+
         alert_emails = os.environ.get("ALERT_EMAILS", "").strip()
         try:
             from ..models.item import Item as _Item2
@@ -752,12 +841,32 @@ def _send_weekly_digest(app):
             return
 
         week_label = datetime.now(timezone.utc).strftime("%b %d, %Y")
+        sent_ok = False
         for addr in [e.strip() for e in alert_emails.split(",") if e.strip()]:
             try:
                 send_weekly_digest_email(addr, hot_signals[:5], warm_signals[:5], week_label)
                 logger.info("Weekly digest sent to %s", addr)
+                sent_ok = True
             except Exception as exc:
                 logger.warning("Weekly digest email failed to %s: %s", addr, exc)
+
+        # Persist the brands we just sent so next Monday's digest skips them if unchanged.
+        if sent_ok:
+            try:
+                from ..models.item import Item as _SI2
+                from ..extensions import db as _db2
+                _sent_keys = [
+                    (s.get("name") or "").upper().strip()
+                    for s in (hot_signals[:5] + warm_signals[:5])
+                ]
+                _s2 = _SI2.query.filter_by(title="__bullish_settings__").first()
+                if _s2:
+                    _sd2 = json.loads(_s2.description or "{}")
+                    _sd2["digest_last_brands"] = _sent_keys
+                    _s2.description = json.dumps(_sd2, separators=(",", ":"))
+                    _db2.session.commit()
+            except Exception as exc:
+                logger.warning("Digest: failed to save sent-brand cache: %s", exc)
 
 
 def _check_founder_news(app):
@@ -1287,14 +1396,11 @@ def start_scheduler(app):
             replace_existing=True,
             misfire_grace_time=3600,
         )
-        _scheduler.add_job(
-            _check_founder_news,
-            trigger=CronTrigger(day_of_week="wed", hour=8, minute=0, timezone="UTC"),
-            args=[app],
-            id="founder_news_monitor",
-            replace_existing=True,
-            misfire_grace_time=3600,
-        )
+        # _check_founder_news (Wed 08:00 UTC) removed 2026-07-22:
+        # Google News search on 193 people consumed 77% of 250/month SerpAPI budget
+        # in a single run, and alerted on already-public press (too late to act).
+        # Replaced by immediate watchlist-match alerts in run_scan_now (step 5b)
+        # which fire the moment a Form D names a conviction/alumni person.
         _scheduler.add_job(
             _run_press_monitor,
             trigger=CronTrigger(day_of_week="thu", hour=8, minute=0, timezone="UTC"),
