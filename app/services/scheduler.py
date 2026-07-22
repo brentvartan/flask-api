@@ -464,9 +464,16 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                         meta.get("company_name") or item.title
                     ),
                 )
+                _conf_score = enrichment.get("bullish_score")
                 if result["is_confluence"] and result.get("hit_id") and confluence_alert_emails:
-                    send_confluence_alert_for_hit(result["hit_id"], confluence_alert_emails)
-                    logger.info("Confluence alert sent for %s", item.title)
+                    if _conf_score is None or _conf_score >= 50:
+                        send_confluence_alert_for_hit(result["hit_id"], confluence_alert_emails)
+                        logger.info("Confluence alert sent for %s (score=%s)", item.title, _conf_score)
+                    else:
+                        logger.info(
+                            "Confluence alert suppressed for COLD brand %s (score=%s)",
+                            item.title, _conf_score,
+                        )
             except Exception as exc:
                 logger.warning("Confluence check failed for item %s: %s", item_id, exc)
     except Exception as exc:
@@ -790,6 +797,14 @@ def _check_founder_news(app):
         if not watchlist_items:
             return
 
+        # Cap per-run: sort by stalest last_news_check first so coverage rotates across
+        # the full watchlist over time, then limit to 50 per weekly run (~50 SerpAPI
+        # credits/run vs 193 previously). Prevents blowing through 250/month budget in
+        # a single Wednesday job.
+        watchlist_items.sort(key=lambda x: x[1].get('last_news_check') or '')
+        watchlist_items = watchlist_items[:50]
+        logger.info("Founder news: processing %d watchlist people (capped at 50)", len(watchlist_items))
+
         alert_emails = os.environ.get("ALERT_EMAILS", "").strip()
         try:
             settings = Item.query.filter_by(title="__bullish_settings__").first()
@@ -849,23 +864,26 @@ def _check_founder_news(app):
                     # Client-side date enforcement — SerpAPI's tbs filter is unreliable
                     # and can return articles from years ago (e.g. 2016 photo credits,
                     # obituaries for people with the same name). Rolling 6-month window.
+                    # Require a parseable date; if the date is missing or unparseable,
+                    # skip — old articles frequently have unparseable date strings.
                     article_date = _parse_article_date(date_str)
-                    if article_date is not None and article_date < cutoff:
+                    if article_date is None or article_date < cutoff:
                         continue
 
                     # Company-name confirmation: require the brand/company to appear in
                     # title or snippet. This prevents name-collision false positives where
                     # a different person with the same name appears in unrelated articles
                     # (e.g. an obituary for a different "Vu Nguyen"). Only skip if the
-                    # article has neither the company name nor strong stealth/new-venture
-                    # language — articles like "Nguyen left Musely to build X" pass even
-                    # if the new company name is unknown.
+                    # article has neither the company name nor specific new-venture
+                    # language. "building" is intentionally excluded — it appears in
+                    # too many unrelated contexts ("building a case", "building a community").
                     full_text = (title + " " + snippet).lower()
                     has_company = company_slug in full_text
                     has_new_venture = any(kw in full_text for kw in [
-                        'building', 'new startup', 'new company', 'new brand',
+                        'new startup', 'new company', 'new brand', 'new venture',
                         'seed round', 'pre-seed', 'left to found', 'left to build',
-                        'co-founded', 'announced today', 'stealth',
+                        'co-founded', 'co-founder', 'announced today', 'stealth',
+                        'raises $', 'raised $', 'series a', 'series b',
                     ])
                     if not has_company and not has_new_venture:
                         continue
