@@ -15,7 +15,7 @@ from ...models.user import User
 from ...models.token_blocklist import TokenBlocklist
 from ...schemas import LogoutSchema, ForgotPasswordSchema, ResetPasswordSchema, InviteSchema, AcceptInviteSchema
 from ...services.tokens import generate_reset_token, verify_reset_token, generate_invite_token, verify_invite_token
-from ...services.email import send_password_reset_email, send_invite_email
+from ...services.email import send_password_reset_email, send_invite_email, remove_email_suppression
 from ...utils import db_get_user
 
 logout_schema = LogoutSchema()
@@ -196,6 +196,8 @@ def invite():
     frontend_url = current_app.config.get("FRONTEND_URL", "http://localhost:5173")
     invite_url = f"{frontend_url}/accept-invite?token={token}"
     invited_by = f"{current_user.first_name} {current_user.last_name}"
+
+    remove_email_suppression(email)
 
     try:
         send_invite_email(email, invite_url, invited_by)
