@@ -33,24 +33,15 @@ def _spawn(fn, *args):
 
 
 def _commit_and_spawn(new_items, user_id, signal_type):
-    """Commit new signal items and spawn enrichment + confluence threads."""
+    """Commit new signal items and spawn enrichment → confluence pipeline."""
     if not new_items:
         return
     db.session.commit()
     app = current_app._get_current_object()
     new_ids = [i.id for i in new_items]
     _spawn(_enrich_items_in_background, app, new_ids)
-    from ...services.confluence import extract_person_keys, extract_coined_term_keys
-    for item in new_items:
-        meta = json.loads(item.description or "{}")
-        person_names = (
-            [rp["name"] for rp in meta.get("related_persons", []) if rp.get("name")]
-            + [n for n in [meta.get("owner"), meta.get("filer_name")] if n]
-        )
-        p_keys = extract_person_keys(person_names)
-        c_keys = extract_coined_term_keys(meta.get("company_name") or item.title)
-        _spawn(_check_confluence_in_background, app, item.id, user_id,
-               item.title, signal_type, meta.get("url"), p_keys, c_keys)
+    # Confluence now runs inside _enrich_items_in_background after scoring,
+    # so emails are gated on bullish_score >= 50 rather than firing blind.
 
 
 def _get_alert_emails() -> list:
@@ -344,6 +335,51 @@ def _enrich_items_in_background(app, item_ids: list):
                             ).start()
                         except Exception as _wl_exc:
                             logger.warning("Auto-watchlist trigger failed for item %s: %s", item_id, _wl_exc)
+
+                # ── Confluence check (post-enrichment, score-gated) ───────────────
+                # Runs after enrichment so bullish_score is available to gate the
+                # email. COLD brands (<50) are recorded in the DB but don't email.
+                try:
+                    from ...services.confluence import (
+                        extract_person_keys, extract_coined_term_keys,
+                        record_signal_and_check_confluence, send_confluence_alert_for_hit,
+                    )
+                    _meta_now = json.loads(item.description or "{}")
+                    _person_names = (
+                        [rp["name"] for rp in _meta_now.get("related_persons", []) if rp.get("name")]
+                        + [n for n in [_meta_now.get("owner"), _meta_now.get("filer_name")] if n]
+                    )
+                    _conf_enrichment = _meta_now.get("enrichment") if enrichment.get("enriched") else None
+                    _conf_result = record_signal_and_check_confluence(
+                        item_id=item_id,
+                        owner_id=item.owner_id,
+                        brand_name=_meta_now.get("company_name") or item.title,
+                        signal_type=sig_type,
+                        source_url=_meta_now.get("url"),
+                        enrichment=_conf_enrichment,
+                        person_keys=extract_person_keys(_person_names),
+                        coined_term_keys=extract_coined_term_keys(
+                            _meta_now.get("company_name") or item.title
+                        ),
+                    )
+                    _conf_score = enrichment.get("bullish_score") if enrichment.get("enriched") else None
+                    if _conf_result["is_confluence"] and _conf_result.get("hit_id"):
+                        if _conf_score is not None and _conf_score >= 50:
+                            _conf_emails = _get_alert_emails()
+                            if _conf_emails:
+                                send_confluence_alert_for_hit(_conf_result["hit_id"], _conf_emails)
+                                logger.info(
+                                    "Confluence alert sent for %s (score=%s, %d signals)",
+                                    _meta_now.get("company_name") or item.title,
+                                    _conf_score, _conf_result["signal_count"],
+                                )
+                        else:
+                            logger.info(
+                                "Confluence detected, email suppressed for %s (score=%s) — below threshold",
+                                _meta_now.get("company_name") or item.title, _conf_score,
+                            )
+                except Exception as _conf_exc:
+                    logger.warning("Confluence check failed for item %s: %s", item_id, _conf_exc)
 
             except Exception as exc:
                 logger.warning("Background enrichment failed for item %s: %s", item_id, exc)
