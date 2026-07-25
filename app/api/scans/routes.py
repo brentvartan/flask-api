@@ -40,8 +40,10 @@ def _commit_and_spawn(new_items, user_id, signal_type):
     app = current_app._get_current_object()
     new_ids = [i.id for i in new_items]
     _spawn(_enrich_items_in_background, app, new_ids)
-    # Confluence now runs inside _enrich_items_in_background after scoring,
-    # so emails are gated on bullish_score >= 50 rather than firing blind.
+    # Confluence now runs inside _enrich_items_in_background AFTER scoring, so the
+    # alert can be gated by confluence.should_send_confluence_alert() instead of
+    # firing blind. Do not re-add a parallel confluence spawn here — that race is
+    # what flooded the inbox with COLD brands (2026-07-25).
 
 
 def _get_alert_emails() -> list:
@@ -343,6 +345,7 @@ def _enrich_items_in_background(app, item_ids: list):
                     from ...services.confluence import (
                         extract_person_keys, extract_coined_term_keys,
                         record_signal_and_check_confluence, send_confluence_alert_for_hit,
+                        should_send_confluence_alert,
                     )
                     _meta_now = json.loads(item.description or "{}")
                     _person_names = (
@@ -364,7 +367,7 @@ def _enrich_items_in_background(app, item_ids: list):
                     )
                     _conf_score = enrichment.get("bullish_score") if enrichment.get("enriched") else None
                     if _conf_result["is_confluence"] and _conf_result.get("hit_id"):
-                        if _conf_score is not None and _conf_score >= 50:
+                        if should_send_confluence_alert(_conf_score):
                             _conf_emails = _get_alert_emails()
                             if _conf_emails:
                                 send_confluence_alert_for_hit(_conf_result["hit_id"], _conf_emails)

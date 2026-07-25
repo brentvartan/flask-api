@@ -33,6 +33,39 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+# ── Alert policy ──────────────────────────────────────────────────────────────
+
+# Minimum bullish_score required to EMAIL a confluence hit. Hits below this are
+# still recorded in the DB and appear in the dashboard and weekly digest — they
+# just don't interrupt anyone.
+CONFLUENCE_ALERT_MIN_SCORE = 50
+
+
+def should_send_confluence_alert(bullish_score) -> bool:
+    """
+    Single source of truth for whether a confluence hit warrants an immediate email.
+
+    BOTH scan paths must call this rather than inlining a threshold:
+      - manual scans   → app/api/scans/routes.py
+      - scheduled scans → app/services/scheduler.py
+
+    These two paths have silently diverged before. On 2026-07-25 the score gate was
+    live on the scheduled path only, while the manual path ran enrichment and
+    confluence as parallel threads — so confluence always won the race and emailed
+    before any score existed, flooding the inbox with COLD brands. An earlier
+    divergence (independent hardcoded json.dumps field whitelists) had the same shape.
+
+    An unscored signal (None) does NOT alert. Enrichment either failed or hasn't run,
+    and alerting on an unknown score is precisely what produced the original noise bug.
+    """
+    if bullish_score is None:
+        return False
+    try:
+        return float(bullish_score) >= CONFLUENCE_ALERT_MIN_SCORE
+    except (TypeError, ValueError):
+        return False
+
+
 # Legal suffixes to strip before matching
 _LEGAL_SUFFIXES = re.compile(
     r'\b(LLC|INC|CORP|LTD|LIMITED|LP|LLP|CO|COMPANY|INCORPORATED|'
