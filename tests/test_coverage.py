@@ -64,22 +64,30 @@ def test_inbox_recall_no_audit(db, admin_user, app):
 
 
 def test_inbox_recall_from_audit(db, admin_user, app):
-    """get_coverage_metrics returns coverage_pct from the latest stored audit."""
-    import app.services.inbox_audit as _ia_mod
-    _ia_mod._latest_audit = {
+    """
+    get_coverage_metrics reads coverage_pct from the latest PERSISTED audit.
+
+    Previously this test poked a module-global cache (_latest_audit), which is the
+    design that hid the real defect: the DB write had never once succeeded, and the
+    global made it look like it had. The global was removed on 2026-07-25 — it was
+    per-gunicorn-worker and died on deploy — so this now exercises the real path.
+    """
+    from app.services.inbox_audit import _store_audit_result
+
+    _store_audit_result({
         "coverage_pct": 42.5,
         "found_count": 17,
         "missing_count": 23,
         "total_checked": 40,
         "run_at": "2026-06-15T10:00:00+00:00",
-    }
-    try:
-        result = get_coverage_metrics(app, days_back=90)
-        assert result["inbox_recall"]["coverage_pct"] == 42.5
-        assert result["inbox_recall"]["found_count"] == 17
-        assert result["inbox_recall"]["as_of"] == "2026-06-15T10:00:00+00:00"
-    finally:
-        _ia_mod._latest_audit = None
+        "found": [],
+        "missing": [],
+    }, app)
+
+    result = get_coverage_metrics(app, days_back=90)
+    assert result["inbox_recall"]["coverage_pct"] == 42.5
+    assert result["inbox_recall"]["found_count"] == 17
+    assert result["inbox_recall"]["as_of"] == "2026-06-15T10:00:00+00:00"
 
 
 # ── get_coverage_metrics — lead time ─────────────────────────────────────────
