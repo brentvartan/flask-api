@@ -42,5 +42,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Ratchet: keep this within ~1pt of actual coverage. A gate set far below
+      # reality (it sat at 22 while actual was 31) permits a third of the suite to
+      # be deleted without CI noticing. Raise it when coverage rises; only lower it
+      # deliberately, never to make a red build go green.
       - name: Run tests with coverage
-        run: pytest -v --cov=app --cov-report=term-missing --cov-fail-under=22
+        run: pytest -v --cov=app --cov-report=term-missing --cov-fail-under=30
