@@ -11,6 +11,24 @@ item_schema = ItemSchema()
 item_update_schema = ItemUpdateSchema()
 pagination_schema = PaginationSchema()
 
+# Internal control rows live in the items table but are NOT user content:
+#   __bullish_settings__     — holds slack_webhook_url and the alert_emails list
+#   __jlock_<job_id>__       — job locks that gate the nightly scan
+#   __scheduler_heartbeat__  — scheduler liveness marker
+#
+# Signal rows are intentionally shared across the whole team (see list_items and
+# tests/test_items.py::test_update_other_users_item), so this API is deliberately
+# NOT owner-scoped. That sharing must not extend to the control rows: without this
+# guard any authenticated user could read the Slack webhook and alert emails via
+# GET /api/items, or rewrite them via PUT /api/items/<id> — bypassing both the
+# admin check and the field whitelist in the settings blueprint, which is the only
+# sanctioned door to this data. Through this API the control rows do not exist.
+_INTERNAL_TITLE_PREFIX = "__"
+
+
+def _is_internal(title) -> bool:
+    return bool(title) and title.startswith(_INTERNAL_TITLE_PREFIX)
+
 
 @bp.route("", methods=["GET"])
 @jwt_required()
@@ -39,9 +57,11 @@ def list_items():
     page = params["page"]
     per_page = params["per_page"]
 
-    # Items are shared across all authenticated team members
+    # Signal items are shared across all authenticated team members by design;
+    # internal control rows are excluded (see _is_internal).
     pagination = (
         Item.query
+        .filter(~Item.title.startswith(_INTERNAL_TITLE_PREFIX, autoescape=True))
         .order_by(Item.created_at.desc())
         .paginate(page=page, per_page=per_page, error_out=False)
     )
@@ -119,7 +139,7 @@ def get_item(item_id):
         description: Not found
     """
     item = db.session.get(Item, item_id)
-    if not item:
+    if not item or _is_internal(item.title):
         return jsonify({"error": "Item not found"}), 404
     return jsonify({"item": item.to_dict()}), 200
 
@@ -147,7 +167,7 @@ def update_item(item_id):
         return jsonify({"error": e.messages}), 422
 
     item = db.session.get(Item, item_id)
-    if not item:
+    if not item or _is_internal(item.title):
         return jsonify({"error": "Item not found"}), 404
 
     for field, value in data.items():
@@ -177,7 +197,7 @@ def delete_item(item_id):
     user = db.session.get(User, user_id)
     item = db.session.get(Item, item_id)
 
-    if not item:
+    if not item or _is_internal(item.title):
         return jsonify({"error": "Item not found"}), 404
     if item.owner_id != user_id and not user.is_admin():
         return jsonify({"error": "Forbidden"}), 403
