@@ -23,6 +23,25 @@ def _brand_key(name: str) -> str:
     return normalize_brand(name or "")
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """
+    Normalise a datetime to UTC before any .date() comparison.
+
+    Both branches matter. Naive values are assumed UTC (that's how we write them).
+    AWARE values must be CONVERTED, not trusted: the driver hands `created_at` back
+    in the server's local zone (e.g. UTC-04:00), and calling .date() on that lands
+    on the previous calendar day for timestamps between 00:00 and 04:00 UTC.
+
+    That bug silently inflated lead_time by one day for ~1/6 of all signals, always
+    in the flattering direction, and surfaced only as an intermittently failing test
+    (2026-07-25). Lead time is the metric this product is judged by — it has to be
+    computed in one fixed zone.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def record_press_confirm(brand_name: str, confirmed_at: str, app, source_url: str = "") -> dict:
     """
     Record that a brand appeared in press/newsletter on confirmed_at (ISO date string).
@@ -127,9 +146,7 @@ def get_coverage_metrics(app, days_back: int = 90) -> dict:
             if not key:
                 continue
 
-            dt = sig.created_at
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+            dt = _as_utc(sig.created_at)
 
             if sig_type in _EARLY_SIGNAL_TYPES:
                 if key not in early_by_brand or dt < early_by_brand[key]:
@@ -142,9 +159,7 @@ def get_coverage_metrics(app, days_back: int = 90) -> dict:
         for c in Item.query.filter_by(item_type="press_confirm").all():
             try:
                 meta = json.loads(c.description or "{}")
-                confirmed_at = datetime.fromisoformat(meta.get("confirmed_at", ""))
-                if confirmed_at.tzinfo is None:
-                    confirmed_at = confirmed_at.replace(tzinfo=timezone.utc)
+                confirmed_at = _as_utc(datetime.fromisoformat(meta.get("confirmed_at", "")))
                 key = _brand_key(c.title)
                 if not key:
                     continue
