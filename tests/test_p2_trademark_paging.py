@@ -178,11 +178,15 @@ def test_each_slice_covers_exactly_one_filed_date():
     with patch("app.services.trademarks.requests.post", side_effect=fake):
         tm.search_recent_trademarks(days_back=5, max_results=100000)
 
+    # The size=1 range probe deliberately spans the WHOLE window — it exists so
+    # total_found keeps meaning "matches in the requested range" rather than
+    # "matches in the days the sweep happened to reach". It is not a slice.
     spans = {
         (q["query"]["bool"]["must"][0]["range"]["filedDate"]["gte"][:10],
          q["query"]["bool"]["must"][0]["range"]["filedDate"]["lte"][:10])
-        for q in fake.queries
+        for q in fake.queries if q.get("size") != 1
     }
+    assert spans, "expected at least one sweep slice besides the range probe"
     for gte, lte in spans:
         assert gte == lte, f"slice {gte}..{lte} spans more than one day"
 
@@ -361,6 +365,12 @@ def test_watermark_is_returned_on_a_clean_run_and_withheld_on_a_failed_one():
     calls = {"n": 0}
 
     def flaky(url, json=None, headers=None, timeout=None):
+        # Let the size=1 range probe through untouched — it is not a sweep page,
+        # and failing it would only degrade the reported total. The fault is
+        # injected after the FIRST real page so there are gathered signals to
+        # assert on.
+        if json.get("size") == 1:
+            return good(url, json=json, headers=headers, timeout=timeout)
         calls["n"] += 1
         if calls["n"] > 1:
             raise requests.ConnectionError("upstream blip")

@@ -526,6 +526,21 @@ def search_recent_trademarks(
         "error": None, "fatal": None, "any_success": False, "now": now,
     }
 
+    # ── Range total: one cheap probe, so total_found keeps its documented meaning ──
+    # The sweep pages day-by-day and stops when a bound is hit, so accumulating
+    # per-slice totals under-reports by up to the number of days never queried —
+    # a 21-day window reported 446 against a true ~20,000. That field is part of
+    # the scan API response and the UI shows it, so it must mean "matches in the
+    # requested range", not "matches in the days we happened to reach".
+    try:
+        probe = _post_page(_es_query(now - timedelta(days=days_back), now, 1, 0), headers)
+        state["range_total"] = (probe.get("hits") or {}).get("totalValue") or 0
+    except requests.RequestException as exc:
+        # Non-fatal: the sweep itself is what matters. Fall back to the summed
+        # per-slice totals rather than failing the run over a reporting field.
+        logger.warning("USPTO range-total probe failed (%s) — reporting a floor", exc)
+        state["range_total"] = None
+
     # ── Pass 1: late arrivals (only when we have a watermark to work from) ────
     late_arrivals = 0
     late_truncated = False
@@ -602,7 +617,8 @@ def search_recent_trademarks(
 
     return {
         "signals":       state["signals"],
-        "total_found":   state["total_found"],
+        "total_found":   state["range_total"] if state.get("range_total") is not None
+                         else state["total_found"],
         "fetched":       len(state["signals"]),
         "inspected":     state["inspected"],
         "late_arrivals": late_arrivals,
