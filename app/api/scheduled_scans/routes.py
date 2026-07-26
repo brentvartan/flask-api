@@ -1,10 +1,15 @@
-from flask import jsonify, request
+import logging
+import threading
+
+from flask import jsonify, request, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from . import bp
 from ...extensions import db, limiter
 from ...models.scheduled_scan import ScheduledScan
 from ...services.scheduler import run_scan_now
+
+logger = logging.getLogger(__name__)
 
 # Default scan seeded for every new user on first visit
 _DEFAULT_SCAN = {
@@ -96,16 +101,49 @@ def delete_scan(scan_id):
 @jwt_required()
 @limiter.limit("5 per minute")
 def run_scan(scan_id):
-    """Manually trigger a scheduled scan right now."""
+    """
+    Manually trigger a scheduled scan right now.
+
+    Runs in a BACKGROUND THREAD and returns 202 immediately, matching every
+    other long-running job in this API. A full scan takes ~75 minutes; running
+    it inline meant the request always blew through gunicorn's 300s timeout and
+    came back as a 500, killing the worker (and the scan) with it — so the
+    manual trigger could never actually complete the scan type that needs it
+    most.
+
+    It also no longer nulls scan.last_run_at to bypass the cooldown. That field
+    is the watermark `_run_all_scheduled` reads to widen days_back after an
+    outage; clearing it disarmed gap recovery, so the one button you press when
+    the scheduler looks stuck quietly disabled the mechanism that recovers from
+    exactly that. run_scan_now is called directly here, which never consults the
+    cooldown — the bypass was never needed.
+    """
     user_id = int(get_jwt_identity())
     scan = ScheduledScan.query.filter_by(id=scan_id, owner_id=user_id).first_or_404()
 
-    # Allow manual run even if recently run (bypass the 1h cooldown)
-    scan.last_run_at = None
-    db.session.commit()
+    app = current_app._get_current_object()
+    scan_id_val = scan.id
 
-    result = run_scan_now(scan, user_id)
-    return jsonify({**result, "scan": scan.to_dict()}), 200
+    def _run_bg():
+        with app.app_context():
+            try:
+                fresh = db.session.get(ScheduledScan, scan_id_val)
+                if fresh is None:
+                    logger.warning("Manual scan %s vanished before it started", scan_id_val)
+                    return
+                result = run_scan_now(fresh, user_id)
+                logger.info("Manual scan %s finished: %s", scan_id_val, result)
+            except Exception as exc:
+                logger.error("Manual scan %s failed: %s", scan_id_val, exc, exc_info=True)
+
+    threading.Thread(target=_run_bg, daemon=True).start()
+
+    return jsonify({
+        "message": "Scan started in the background — a full scan takes ~75 minutes. "
+                   "Watch the run history for the result.",
+        "started": True,
+        "scan": scan.to_dict(),
+    }), 202
 
 
 @bp.route("/<int:scan_id>/runs", methods=["GET"])

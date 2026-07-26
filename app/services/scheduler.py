@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 # Module-level flag so only ONE scheduler starts per process
 _scheduler = None
-_scheduler_lock_fd = None  # held open to keep the file lock alive
 
 
 def _job_lock_key(job_id: str) -> str:
@@ -166,10 +165,13 @@ def _parse_article_date(date_str: str):
 def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     """
     Execute a ScheduledScan immediately:
-      1. Fetch new USPTO trademark filings
+      1. Fetch signals from every collector this scan_type covers
       2. Save new signals (deduplicated)
-      3. Enrich with Bullish AI
-      4. Email HOT-signal alert if any found
+      3. Run signal_pipeline.process_saved_signal on each — the SAME shared
+         pipeline the manual scan path uses (people matching, assignment
+         resolution, Form D related persons, confluence, enrichment, alerts,
+         watchlist). Nothing post-save belongs inline in this function.
+      4. Roll the results up into the scan record and a ScanRun row
 
     days_back_override: when set (by the scheduler's catch-up logic), overrides
     scan.days_back so a post-outage run covers the full gap.
@@ -178,7 +180,6 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     """
     from ..models.item import Item
     from ..services.trademarks import search_recent_trademarks
-    from ..services.enrichment import enrich_signal
     from ..extensions import db
 
     # Effective window — widened by the scheduler on catch-up runs
@@ -350,12 +351,29 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 "url":              sig["url"],
                 "notes":            sig.get("notes", ""),
                 "timestamp":        sig["timestamp"],
+                # Trademark/press owner — feeds person-key confluence, the conviction
+                # and alumni matchers, and the enrichment prompt's FOUNDER RESEARCH
+                # PRIORITY block. Dropping it here is what made a conviction founder
+                # named in a USPTO owner field invisible to the nightly scan.
+                "owner":            sig.get("owner"),
+                "owner_is_person":  sig.get("owner_is_person", False),
                 # Form D enrichment — present only when _enrich_related_persons ran
                 "related_persons":  sig.get("related_persons") or [],
                 "filer_name":       sig.get("filer_name"),
                 "conviction_match": sig.get("conviction_match"),
+                # Alumni is a separate designation from conviction and must persist
+                # separately, or the ALUMNI branch of the watchlist alert is unreachable.
+                "exit_alumni_match": sig.get("exit_alumni_match"),
                 "total_offering":   sig.get("total_offering"),
                 "amount_sold":      sig.get("amount_sold"),
+                # Parsed on every Form D fetch by parse_form_d_offering_data;
+                # persisting it costs nothing and it is a real ranking feature
+                # (a $25k minimum reads very differently from a $1M one).
+                "minimum_investment": sig.get("minimum_investment"),
+                # EDGAR filing IDs — without these the Form D related-persons
+                # extraction can never run on the scheduled path.
+                "_adsh":            sig.get("_adsh", ""),
+                "_cik":             sig.get("_cik", ""),
             }, separators=(",", ":")),
         )
         db.session.add(item)
@@ -383,223 +401,63 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         except Exception as exc:
             logger.debug("Domain check launch failed for item %s: %s", item_id, exc)
 
-    # ── 4. Enrich new signals with Bullish AI ─────────────────────────────────
+    # ── 4. Shared post-save pipeline ─────────────────────────────────────────
+    # Enrichment, confluence, watchlist-match alerts and HOT handling all live in
+    # signal_pipeline.process_saved_signal, which the MANUAL scan path
+    # (app/api/scans/routes.py) calls too. Both paths therefore do exactly the
+    # same work on the same signal. Anything new belongs in that pipeline — the
+    # old inline copies here (steps 4, 5, 5b and 5c) had silently diverged from
+    # the manual path three times, always in the direction of the nightly scan
+    # doing LESS.
+    from ..services.signal_pipeline import process_saved_signal, resolve_alert_emails
+
     hot_brands = []
     hot_count  = 0
     warm_count = 0
     cold_count = 0
     founders_queued = 0
 
+    # Resolved once per run — the pipeline would otherwise re-query settings per signal.
+    pipeline_alert_emails = resolve_alert_emails()
+
     for item_id in new_item_ids:
-        item = db.session.get(Item, item_id)
-        if not item:
-            continue
         try:
-            meta = json.loads(item.description or "{}")
-            enrichment = enrich_signal({
-                "companyName":      meta.get("company_name", item.title),
-                "category":         meta.get("category", ""),
-                "signal_type":      meta.get("signal_type", "trademark"),
-                "description":      meta.get("description", ""),
-                "notes":            meta.get("notes", ""),
-                "conviction_match": meta.get("conviction_match"),
-            })
-            if enrichment.get("enriched"):
-                meta["enrichment"] = enrichment
-                item.description = json.dumps(meta, separators=(",", ":"))
-                level = enrichment.get("watch_level")
-                if level == "hot":
-                    hot_count += 1
-                    hot_brands.append({
-                        "name":     meta.get("company_name", item.title),
-                        "category": meta.get("category", ""),
-                        "score":    enrichment.get("bullish_score"),
-                        "thesis":   enrichment.get("one_line_thesis", ""),
-                        "theme":    enrichment.get("cultural_theme", ""),
-                        "item_id":  item_id,
-                    })
-                    # Trigger founder enrichment in background for HOT brands
-                    try:
-                        from ..services.founder_enrichment import run_founder_enrichment_in_background
-                        _fe_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
-                        try:
-                            _fe_settings = Item.query.filter_by(title="__bullish_settings__").first()
-                            if _fe_settings:
-                                _fe_sd = json.loads(_fe_settings.description or "{}")
-                                _fe_el = _fe_sd.get("alert_emails", [])
-                                if _fe_el:
-                                    _fe_emails_str = ",".join(_fe_el)
-                        except Exception:
-                            pass
-                        _fe_alert_emails = [e.strip() for e in _fe_emails_str.split(",") if e.strip()] or None
-                        run_founder_enrichment_in_background(
-                            current_app._get_current_object(),
-                            item_id,
-                            meta.get("company_name", item.title),
-                            meta.get("category", ""),
-                            enrichment.get("one_line_thesis", ""),
-                            filer_name=meta.get("filer_name") or None,
-                            alert_emails=_fe_alert_emails,
-                        )
-                        founders_queued += 1
-                    except Exception as fe:
-                        logger.warning("Founder enrichment trigger failed for item %s: %s", item_id, fe)
-                elif level == "warm":
-                    warm_count += 1
-                else:
-                    cold_count += 1
+            outcome = process_saved_signal(
+                item_id,
+                owner_id=user_id,
+                alert_emails=pipeline_alert_emails,
+            )
         except Exception as exc:
-            logger.warning("Enrichment failed for item %s: %s", item_id, exc)
+            logger.warning("Signal pipeline failed for item %s: %s", item_id, exc)
+            continue
+
+        if outcome.get("errors"):
+            logger.warning(
+                "Signal pipeline degraded for item %s: %s", item_id, "; ".join(outcome["errors"]),
+            )
+        if outcome.get("founder_queued"):
+            founders_queued += 1
+        if not outcome.get("enriched"):
+            continue
+
+        level = outcome.get("watch_level")
+        if level == "hot":
+            hot_count += 1
+            hot_brands.append({
+                "name":     outcome.get("company_name"),
+                "category": outcome.get("category", ""),
+                "score":    outcome.get("bullish_score"),
+                "thesis":   outcome.get("one_line_thesis", ""),
+                "theme":    outcome.get("cultural_theme", ""),
+                "item_id":  item_id,
+            })
+        elif level == "warm":
+            warm_count += 1
+        else:
+            cold_count += 1
 
     if new_item_ids:
         db.session.commit()
-
-    # ── 5. Confluence detection for newly saved signals ───────────────────────
-    try:
-        from ..services.confluence import (
-            record_signal_and_check_confluence,
-            send_confluence_alert_for_hit,
-            should_send_confluence_alert,
-        )
-
-        confluence_alert_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
-        try:
-            _cse_item = Item.query.filter_by(title="__bullish_settings__").first()
-            if _cse_item:
-                _cse_settings = json.loads(_cse_item.description or "{}")
-                _cse_emails = _cse_settings.get("alert_emails", [])
-                if _cse_emails:
-                    confluence_alert_emails_str = ",".join(_cse_emails)
-        except Exception:
-            pass
-        confluence_alert_emails = [e.strip() for e in confluence_alert_emails_str.split(",") if e.strip()]
-
-        for item_id in new_item_ids:
-            item = db.session.get(Item, item_id)
-            if not item:
-                continue
-            try:
-                meta = json.loads(item.description or "{}")
-                enrichment = meta.get("enrichment") or {}
-                from ..services.confluence import extract_person_keys, extract_coined_term_keys
-                _person_names = (
-                    [rp["name"] for rp in meta.get("related_persons", []) if rp.get("name")]
-                    + [n for n in [meta.get("owner"), meta.get("filer_name")] if n]
-                )
-                result = record_signal_and_check_confluence(
-                    item_id=item_id,
-                    owner_id=user_id,
-                    brand_name=meta.get("company_name", item.title),
-                    signal_type=meta.get("signal_type", "trademark"),
-                    source_url=meta.get("url"),
-                    enrichment=enrichment if enrichment.get("enriched") else None,
-                    person_keys=extract_person_keys(_person_names),
-                    coined_term_keys=extract_coined_term_keys(
-                        meta.get("company_name") or item.title
-                    ),
-                )
-                _conf_score = enrichment.get("bullish_score")
-                if result["is_confluence"] and result.get("hit_id") and confluence_alert_emails:
-                    if should_send_confluence_alert(_conf_score):
-                        send_confluence_alert_for_hit(result["hit_id"], confluence_alert_emails)
-                        logger.info("Confluence alert sent for %s (score=%s)", item.title, _conf_score)
-                    else:
-                        logger.info(
-                            "Confluence alert suppressed for %s (score=%s) — below threshold or unscored",
-                            item.title, _conf_score,
-                        )
-            except Exception as exc:
-                logger.warning("Confluence check failed for item %s: %s", item_id, exc)
-    except Exception as exc:
-        logger.warning("Confluence detection block failed: %s", exc)
-
-    # ── 5b. Immediate watchlist-match alerts ─────────────────────────────────
-    # Fires the moment a Form D (or other signal with person names) names someone
-    # from the 193-person conviction/alumni watchlist.  No press article needed —
-    # this is the earliest possible signal, typically 6-24 months before any coverage.
-    try:
-        from ..services.email import send_watchlist_match_alert
-
-        _wm_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
-        try:
-            _wm_settings = Item.query.filter_by(title="__bullish_settings__").first()
-            if _wm_settings:
-                _wm_sd = json.loads(_wm_settings.description or "{}")
-                _wm_el = _wm_sd.get("alert_emails", [])
-                if _wm_el:
-                    _wm_emails_str = ",".join(_wm_el)
-        except Exception:
-            pass
-        _wm_alert_emails = [e.strip() for e in _wm_emails_str.split(",") if e.strip()]
-
-        for item_id in new_item_ids:
-            item = db.session.get(Item, item_id)
-            if not item:
-                continue
-            try:
-                meta       = json.loads(item.description or "{}")
-                conviction = meta.get("conviction_match")
-                alumni     = meta.get("exit_alumni_match")
-                if not conviction and not alumni:
-                    continue
-                match      = conviction or alumni
-                match_type = "CONVICTION" if conviction else "ALUMNI"
-                enrichment = meta.get("enrichment") or {}
-                for addr in _wm_alert_emails:
-                    try:
-                        send_watchlist_match_alert(
-                            addr,
-                            person_name=match.get("name", "Unknown"),
-                            match_type=match_type,
-                            brand_name=meta.get("company_name", item.title),
-                            signal_type=meta.get("signal_type", "unknown"),
-                            brand_score=enrichment.get("bullish_score"),
-                            watch_level=enrichment.get("watch_level"),
-                            thesis=enrichment.get("one_line_thesis", ""),
-                            match_details=match,
-                        )
-                        logger.info(
-                            "Watchlist match alert sent for %s (%s match: %s)",
-                            item.title, match_type, match.get("name"),
-                        )
-                    except Exception as exc:
-                        logger.warning("Watchlist match alert failed to %s: %s", addr, exc)
-            except Exception as exc:
-                logger.warning("Watchlist match alert check failed for item %s: %s", item_id, exc)
-    except Exception as exc:
-        logger.warning("Watchlist match alert block failed: %s", exc)
-
-    # ── 5c. Auto-add HOT brands to watchlist ─────────────────────────────────
-    try:
-        from ..services.watchlist import auto_add_to_watchlist
-        for brand in hot_brands:
-            item = db.session.get(Item, brand["item_id"])
-            if not item:
-                continue
-            meta = json.loads(item.description or "{}")
-            enrichment = meta.get("enrichment", {})
-            founder = enrichment.get("founder", {})
-            _sig_type = meta.get("signal_type", "trademark")
-            _sig_types = [_sig_type] if isinstance(_sig_type, str) else [_sig_type]
-            threading.Thread(
-                target=auto_add_to_watchlist,
-                args=(
-                    current_app._get_current_object().app_context(),
-                    user_id,
-                    brand["name"],
-                    brand["item_id"],
-                    brand["score"],
-                    founder.get("name") if founder.get("confidence") != "unknown" else None,
-                    founder.get("founder_score"),
-                    founder.get("linkedin_url"),
-                    brand["thesis"],
-                    brand["theme"],
-                    _sig_types,
-                ),
-                daemon=True,
-            ).start()
-    except Exception as exc:
-        logger.warning("Auto-watchlist trigger failed: %s", exc)
 
     # ── 6. Dedup hot_brands (same brand from multiple sources in one run) ────────
     seen_keys: dict = {}
@@ -694,6 +552,33 @@ def _write_scheduler_heartbeat(app):
             logger.warning("Heartbeat write failed: %s", exc)
 
 
+def _read_scheduler_liveness() -> dict:
+    """
+    Return the scheduler-liveness marker written at startup.
+
+    Distinguishes "no scheduler is running anywhere" from "a scheduler is armed
+    but has not completed a run yet" — the heartbeat alone cannot tell those
+    apart, which is how a dead scheduler went unnoticed for a day.
+    Must be called inside an app context.
+    """
+    from ..models.item import Item
+    try:
+        row = Item.query.filter_by(title="__scheduler_liveness__", item_type="system").first()
+        if not row:
+            return {"scheduler_armed": False, "next_run_at": None, "jobs": {}}
+        meta = json.loads(row.description or "{}")
+        jobs = meta.get("jobs") or {}
+        return {
+            "scheduler_armed": True,
+            "scheduler_started_at": meta.get("started_at"),
+            "next_run_at": jobs.get("daily_bullish_scan"),
+            "jobs": jobs,
+        }
+    except Exception as exc:
+        logger.warning("Scheduler liveness read failed: %s", exc)
+        return {"scheduler_armed": None, "next_run_at": None, "jobs": {}}
+
+
 def get_scheduler_heartbeat(app) -> dict:
     """Return the last scheduler heartbeat and derived health status."""
     from ..models.item import Item
@@ -702,21 +587,22 @@ def get_scheduler_heartbeat(app) -> dict:
         try:
             row = Item.query.filter_by(title="__scheduler_heartbeat__", item_type="system").first()
             if not row:
-                return {"last_run": None, "hours_since": None, "is_healthy": False}
+                return {"last_run": None, "hours_since": None, "is_healthy": False, **_read_scheduler_liveness()}
             meta = json.loads(row.description or "{}")
             last_run_str = meta.get("last_run")
             if not last_run_str:
-                return {"last_run": None, "hours_since": None, "is_healthy": False}
+                return {"last_run": None, "hours_since": None, "is_healthy": False, **_read_scheduler_liveness()}
             last_run = datetime.fromisoformat(last_run_str)
             hours_since = (now - last_run).total_seconds() / 3600
             return {
                 "last_run": last_run_str,
                 "hours_since": round(hours_since, 1),
                 "is_healthy": hours_since < 30,  # should run every 24h; 30h = one missed + buffer
+                **_read_scheduler_liveness(),
             }
         except Exception as exc:
             logger.warning("Heartbeat read failed: %s", exc)
-            return {"last_run": None, "hours_since": None, "is_healthy": False}
+            return {"last_run": None, "hours_since": None, "is_healthy": False, **_read_scheduler_liveness()}
 
 
 def _run_all_scheduled(app):
@@ -1389,31 +1275,76 @@ def _send_founder_radar_poll_reminder(app):
                 logger.warning("Failed to send Founder Radar poll reminder to %s: %s", u.email, exc)
 
 
-def start_scheduler(app):
-    """Start the APScheduler background scheduler (once per process).
-
-    Gunicorn forks N worker processes; each would start its own scheduler and
-    fire every job N times. We use an exclusive non-blocking fcntl file lock
-    so only ONE worker wins and runs the scheduler — the others exit silently.
-    The lock is kept alive by holding the open file descriptor in
-    _scheduler_lock_fd for the lifetime of the process.
+def _publish_scheduler_liveness(app, scheduler) -> None:
     """
-    global _scheduler, _scheduler_lock_fd
+    Record that a scheduler is alive in this process and when each job next
+    fires, so /api/admin/scheduler/status can answer "is anything scheduled?"
+    without waiting for a completed run.
+
+    The heartbeat only lands AFTER a full nightly run, so a scheduler that
+    never fires is indistinguishable from one that is merely mid-run — which is
+    exactly the ambiguity that let a dead scheduler go unnoticed on 2026-07-26.
+    next_run_at removes it.
+    """
+    from ..models.item import Item
+    from ..extensions import db
+
+    try:
+        jobs = {
+            job.id: job.next_run_time.isoformat() if job.next_run_time else None
+            for job in scheduler.get_jobs()
+        }
+    except Exception as exc:                      # never let telemetry break startup
+        logger.warning("Scheduler liveness: could not read jobs: %s", exc)
+        return
+
+    payload = {
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "pid":        os.getpid(),
+        "jobs":       jobs,
+    }
+    with app.app_context():
+        try:
+            owner_id = _system_owner_id()
+            if owner_id is None:
+                logger.error("Scheduler liveness: no user row to own the marker — skipping")
+                return
+            row = Item.query.filter_by(title="__scheduler_liveness__", item_type="system").first()
+            if row:
+                row.description = json.dumps(payload)
+            else:
+                db.session.add(Item(
+                    title="__scheduler_liveness__", item_type="system",
+                    owner_id=owner_id, description=json.dumps(payload),
+                ))
+            db.session.commit()
+        except Exception as exc:
+            logger.warning("Scheduler liveness write failed: %s", exc)
+
+
+def start_scheduler(app):
+    """Start the APScheduler background scheduler in EVERY gunicorn worker.
+
+    Deduplication is the database's job, not this function's. Each job body
+    calls _acquire_job_lock first, which takes a Postgres advisory lock and
+    checks a TTL row, so exactly one worker executes a given job even though
+    all of them schedule it.
+
+    This deliberately replaced an fcntl file-lock that elected a single
+    "scheduler owner" worker. That design had a silent single point of failure:
+    the lock was held for the life of the PROCESS, but the scheduler is a
+    daemon THREAD inside it. If the thread died while the process stayed
+    healthy — still serving requests, still passing /health — the lock stayed
+    held, no other worker would ever start a scheduler, and nothing ran again
+    until the next deploy. Observed 2026-07-26: the app was fully healthy and
+    the nightly scan simply never fired.
+
+    The failure mode now is a worker dying, which gunicorn replaces
+    automatically, and the replacement re-registers its own scheduler.
+    """
+    global _scheduler
     if _scheduler is not None:
         return  # Already running in this process
-
-    # ── File lock: only one worker gets to run the scheduler ─────────────────
-    import fcntl, tempfile
-    lock_path = os.path.join(tempfile.gettempdir(), "bullish_scheduler.lock")
-    try:
-        fd = open(lock_path, "w")
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # non-blocking exclusive
-        _scheduler_lock_fd = fd   # keep open — lock released only when fd closes
-        logger.info("Scheduler file lock acquired — this worker owns the scheduler")
-    except (IOError, OSError):
-        logger.info("Scheduler: another worker holds the lock — skipping scheduler start")
-        return
-    # ─────────────────────────────────────────────────────────────────────────
 
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
@@ -1487,6 +1418,7 @@ def start_scheduler(app):
             misfire_grace_time=86400,
         )
         _scheduler.start()
+        _publish_scheduler_liveness(app, _scheduler)
         logger.info(
             "Bullish scheduler started — daily scan 11:00 UTC, weekly digest Mon 09:00 UTC, "
             "founder news Wed 08:00 UTC, press monitor Thu 08:00 UTC, "

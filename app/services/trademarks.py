@@ -75,6 +75,31 @@ def _is_brand_candidate(owner: str, wordmark: str) -> bool:
     return not any(term in o for term in _NON_BRAND_OWNER)
 
 
+def _owner_is_individual(raw: str) -> bool:
+    """
+    True when USPTO annotates this owner as a natural person.
+
+    USPTO appends an entity-type annotation to every ownerName —
+    'Raymond A Jimenez (INDIVIDUAL; USA)' vs
+    'Acme Labs LLC (LIMITED LIABILITY COMPANY; Delaware, USA)' — and roughly
+    half of consumer-class filings are individuals.
+
+    This matters for confluence: the owner is fed into person-key clustering,
+    and normalize_person only rejects names carrying a legal suffix. A company
+    named "Sunset Beverage" therefore normalises to the person key
+    'sunset beverage', so two unrelated brands filed by similarly-named
+    entities would merge into one cluster and fire a false multi-signal alert.
+    A wrong merge is worse than a missed link, so only owners USPTO calls
+    INDIVIDUAL are offered as people; everything else is left out.
+    """
+    if not raw:
+        return False
+    match = re.search(r"\(([^)]*)\)\s*$", raw)
+    if not match:
+        return False
+    return "INDIVIDUAL" in match.group(1).upper()
+
+
 def _clean_owner(raw: str) -> str:
     """
     Strip the entity-type / jurisdiction annotation USPTO appends.
@@ -227,7 +252,9 @@ def search_recent_trademarks(
                 continue
 
             owners = src.get("ownerName", [])
-            owner = _clean_owner(owners[0]) if owners else "Unknown"
+            _raw_owner = owners[0] if owners else ""
+            owner = _clean_owner(_raw_owner) if owners else "Unknown"
+            owner_is_person = _owner_is_individual(_raw_owner)
             # Reject institutional / non-brand owners before spending enrich budget
             if not _is_brand_candidate(owner, wordmark):
                 continue
@@ -253,6 +280,14 @@ def search_recent_trademarks(
             basis_note = " · pre-launch intent-to-use" if is_itu else ""
             desc = f"{wordmark} — {primary_class} — Filed {filed_label}{basis_note}"
 
+            # `owner` is emitted as a first-class field AND left embedded in
+            # `notes`. Both are load-bearing and must stay in sync:
+            #   • the field feeds person-key confluence (scheduler.py and
+            #     scans/routes.py build person keys from meta["owner"]) and lets
+            #     enrichment.py receive the owner without re-parsing prose;
+            #   • the notes prefix format "Owner: NAME. <goods>" is what
+            #     enrichment.py strips by exact match, and is the shape already
+            #     persisted on stored rows — do not change it.
             signals.append({
                 "companyName":       wordmark,
                 "signal_type":       "trademark",
@@ -261,6 +296,8 @@ def search_recent_trademarks(
                 "is_intent_to_use":  is_itu,
                 "description":       desc,
                 "url":               search_url,
+                "owner":             owner,
+                "owner_is_person":   owner_is_person,
                 "notes":             f"Owner: {owner}. {snippet}".strip(". "),
                 "timestamp":         filed_date or end_dt.isoformat(),
             })

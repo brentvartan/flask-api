@@ -490,6 +490,9 @@ def _enrich_related_persons(
                                "conviction_match": dict|None,
                                "exit_alumni_match": dict|None}]
         filer_name: str|None  — first person-looking related person
+        conviction_match: dict — first per-person conviction match, promoted
+        exit_alumni_match: dict — first per-person alumni match, promoted ONLY
+                                  when no conviction match was promoted
         total_offering: int|None   — USD raise target from offeringData
         amount_sold: int|None      — USD amount sold so far
         minimum_investment: int|None
@@ -565,6 +568,23 @@ def _enrich_related_persons(
         )
         if _top_conv:
             sig["conviction_match"] = _top_conv
+
+        # No conviction founder on this filing — bubble up the first exit alumni
+        # match instead, so scheduler.py can fire the immediate ALUMNI watchlist
+        # alert (it reads exit_alumni_match at the signal TOP level, not inside
+        # related_persons, so per-person values alone left that alert unreachable).
+        #
+        # The two designations are separate and must never be collapsed:
+        # conviction outranks alumni, so alumni is promoted ONLY when the signal
+        # carries no conviction match. Per-person values stay on related_persons
+        # either way and are unaffected.
+        if not sig.get("conviction_match"):
+            _top_alumni = next(
+                (p["exit_alumni_match"] for p in enriched if p.get("exit_alumni_match")),
+                None,
+            )
+            if _top_alumni:
+                sig["exit_alumni_match"] = _top_alumni
 
         time.sleep(0.3)
 

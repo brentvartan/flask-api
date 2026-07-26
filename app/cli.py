@@ -81,7 +81,7 @@ def register_commands(app):
                     "signal_type": meta.get("signal_type", "trademark"),
                     "description": meta.get("description", ""),
                     "notes": meta.get("notes", ""),
-                    "owner": meta.get("owner", ""),
+                    "owner": meta.get("owner") or "",
                     "signal_count": signal_count,
                     "signal_types": signal_types_list,
                 })

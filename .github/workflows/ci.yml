@@ -47,4 +47,4 @@ jobs:
       # be deleted without CI noticing. Raise it when coverage rises; only lower it
       # deliberately, never to make a red build go green.
       - name: Run tests with coverage
-        run: pytest -v --cov=app --cov-report=term-missing --cov-fail-under=32
+        run: pytest -v --cov=app --cov-report=term-missing --cov-fail-under=40

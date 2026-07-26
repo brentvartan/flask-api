@@ -1,9 +1,34 @@
+import html
 import os
 import re
 import urllib.request
 import urllib.error
 import urllib.parse
 import resend
+
+
+# ── HTML escaping ─────────────────────────────────────────────────────────────
+# Every value these builders interpolate into an f-string template — brand names,
+# person names, filing text, article titles/snippets, LinkedIn headlines — comes
+# from USPTO, SEC EDGAR, RSS feeds or a third-party enrichment API. None of it is
+# ours. A single "<" or a quote in one of those strings breaks the surrounding
+# markup, and a crafted entity name injects arbitrary HTML into an alert that
+# lands in a Bullish inbox.
+#
+# Escape at the point of interpolation, HTML side only. The plain-text bodies are
+# deliberately left raw — escaping there would show readers a literal "&amp;".
+
+
+def _esc(value) -> str:
+    """HTML-escape an untrusted value for interpolation into markup or an attribute.
+
+    None becomes an empty string so callers keep their existing "render nothing"
+    behaviour for optional fields; quotes are escaped so values used inside
+    href="..." cannot break out of the attribute.
+    """
+    if value is None:
+        return ""
+    return html.escape(str(value), quote=True)
 
 
 def remove_email_suppression(email: str) -> bool:
@@ -74,19 +99,19 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
         <div style="border:2px solid #052EF0;border-radius:8px;padding:20px;margin:16px 0;background:#fff;">
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
             <div style="background:#052EF0;color:#fff;border-radius:6px;padding:8px 12px;font-family:monospace;font-weight:bold;font-size:20px;min-width:52px;text-align:center;">
-              {b.get('score', '—')}
+              {_esc(b.get('score', '—'))}
             </div>
             <div>
               <div style="font-family:monospace;font-weight:bold;font-size:18px;letter-spacing:2px;text-transform:uppercase;color:#000;">
-                {b.get('name', '')}
+                {_esc(b.get('name', ''))}
               </div>
               <div style="font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:2px;">
-                {b.get('category', '')}
+                {_esc(b.get('category', ''))}
               </div>
             </div>
           </div>
-          {f'<p style="font-style:italic;color:#333;margin:8px 0;border-left:3px solid #052EF0;padding-left:12px;">{b["thesis"]}</p>' if b.get('thesis') else ''}
-          {f'<p style="font-size:12px;color:#052EF0;font-weight:600;margin:8px 0;">Theme: {_strip_year(b["theme"])}</p>' if b.get('theme') else ''}
+          {f'<p style="font-style:italic;color:#333;margin:8px 0;border-left:3px solid #052EF0;padding-left:12px;">{_esc(b["thesis"])}</p>' if b.get('thesis') else ''}
+          {f'<p style="font-size:12px;color:#052EF0;font-weight:600;margin:8px 0;">Theme: {_esc(_strip_year(b["theme"]))}</p>' if b.get('theme') else ''}
         </div>
         """
 
@@ -103,7 +128,7 @@ def send_hot_alert(to_email: str, hot_brands: list, scan_name: str) -> None:
             🔵 HOT SIGNAL{('S' if count != 1 else '')}
           </h1>
           <p style="margin:8px 0 0;color:#888;font-size:14px;">
-            {count} new HOT brand{'s' if count != 1 else ''} detected — {scan_name}
+            {count} new HOT brand{'s' if count != 1 else ''} detected — {_esc(scan_name)}
           </p>
         </div>
 
@@ -190,7 +215,7 @@ def send_invite_email(to_email: str, invite_url: str, invited_by: str) -> None:
         ACCESS GRANTED
       </h1>
       <p style="margin:0;color:#888;font-size:14px;">
-        {invited_by} has added you to the Bullish Stealth Startup Finder team.
+        {_esc(invited_by)} has added you to the Bullish Stealth Startup Finder team.
       </p>
     </div>
 
@@ -271,21 +296,21 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
             <tr>
               <td valign="middle" style="padding-right:12px;">
                 <div style="background:{score_bg};color:#fff;border-radius:5px;padding:6px 12px;font-family:monospace;font-weight:bold;font-size:20px;text-align:center;white-space:nowrap;">
-                  {b.get('score', '—')}
+                  {_esc(b.get('score', '—'))}
                 </div>
               </td>
               <td valign="middle">
                 <div style="font-family:monospace;font-weight:bold;font-size:15px;letter-spacing:2px;text-transform:uppercase;color:#000;">
-                  {b.get('name', '')}
+                  {_esc(b.get('name', ''))}
                 </div>
                 <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-top:3px;">
-                  {label} · {b.get('category', '')}
+                  {label} · {_esc(b.get('category', ''))}
                 </div>
               </td>
             </tr>
           </table>
-          {f'<p style="font-style:italic;color:#444;margin:6px 0;border-left:3px solid {border};padding-left:10px;font-size:13px;">{b["thesis"]}</p>' if b.get('thesis') else ''}
-          {f'<p style="font-size:11px;color:{border};font-weight:600;margin:4px 0;">Theme: {_strip_year(b["theme"])}</p>' if b.get('theme') else ''}
+          {f'<p style="font-style:italic;color:#444;margin:6px 0;border-left:3px solid {border};padding-left:10px;font-size:13px;">{_esc(b["thesis"])}</p>' if b.get('thesis') else ''}
+          {f'<p style="font-size:11px;color:{border};font-weight:600;margin:4px 0;">Theme: {_esc(_strip_year(b["theme"]))}</p>' if b.get('theme') else ''}
         </div>
         """
 
@@ -319,7 +344,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
         <div style="padding:28px 36px 20px;border-bottom:1px solid #222;">
           {_LOGO_LOCKUP}
           <h1 style="margin:12px 0 0;color:#fff;font-family:monospace;font-size:22px;font-weight:bold;letter-spacing:3px;">
-            WEEK OF {week_label.upper()}
+            WEEK OF {_esc(week_label.upper())}
           </h1>
           <p style="margin:6px 0 0;color:#888;font-size:13px;">
             {total} HOT/WARM signal{'' if total == 1 else 's'} this week
@@ -406,7 +431,7 @@ def send_confluence_alert(
             '<div style="width:2px;height:16px;background:#052EF0;margin:0 auto;opacity:0.3;"></div>'
         )
         url_link = (
-            f'<a href="{row["source_url"]}" style="color:#052EF0;font-size:10px;text-decoration:none;margin-left:8px;">↗</a>'
+            f'<a href="{_esc(row["source_url"])}" style="color:#052EF0;font-size:10px;text-decoration:none;margin-left:8px;">↗</a>'
             if row.get("source_url") else ""
         )
         timeline_html += f"""
@@ -414,11 +439,11 @@ def send_confluence_alert(
           <div style="background:#052EF0;color:#fff;border-radius:4px;padding:3px 7px;
                       font-family:monospace;font-weight:bold;font-size:10px;
                       min-width:40px;text-align:center;letter-spacing:1px;">
-            {badge}
+            {_esc(badge)}
           </div>
           <div style="flex:1;">
-            <span style="font-size:13px;color:#fff;font-weight:600;">{label}</span>
-            <span style="font-size:11px;color:#666;margin-left:8px;">{row['detected_at']}</span>
+            <span style="font-size:13px;color:#fff;font-weight:600;">{_esc(label)}</span>
+            <span style="font-size:11px;color:#666;margin-left:8px;">{_esc(row['detected_at'])}</span>
             {url_link}
           </div>
         </div>
@@ -437,11 +462,11 @@ def send_confluence_alert(
           <div style="background:{level_color};color:#fff;border-radius:5px;
                       padding:6px 10px;font-family:monospace;font-weight:bold;
                       font-size:22px;min-width:52px;text-align:center;">
-            {bullish_score}
+            {_esc(bullish_score)}
           </div>
           <div>
             <div style="color:#fff;font-family:monospace;font-size:11px;
-                        font-weight:bold;letter-spacing:1px;">{level_label}</div>
+                        font-weight:bold;letter-spacing:1px;">{_esc(level_label)}</div>
             <div style="color:#666;font-size:10px;margin-top:2px;">Bullish Score</div>
           </div>
         </div>
@@ -472,11 +497,11 @@ def send_confluence_alert(
         <div style="padding:24px 36px;">
           <div style="font-family:monospace;font-weight:bold;font-size:24px;
                       letter-spacing:3px;text-transform:uppercase;color:#fff;margin-bottom:4px;">
-            {brand_name}
+            {_esc(brand_name)}
           </div>
           <div style="font-size:11px;color:#052EF0;font-weight:600;
                       letter-spacing:1px;margin-bottom:20px;">
-            {types_text}
+            {_esc(types_text)}
           </div>
 
           <!-- Timeline -->
@@ -553,12 +578,12 @@ def send_founder_alert(
           <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;
                       text-transform:uppercase;margin-bottom:6px;">Brand Score</div>
           <div style="color:#fff;font-family:monospace;font-weight:bold;font-size:28px;">
-            {brand_score}
+            {_esc(brand_score)}
           </div>
           <div style="background:{level_color};color:#fff;border-radius:4px;padding:3px 8px;
                       font-family:monospace;font-size:10px;font-weight:bold;
                       letter-spacing:1px;display:inline-block;margin-top:6px;">
-            {level_label}
+            {_esc(level_label)}
           </div>
         </div>
         """
@@ -574,12 +599,12 @@ def send_founder_alert(
       <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;
                   text-transform:uppercase;margin-bottom:6px;">Founder Score</div>
       <div style="color:#052EF0;font-family:monospace;font-weight:bold;font-size:28px;">
-        {founder_score}
+        {_esc(founder_score)}
       </div>
       <div style="background:{tier_color};color:#fff;border-radius:4px;padding:3px 8px;
                   font-family:monospace;font-size:10px;font-weight:bold;
                   letter-spacing:1px;display:inline-block;margin-top:6px;">
-        {tier_label}
+        {_esc(tier_label)}
       </div>
     </div>
     """
@@ -589,7 +614,7 @@ def send_founder_alert(
     if linkedin_url:
         linkedin_html = f"""
         <div style="margin-top:16px;">
-          <a href="{linkedin_url}"
+          <a href="{_esc(linkedin_url)}"
              style="color:#052EF0;font-family:monospace;font-size:12px;
                     text-decoration:none;font-weight:600;">
             ↗ View LinkedIn Profile
@@ -616,11 +641,11 @@ def send_founder_alert(
                         border-left:3px solid #052EF0;">
               <div style="display:flex;align-items:center;justify-content:space-between;">
                 <span style="color:#fff;font-family:monospace;font-size:11px;
-                             font-weight:bold;letter-spacing:1px;">{label}</span>
+                             font-weight:bold;letter-spacing:1px;">{_esc(label)}</span>
                 <span style="color:#052EF0;font-family:monospace;font-size:13px;
-                             font-weight:bold;">{score_val}<span style="color:#444;font-size:10px;">/{max_val}</span></span>
+                             font-weight:bold;">{_esc(score_val)}<span style="color:#444;font-size:10px;">/{_esc(max_val)}</span></span>
               </div>
-              {f'<div style="color:#888;font-size:11px;margin-top:4px;">{flag_text}</div>' if flag_text else ''}
+              {f'<div style="color:#888;font-size:11px;margin-top:4px;">{_esc(flag_text)}</div>' if flag_text else ''}
             </div>
             """
         if chips:
@@ -654,10 +679,10 @@ def send_founder_alert(
         <div style="padding:24px 36px 0;">
           <div style="font-family:monospace;font-weight:bold;font-size:24px;
                       letter-spacing:3px;text-transform:uppercase;color:#fff;margin-bottom:2px;">
-            {brand_name}
+            {_esc(brand_name)}
           </div>
           <div style="font-size:14px;color:#ccc;margin-bottom:20px;">
-            Founder: <strong style="color:#fff;">{founder_name}</strong>
+            Founder: <strong style="color:#fff;">{_esc(founder_name)}</strong>
           </div>
 
           <!-- Score cards side by side -->
@@ -726,17 +751,17 @@ def send_founder_news_alert(to_email, founder_name, company, bullish_score, new_
     for a in new_articles:
         article_html += f"""
         <div style="border-left:3px solid #052EF0;padding:10px 14px;margin:10px 0;background:#fff;">
-          <a href="{a['link']}" style="font-size:13px;font-weight:bold;color:#052EF0;text-decoration:none;">{a['title']}</a>
-          <div style="font-size:11px;color:#999;margin:3px 0;">{a.get('source','')} · {a.get('date','')}</div>
-          <div style="font-size:12px;color:#555;margin-top:4px;">{a.get('snippet','')}</div>
+          <a href="{_esc(a['link'])}" style="font-size:13px;font-weight:bold;color:#052EF0;text-decoration:none;">{_esc(a['title'])}</a>
+          <div style="font-size:11px;color:#999;margin:3px 0;">{_esc(a.get('source',''))} · {_esc(a.get('date',''))}</div>
+          <div style="font-size:12px;color:#555;margin-top:4px;">{_esc(a.get('snippet',''))}</div>
         </div>
         """
 
     score_html = f"""<div style="background:#052EF0;color:#fff;border-radius:6px;padding:6px 14px;
                        font-family:monospace;font-weight:bold;font-size:18px;display:inline-block;margin-bottom:8px;">
-                       {bullish_score}</div>""" if bullish_score else ""
+                       {_esc(bullish_score)}</div>""" if bullish_score else ""
 
-    linkedin_html = (f'<a href="{linkedin_url}" style="color:#052EF0;font-size:12px;text-decoration:none;">'
+    linkedin_html = (f'<a href="{_esc(linkedin_url)}" style="color:#052EF0;font-size:12px;text-decoration:none;">'
                      f'View LinkedIn &rarr;</a>') if linkedin_url else ""
 
     html = f"""<!DOCTYPE html>
@@ -749,14 +774,14 @@ def send_founder_news_alert(to_email, founder_name, company, bullish_score, new_
         FOUNDER UPDATE
       </h1>
       <p style="margin:8px 0 0;color:#888;font-size:13px;">
-        New press coverage detected for {founder_name} &middot; {company}
+        New press coverage detected for {_esc(founder_name)} &middot; {_esc(company)}
       </p>
     </div>
     <div style="padding:24px 40px;">
       {score_html}
       <div style="font-family:monospace;font-weight:bold;font-size:18px;letter-spacing:2px;
-                  text-transform:uppercase;color:#fff;margin-bottom:4px;">{company}</div>
-      <div style="font-size:13px;color:#888;margin-bottom:4px;">{founder_name}</div>
+                  text-transform:uppercase;color:#fff;margin-bottom:4px;">{_esc(company)}</div>
+      <div style="font-size:13px;color:#888;margin-bottom:4px;">{_esc(founder_name)}</div>
       {linkedin_html}
       <div style="margin-top:20px;">
         <div style="font-size:10px;font-weight:bold;letter-spacing:2px;color:#666;
@@ -811,14 +836,23 @@ def send_watchlist_match_alert(
     Immediate alert: a person from the Bullish watchlist appears as an officer/director
     on a new brand signal (Form D, trademark, or domain registration).
     match_type: 'CONVICTION' or 'ALUMNI'
+
+    The two designations are permanently distinct — a conviction founder and an exit
+    alumnus are never the same claim — so the badge colour and copy differ:
+    CONVICTION renders purple (#7C3AED), ALUMNI amber (#B45309).
+
+    brand_score / watch_level / thesis are routinely None on a brand-new signal that
+    has not been enriched yet; those blocks are simply omitted rather than rendering
+    "None" or raising.
     """
     if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
         return
     from_address = _resend_client()
     app_url = os.environ.get("FRONTEND_URL", "https://brentvartan.github.io/stealth-finder-frontend")
 
-    badge_color  = "#052EF0" if match_type == "CONVICTION" else "#92400E"
-    badge_label  = "⚡ CONVICTION FOUNDER" if match_type == "CONVICTION" else "🏆 EXIT ALUMNI"
+    is_conviction = (match_type or "").upper() == "CONVICTION"
+    badge_color  = "#7C3AED" if is_conviction else "#B45309"
+    badge_label  = "⚡ CONVICTION FOUNDER" if is_conviction else "🏆 EXIT ALUMNI"
     signal_label = {
         "delaware":      "SEC Form D (fundraise disclosure)",
         "trademark":     "USPTO Trademark Filing",
@@ -826,7 +860,7 @@ def send_watchlist_match_alert(
         "domain":        "Domain Registration",
         "press_stealth": "Press Intel",
         "newswire":      "Newswire",
-    }.get(signal_type, signal_type.upper())
+    }.get(signal_type, (signal_type or "signal").upper())
 
     level_color = "#052EF0" if (watch_level or "").lower() == "hot" else (
         "#374151" if (watch_level or "").lower() == "warm" else "#9CA3AF"
@@ -837,10 +871,10 @@ def send_watchlist_match_alert(
         <div style="display:flex;gap:12px;margin-top:20px;">
           <div style="flex:1;background:#111;border-radius:6px;padding:14px;text-align:center;">
             <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Bullish Score</div>
-            <div style="color:#fff;font-family:monospace;font-weight:bold;font-size:28px;">{brand_score}</div>
+            <div style="color:#fff;font-family:monospace;font-weight:bold;font-size:28px;">{_esc(brand_score)}</div>
             <div style="background:{level_color};color:#fff;border-radius:4px;padding:2px 8px;
                         font-family:monospace;font-size:10px;font-weight:bold;letter-spacing:1px;
-                        display:inline-block;margin-top:6px;">{(watch_level or "UNSCORED").upper()}</div>
+                        display:inline-block;margin-top:6px;">{_esc((watch_level or "UNSCORED").upper())}</div>
           </div>
         </div>"""
 
@@ -849,7 +883,7 @@ def send_watchlist_match_alert(
         thesis_html = f"""
         <div style="margin-top:16px;border-left:3px solid #052EF0;padding:10px 14px;background:#111;">
           <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">One-Line Thesis</div>
-          <div style="color:#E5E5E0;font-size:13px;">{thesis}</div>
+          <div style="color:#E5E5E0;font-size:13px;">{_esc(thesis)}</div>
         </div>"""
 
     role_html = ""
@@ -857,7 +891,7 @@ def send_watchlist_match_alert(
         role_html = f"""
         <div style="margin-top:12px;">
           <span style="color:#888;font-size:11px;font-family:monospace;">Role on filing: </span>
-          <span style="color:#E5E5E0;font-size:11px;font-family:monospace;">{match_details['role']}</span>
+          <span style="color:#E5E5E0;font-size:11px;font-family:monospace;">{_esc(match_details['role'])}</span>
         </div>"""
 
     html = f"""<!DOCTYPE html>
@@ -872,11 +906,11 @@ def send_watchlist_match_alert(
       <div style="background:{badge_color};color:#fff;border-radius:6px;padding:6px 14px;
                   font-family:monospace;font-size:11px;font-weight:bold;letter-spacing:2px;
                   display:inline-block;margin-bottom:16px;">{badge_label}</div>
-      <div style="color:#fff;font-size:22px;font-weight:bold;margin-bottom:4px;">{person_name}</div>
-      <div style="color:#888;font-size:12px;font-family:monospace;">appears on a new {signal_label}</div>
+      <div style="color:#fff;font-size:22px;font-weight:bold;margin-bottom:4px;">{_esc(person_name)}</div>
+      <div style="color:#888;font-size:12px;font-family:monospace;">appears on a new {_esc(signal_label)}</div>
       <div style="margin-top:20px;padding:16px;background:#111;border-radius:8px;border:1px solid #222;">
         <div style="color:#888;font-size:10px;font-family:monospace;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Brand</div>
-        <div style="color:#fff;font-size:18px;font-weight:bold;font-family:monospace;">{brand_name}</div>
+        <div style="color:#fff;font-size:18px;font-weight:bold;font-family:monospace;">{_esc(brand_name)}</div>
         {role_html}
       </div>
       {score_html}
@@ -915,7 +949,7 @@ def send_rescore_alert(to_email, brand_name, old_score, new_score, new_signal_ty
     delta = new_score - old_score
     signal_chips = "".join(
         f'<span style="background:#1a1a1a;color:#888;font-size:10px;padding:3px 8px;border-radius:3px;'
-        f'margin-right:4px;text-transform:uppercase;letter-spacing:1px;">{s}</span>'
+        f'margin-right:4px;text-transform:uppercase;letter-spacing:1px;">{_esc(s)}</span>'
         for s in signal_types
     )
     html = f"""<!DOCTYPE html>
@@ -933,26 +967,26 @@ def send_rescore_alert(to_email, brand_name, old_score, new_score, new_signal_ty
     </div>
     <div style="padding:24px 40px;">
       <div style="font-family:monospace;font-weight:bold;font-size:20px;letter-spacing:2px;
-                  text-transform:uppercase;color:#fff;margin-bottom:12px;">{brand_name}</div>
+                  text-transform:uppercase;color:#fff;margin-bottom:12px;">{_esc(brand_name)}</div>
       <table cellpadding="0" cellspacing="0" border="0" style="margin-bottom:16px;">
         <tr>
           <td style="background:#333;color:#888;border-radius:6px;padding:8px 14px;
                      font-family:monospace;font-weight:bold;font-size:20px;text-align:center;">
-            {old_score}
+            {_esc(old_score)}
           </td>
           <td style="padding:0 12px;color:#052EF0;font-size:20px;font-weight:bold;">&rarr;</td>
           <td style="background:#052EF0;color:#fff;border-radius:6px;padding:8px 14px;
                      font-family:monospace;font-weight:bold;font-size:20px;text-align:center;">
-            {new_score}
+            {_esc(new_score)}
           </td>
           <td style="padding-left:12px;color:#16a34a;font-size:13px;font-weight:bold;">
-            +{delta} pts
+            +{_esc(delta)} pts
           </td>
         </tr>
       </table>
       <div style="margin-bottom:12px;">{signal_chips}</div>
-      <p style="font-size:11px;color:#666;margin-bottom:4px;">NEW SIGNAL: <span style="color:#fff;">{new_signal_type.upper()}</span></p>
-      {f'<p style="font-style:italic;color:#888;font-size:13px;border-left:3px solid #052EF0;padding-left:12px;margin-top:12px;">{thesis}</p>' if thesis else ''}
+      <p style="font-size:11px;color:#666;margin-bottom:4px;">NEW SIGNAL: <span style="color:#fff;">{_esc(new_signal_type.upper())}</span></p>
+      {f'<p style="font-style:italic;color:#888;font-size:13px;border-left:3px solid #052EF0;padding-left:12px;margin-top:12px;">{_esc(thesis)}</p>' if thesis else ''}
     </div>
     <div style="padding:0 40px 32px;">
       <a href="{app_url}" style="display:inline-block;background:#052EF0;color:#fff;text-decoration:none;
@@ -1140,9 +1174,9 @@ def send_linkedin_poll_complete_email(
     for c in (stealth_contacts or []):
         stealth_rows += (
             f"<tr>"
-            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:13px;color:#333;'>{c.get('name','')}</td>"
-            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:12px;color:#666;'>{c.get('old_headline','') or '—'}</td>"
-            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:12px;font-weight:600;color:#052EF0;'>{c.get('new_headline','')}</td>"
+            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:13px;color:#333;'>{_esc(c.get('name',''))}</td>"
+            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:12px;color:#666;'>{_esc(c.get('old_headline','') or '—')}</td>"
+            f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:12px;font-weight:600;color:#052EF0;'>{_esc(c.get('new_headline',''))}</td>"
             f"</tr>"
         )
 
@@ -1311,11 +1345,11 @@ def send_founder_radar_poll_complete_email(
         stealth_rows += (
             f"<tr>"
             f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:13px;color:#333;white-space:nowrap;'>"
-            f"{badge} {p.get('name','')}</td>"
+            f"{badge} {_esc(p.get('name',''))}</td>"
             f"<td style='padding:8px 6px;border-bottom:1px solid #E5E5E0;font-size:11px;color:#999;'>"
-            f"{p.get('known_brand','')}</td>"
+            f"{_esc(p.get('known_brand',''))}</td>"
             f"<td style='padding:8px 0;border-bottom:1px solid #E5E5E0;font-size:12px;font-weight:600;color:#052EF0;'>"
-            f"{(p.get('current_company') or p.get('headline',''))[:60]}</td>"
+            f"{_esc((p.get('current_company') or p.get('headline',''))[:60])}</td>"
             f"</tr>"
         )
 

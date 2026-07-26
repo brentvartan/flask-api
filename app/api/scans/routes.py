@@ -1,7 +1,6 @@
 import hashlib
 import json
 import logging
-import os
 import threading
 
 from flask import jsonify, request, current_app
@@ -16,14 +15,8 @@ from ...services.producthunt import search_recent_producthunt
 from ...services.app_store import search_recent_app_store
 from ...services.newswire import search_recent_newswire
 from ...services.ctlogs import search_recent_ct_domains
-from ...services.conviction import check_conviction_match_multi
-from ...services.trademark_assignments import resolve_brand_name
 from ...services.press_stealth import search_recent_press_stealth
-from ...services.exit_watch import (
-    check_exit_alumni_match_multi,
-    detect_acquisition_in_text,
-    add_exit_brand,
-)
+from ...services.signal_pipeline import process_saved_signal, resolve_alert_emails
 
 logger = logging.getLogger(__name__)
 
@@ -33,359 +26,41 @@ def _spawn(fn, *args):
 
 
 def _commit_and_spawn(new_items, user_id, signal_type):
-    """Commit new signal items and spawn enrichment → confluence pipeline."""
+    """Commit new signal items and spawn the shared post-save pipeline."""
     if not new_items:
         return
     db.session.commit()
     app = current_app._get_current_object()
     new_ids = [i.id for i in new_items]
-    _spawn(_enrich_items_in_background, app, new_ids)
-    # Confluence now runs inside _enrich_items_in_background AFTER scoring, so the
-    # alert can be gated by confluence.should_send_confluence_alert() instead of
-    # firing blind. Do not re-add a parallel confluence spawn here — that race is
-    # what flooded the inbox with COLD brands (2026-07-25).
+    _spawn(_process_items_in_background, app, new_ids)
+    # Confluence runs INSIDE the pipeline, sequentially, after enrichment — do not
+    # re-add a parallel confluence spawn here. That race is what flooded the inbox
+    # with COLD brands (2026-07-25): confluence always won and emailed with no score.
 
 
-def _get_alert_emails() -> list:
-    """Return the list of alert email addresses from DB settings or env var."""
-    alert_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
-    try:
-        settings_item = Item.query.filter_by(title="__bullish_settings__").first()
-        if settings_item:
-            settings = json.loads(settings_item.description or "{}")
-            emails = settings.get("alert_emails", [])
-            if emails:
-                return [e.strip() for e in emails if e.strip()]
-    except Exception:
-        pass
-    return [e.strip() for e in alert_emails_str.split(",") if e.strip()]
-
-
-def _check_confluence_in_background(app, item_id: int, owner_id: int,
-                                     brand_name: str, signal_type: str,
-                                     source_url: str = None,
-                                     person_keys: list = None,
-                                     coined_term_keys: list = None):
-    """Background thread: record signal event and fire confluence alert if triggered."""
-    from ...services.confluence import record_signal_and_check_confluence, send_confluence_alert_for_hit
-
-    with app.app_context():
-        try:
-            result = record_signal_and_check_confluence(
-                item_id=item_id,
-                owner_id=owner_id,
-                brand_name=brand_name,
-                signal_type=signal_type,
-                source_url=source_url,
-                person_keys=person_keys,
-                coined_term_keys=coined_term_keys,
-            )
-            if result["is_confluence"]:
-                alert_emails = _get_alert_emails()
-                if alert_emails and result.get("hit_id"):
-                    send_confluence_alert_for_hit(result["hit_id"], alert_emails)
-                    logger.info("Confluence alert sent for %s (%d signals)", brand_name, result["signal_count"])
-        except Exception as exc:
-            logger.warning("Confluence check failed for item %s: %s", item_id, exc)
-
-
-def _enrich_items_in_background(app, item_ids: list):
+def _process_items_in_background(app, item_ids: list):
     """
-    Background thread: enrich newly saved signals with Bullish AI immediately
-    after a manual scan completes. Mirrors what run_scan_now() does for scheduled scans.
-    """
-    from ...services.enrichment import enrich_signal
-    from ...services.founder_enrichment import run_founder_enrichment_in_background
+    Background thread: run the shared post-save pipeline over newly saved signals
+    from a manual scan.
 
+    The pipeline (app/services/signal_pipeline.py) is the SAME one the nightly
+    scan calls, so a manual scan and a scheduled scan do identical work. This
+    function must stay a thin loop — every previous attempt to "just add one
+    thing here" is why the two paths diverged.
+    """
     with app.app_context():
+        # Resolved once per batch rather than per signal.
+        alert_emails = resolve_alert_emails()
         for item_id in item_ids:
             try:
-                item = db.session.get(Item, item_id)
-                if not item:
-                    continue
-                meta = json.loads(item.description or "{}")
-                if meta.get("_type") != "signal":
-                    continue
-
-                # Extract owner name from USPTO notes if present
-                notes = meta.get("notes", "")
-                owner = ""
-                if notes.lower().startswith("owner:"):
-                    part = notes[6:].strip()
-                    dot = part.find(". ")
-                    owner = part[:dot].strip() if dot > 0 else part.strip()
-
-                # ── Trademark assignment chain resolution ──────────────────
-                # If this is a trademark, check for entity-name reassignments
-                # (e.g. "Lightyear Inc" filed, later assigned to "Filament Sciences").
-                # The resolved name becomes the company name for enrichment.
-                sig_type = meta.get("signal_type", "trademark")
-                if sig_type == "trademark" and owner:
-                    try:
-                        assignment = resolve_brand_name(
-                            original_owner=owner,
-                            notes=notes,
-                            description=meta.get("description", ""),
-                        )
-                        if assignment.get("has_assignment") and assignment.get("resolved_name"):
-                            meta["stealth_entity"]    = assignment["stealth_entity"]
-                            meta["resolved_owner"]    = assignment["resolved_name"]
-                            meta["serial_number"]     = assignment["serial_number"]
-                            item.description = json.dumps(meta, separators=(",", ":"))
-                            db.session.commit()
-                            logger.info(
-                                "Assignment resolved: '%s' → '%s' for item %s",
-                                assignment["stealth_entity"], assignment["resolved_name"], item_id,
-                            )
-                    except Exception as _assign_exc:
-                        logger.debug("Assignment check skipped for item %s: %s", item_id, _assign_exc)
-
-                # ── Conviction founder check ───────────────────────────────
-                # Match owner, notes, and description against conviction list.
-                # Sets conviction_match in meta BEFORE enrichment so Claude can
-                # factor in the founder context.
-                conviction = check_conviction_match_multi([
-                    owner,
-                    notes,
-                    meta.get("description", ""),
-                    meta.get("company_name", item.title),
-                ])
-                if conviction:
-                    meta["conviction_match"] = conviction
-                    item.description = json.dumps(meta, separators=(",", ":"))
-                    db.session.commit()
-                    logger.info(
-                        "Conviction match: '%s' in signal '%s' (item %s)",
-                        conviction["name"], meta.get("company_name"), item_id,
+                outcome = process_saved_signal(item_id, alert_emails=alert_emails)
+                if outcome.get("errors"):
+                    logger.warning(
+                        "Signal pipeline degraded for item %s: %s",
+                        item_id, "; ".join(outcome["errors"]),
                     )
-
-                # ── Exit alumni name check (same mechanism as conviction) ────
-                # Catches #2–4 operators from notable exits who aren't in the
-                # main conviction list but deserve an ALUMNI badge + boost.
-                if not conviction:
-                    alumni_match = check_exit_alumni_match_multi([
-                        owner,
-                        notes,
-                        meta.get("description", ""),
-                        meta.get("company_name", item.title),
-                    ])
-                    if alumni_match:
-                        meta["exit_alumni_match"] = alumni_match
-                        item.description = json.dumps(meta, separators=(",", ":"))
-                        db.session.commit()
-                        logger.info(
-                            "Exit alumni match: '%s' in signal '%s' (item %s)",
-                            alumni_match["name"], meta.get("company_name"), item_id,
-                        )
-
-                # ── Form D related persons extraction ──────────────────────
-                # For Form D signals: fetch the EDGAR XML filing and extract
-                # every named Director/Officer.  Check each against conviction
-                # list and exit alumni list.  If a match is found and there's
-                # no existing conviction_match, promote it.
-                if sig_type == "delaware":
-                    _adsh = meta.get("_adsh", "")
-                    _cik  = meta.get("_cik", "")
-                    if _adsh and _cik:
-                        try:
-                            from ...services.delaware import fetch_form_d_related_persons
-                            related = fetch_form_d_related_persons(_adsh, _cik)
-                            if related:
-                                enriched_related = []
-                                for person in related:
-                                    pname = person["name"]
-                                    p_conv   = check_conviction_match_multi([pname])
-                                    p_alumni = check_exit_alumni_match_multi([pname]) if not p_conv else None
-                                    enriched_related.append({
-                                        **person,
-                                        "conviction_match":   p_conv,
-                                        "exit_alumni_match":  p_alumni,
-                                    })
-
-                                meta["related_persons"] = enriched_related
-                                item.description = json.dumps(meta, separators=(",", ":"))
-                                db.session.commit()
-                                logger.info(
-                                    "Form D related persons: %d found for item %s",
-                                    len(enriched_related), item_id,
-                                )
-
-                                # Promote to conviction/alumni if no existing match
-                                if not conviction and not meta.get("exit_alumni_match"):
-                                    for rp in enriched_related:
-                                        if rp.get("conviction_match"):
-                                            meta["conviction_match"] = rp["conviction_match"]
-                                            conviction = rp["conviction_match"]
-                                            item.description = json.dumps(meta, separators=(",", ":"))
-                                            db.session.commit()
-                                            logger.info(
-                                                "Related person conviction: '%s' promoted for item %s",
-                                                rp["conviction_match"]["name"], item_id,
-                                            )
-                                            break
-                                        elif rp.get("exit_alumni_match"):
-                                            meta["exit_alumni_match"] = rp["exit_alumni_match"]
-                                            item.description = json.dumps(meta, separators=(",", ":"))
-                                            db.session.commit()
-                                            logger.info(
-                                                "Related person alumni: '%s' promoted for item %s",
-                                                rp["exit_alumni_match"]["name"], item_id,
-                                            )
-                                            break
-                        except Exception as _rp_exc:
-                            logger.debug(
-                                "Form D related persons check skipped for item %s: %s",
-                                item_id, _rp_exc,
-                            )
-
-                # ── Acquisition detection for press/newswire signals ───────
-                # When an article announces an acquisition, add the brand to
-                # the exit watch list so future signals from that brand's alumni
-                # can be cross-referenced.
-                if sig_type in ("press_stealth", "newswire"):
-                    try:
-                        acq_brand = detect_acquisition_in_text(
-                            meta.get("description", "") + " " + notes
-                        )
-                        if acq_brand:
-                            add_exit_brand(
-                                acq_brand,
-                                notes=f"Auto-detected from {sig_type} signal",
-                            )
-                            logger.info(
-                                "Exit watch: auto-added '%s' from %s (item %s)",
-                                acq_brand, sig_type, item_id,
-                            )
-                    except Exception as _acq_exc:
-                        logger.debug(
-                            "Acquisition detection skipped for item %s: %s",
-                            item_id, _acq_exc,
-                        )
-
-                enrichment = enrich_signal({
-                    "companyName": meta.get("resolved_owner") or meta.get("company_name", item.title),
-                    "category":    meta.get("category", ""),
-                    "signal_type": sig_type,
-                    "description": meta.get("description", ""),
-                    "notes":       notes,
-                    "owner":       meta.get("resolved_owner") or owner,
-                    "conviction_match": conviction,
-                })
-
-                if enrichment.get("enriched"):
-                    meta["enrichment"] = enrichment
-                    item.description = json.dumps(meta, separators=(",", ":"))
-                    db.session.commit()
-                    logger.info(
-                        "Auto-enriched %s (item %s) → %s / score %s",
-                        meta.get("company_name"), item_id,
-                        enrichment.get("watch_level"), enrichment.get("bullish_score"),
-                    )
-
-                    # Spawn founder enrichment for HOT brands — lower threshold for newswire
-                    # (brand just broke cover, highest urgency to identify founder immediately)
-                    _sig_type_check = meta.get("signal_type", "trademark")
-                    _founder_threshold = 50 if _sig_type_check == "newswire" else 70
-                    if (
-                        enrichment.get("bullish_score", 0) >= _founder_threshold
-                        and enrichment.get("founder", {}).get("confidence") == "unknown"
-                    ):
-                        alert_emails = _get_alert_emails()
-                        brand_name = meta.get("company_name", item.title)
-                        category = meta.get("category", "")
-                        one_line_thesis = enrichment.get("one_line_thesis", "")
-                        filer_name = owner or None
-                        logger.info(
-                            "Triggering founder enrichment for HOT brand '%s' (item %s)",
-                            brand_name, item_id,
-                        )
-                        run_founder_enrichment_in_background(
-                            app=app,
-                            item_id=item_id,
-                            brand_name=brand_name,
-                            category=category,
-                            one_line_thesis=one_line_thesis,
-                            filer_name=filer_name,
-                            alert_emails=alert_emails,
-                        )
-
-                    # Auto-add HOT brands to watchlist
-                    if enrichment.get("watch_level") == "hot":
-                        try:
-                            from ...services.watchlist import auto_add_to_watchlist
-                            _brand_name = meta.get("company_name", item.title)
-                            _founder = enrichment.get("founder", {})
-                            _sig_type = meta.get("signal_type", "trademark")
-                            _sig_types = [_sig_type] if isinstance(_sig_type, str) else [_sig_type]
-                            _user_id = item.owner_id
-                            threading.Thread(
-                                target=auto_add_to_watchlist,
-                                args=(
-                                    app.app_context(),
-                                    _user_id,
-                                    _brand_name,
-                                    item_id,
-                                    enrichment.get("bullish_score"),
-                                    _founder.get("name") if _founder.get("confidence") != "unknown" else None,
-                                    (enrichment.get("founder_score") or {}).get("total"),
-                                    _founder.get("linkedin_url"),
-                                    enrichment.get("one_line_thesis", ""),
-                                    enrichment.get("cultural_theme", ""),
-                                    _sig_types,
-                                ),
-                                daemon=True,
-                            ).start()
-                        except Exception as _wl_exc:
-                            logger.warning("Auto-watchlist trigger failed for item %s: %s", item_id, _wl_exc)
-
-                # ── Confluence check (post-enrichment, score-gated) ───────────────
-                # Runs after enrichment so bullish_score is available to gate the
-                # email. COLD brands (<50) are recorded in the DB but don't email.
-                try:
-                    from ...services.confluence import (
-                        extract_person_keys, extract_coined_term_keys,
-                        record_signal_and_check_confluence, send_confluence_alert_for_hit,
-                        should_send_confluence_alert,
-                    )
-                    _meta_now = json.loads(item.description or "{}")
-                    _person_names = (
-                        [rp["name"] for rp in _meta_now.get("related_persons", []) if rp.get("name")]
-                        + [n for n in [_meta_now.get("owner"), _meta_now.get("filer_name")] if n]
-                    )
-                    _conf_enrichment = _meta_now.get("enrichment") if enrichment.get("enriched") else None
-                    _conf_result = record_signal_and_check_confluence(
-                        item_id=item_id,
-                        owner_id=item.owner_id,
-                        brand_name=_meta_now.get("company_name") or item.title,
-                        signal_type=sig_type,
-                        source_url=_meta_now.get("url"),
-                        enrichment=_conf_enrichment,
-                        person_keys=extract_person_keys(_person_names),
-                        coined_term_keys=extract_coined_term_keys(
-                            _meta_now.get("company_name") or item.title
-                        ),
-                    )
-                    _conf_score = enrichment.get("bullish_score") if enrichment.get("enriched") else None
-                    if _conf_result["is_confluence"] and _conf_result.get("hit_id"):
-                        if should_send_confluence_alert(_conf_score):
-                            _conf_emails = _get_alert_emails()
-                            if _conf_emails:
-                                send_confluence_alert_for_hit(_conf_result["hit_id"], _conf_emails)
-                                logger.info(
-                                    "Confluence alert sent for %s (score=%s, %d signals)",
-                                    _meta_now.get("company_name") or item.title,
-                                    _conf_score, _conf_result["signal_count"],
-                                )
-                        else:
-                            logger.info(
-                                "Confluence detected, email suppressed for %s (score=%s) — below threshold",
-                                _meta_now.get("company_name") or item.title, _conf_score,
-                            )
-                except Exception as _conf_exc:
-                    logger.warning("Confluence check failed for item %s: %s", item_id, _conf_exc)
-
             except Exception as exc:
-                logger.warning("Background enrichment failed for item %s: %s", item_id, exc)
+                logger.warning("Signal pipeline failed for item %s: %s", item_id, exc)
 
 
 def _make_fingerprint(signal_type: str, company_name: str, timestamp: str) -> str:
@@ -503,6 +178,11 @@ def run_trademark_scan():
                 "description":      sig["description"],
                 "url":              sig["url"],
                 "notes":            sig.get("notes", ""),
+                # Owner is first-class on trademark signals (see trademarks.py) and
+                # feeds person-key confluence, people matching and the enrichment
+                # prompt. The scheduled path persists it too — keep them in step.
+                "owner":            sig.get("owner"),
+                "owner_is_person":  sig.get("owner_is_person", False),
                 "timestamp":        sig["timestamp"],
             }, separators=(",", ":")),
         )
@@ -596,6 +276,20 @@ def run_delaware_scan():
                 "timestamp":    sig["timestamp"],
                 "_adsh":        sig.get("_adsh", ""),
                 "_cik":         sig.get("_cik", ""),
+                # Keep in step with the whitelist in scheduler.py::run_scan_now.
+                # delaware.py already computed all of these during the scan;
+                # dropping them here made the manual path lose the officer names,
+                # the promoted conviction/alumni match and the raise size — the
+                # exact scheduled-vs-manual divergence P1 exists to end. A
+                # dropped exit_alumni_match also silently disarms the immediate
+                # ALUMNI watchlist alert.
+                "related_persons":    sig.get("related_persons") or [],
+                "filer_name":         sig.get("filer_name"),
+                "conviction_match":   sig.get("conviction_match"),
+                "exit_alumni_match":  sig.get("exit_alumni_match"),
+                "total_offering":     sig.get("total_offering"),
+                "amount_sold":        sig.get("amount_sold"),
+                "minimum_investment": sig.get("minimum_investment"),
             }, separators=(",", ":")),
         )
         db.session.add(item)
@@ -953,7 +647,7 @@ def run_press_stealth_scan():
     19 months before the Series A announcement.
 
     When a conviction founder's name appears in the article, the conviction
-    check in _enrich_items_in_background will flag it automatically.
+    check in the shared post-save pipeline will flag it automatically.
 
     Request body (all optional):
         days_back   int   Days of articles to include (1–30, default 14)

@@ -330,6 +330,92 @@ def _find_cluster(
     return earliest.brand_key, earliest.brand_name, all_matching
 
 
+# Safety valve for the cluster expansion below. Two passes is the realistic
+# maximum (pass 1 finds the cluster, pass 2 confirms no growth); anything beyond
+# that means the key graph is chaining further than expected and we stop rather
+# than scan the owner's whole signal history indefinitely.
+_MAX_CLUSTER_EXPANSION_PASSES = 4
+
+
+def _event_keys(event) -> tuple[set, set]:
+    """Return (person_keys, coined_term_keys) parsed off a SignalEvent row."""
+    try:
+        return (
+            set(json.loads(event.person_keys or '[]')),
+            set(json.loads(event.coined_term_keys or '[]')),
+        )
+    except (TypeError, ValueError):
+        logger.warning(
+            "SignalEvent %s has unparseable cluster keys — excluded from alert cluster",
+            event.id,
+        )
+        return set(), set()
+
+
+def _cluster_events_for_hit(hit) -> list:
+    """
+    Re-resolve the SAME cluster that produced a ConfluenceHit, oldest first.
+
+    A ConfluenceHit records only owner_id + the canonical brand_key, but
+    _find_cluster deliberately clusters across brand_key OR shared person key OR
+    shared coined-term key. Re-reading the timeline with a brand_key filter alone
+    therefore drops exactly the cross-key evidence the alert exists to show —
+    Form D "Lightyear Incorporated" + trademark "Filament Sciences", both naming
+    John Doe, rendered as a one-row timeline with span_days=0 while the header
+    above it claimed 2 signals.
+
+    Reconstruction seeds from the canonical brand_key's own events, unions the
+    person/coined-term keys recorded on everything _find_cluster returns, and
+    re-runs _find_cluster until the set stops growing. Matching is symmetric, so
+    every member the hit was built from is reachable this way — including a member
+    that was chained in through the triggering signal rather than through the
+    canonical brand_key (a 3-signal cluster where a single seeded pass would show
+    only 2 rows against a header claiming 3).
+
+    Every merge is performed by _find_cluster itself. No second, divergent notion
+    of a cluster is introduced, and the timeline can never show an event that the
+    production cluster logic would not have merged into this brand's cluster.
+    """
+    from ..models.signal_event import SignalEvent
+
+    events_by_id = {
+        ev.id: ev
+        for ev in SignalEvent.query.filter_by(
+            owner_id=hit.owner_id, brand_key=hit.brand_key,
+        ).all()
+    }
+
+    person_keys: set[str] = set()
+    coined_term_keys: set[str] = set()
+
+    for _pass in range(_MAX_CLUSTER_EXPANSION_PASSES):
+        before_keys = (len(person_keys), len(coined_term_keys))
+        before_events = len(events_by_id)
+
+        for ev in list(events_by_id.values()):
+            ev_persons, ev_coined = _event_keys(ev)
+            person_keys.update(ev_persons)
+            coined_term_keys.update(ev_coined)
+
+        _canonical_key, _canonical_name, matched = _find_cluster(
+            hit.owner_id, hit.brand_key, sorted(person_keys), sorted(coined_term_keys),
+        )
+        for ev in matched:
+            events_by_id.setdefault(ev.id, ev)
+
+        if (len(person_keys), len(coined_term_keys)) == before_keys and \
+                len(events_by_id) == before_events:
+            break
+    else:
+        logger.warning(
+            "Confluence alert cluster for %s did not converge in %d passes — "
+            "alerting on the %d events found so far",
+            hit.brand_key, _MAX_CLUSTER_EXPANSION_PASSES, len(events_by_id),
+        )
+
+    return sorted(events_by_id.values(), key=lambda e: e.detected_at)
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def record_signal_and_check_confluence(
@@ -455,20 +541,16 @@ def send_confluence_alert_for_hit(hit_id: int, alert_emails: list) -> bool:
     """
     from ..extensions import db
     from ..models.confluence_hit import ConfluenceHit
-    from ..models.signal_event import SignalEvent
     from ..services.email import send_confluence_alert
 
     hit = db.session.get(ConfluenceHit, hit_id)
     if not hit or hit.alert_sent:
         return False
 
-    # Build timeline: one row per signal type with earliest detection date
-    events = (
-        SignalEvent.query
-        .filter_by(owner_id=hit.owner_id, brand_key=hit.brand_key)
-        .order_by(SignalEvent.detected_at.asc())
-        .all()
-    )
+    # Build timeline: one row per signal type with earliest detection date.
+    # Must be the FULL cluster (brand_key + person-key + coined-term-key matches),
+    # not a brand_key-only re-query — see _cluster_events_for_hit.
+    events = _cluster_events_for_hit(hit)
 
     # Deduplicate to first occurrence per signal_type
     seen = {}
@@ -485,7 +567,7 @@ def send_confluence_alert_for_hit(hit_id: int, alert_emails: list) -> bool:
         for ev in seen.values()
     ]
 
-    # Calculate days since first signal
+    # Calculate days between the first and latest signal in the TRUE cluster
     if len(events) >= 2:
         span_days = (events[-1].detected_at - events[0].detected_at).days
     else:

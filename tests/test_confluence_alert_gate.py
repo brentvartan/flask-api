@@ -25,6 +25,13 @@ from app.services.confluence import (
 )
 
 _APP = Path(__file__).resolve().parent.parent / "app"
+# Both scan paths now delegate every post-save step — including the confluence
+# email gate — to the shared pipeline, so THAT is the file to guard against
+# drift. Before P1 these two entry points each carried their own copy of the
+# gate and diverged three separate times; asserting on them individually is what
+# that duplication forced. Keep the entry points listed so a future inline copy
+# of the gate is still caught.
+_PIPELINE_PATH  = _APP / "services" / "signal_pipeline.py"
 _MANUAL_PATH    = _APP / "api" / "scans" / "routes.py"
 _SCHEDULED_PATH = _APP / "services" / "scheduler.py"
 
@@ -82,8 +89,7 @@ def test_garbage_score_does_not_alert():
 # ── Divergence guard ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("path,label", [
-    (_MANUAL_PATH,    "manual scan path"),
-    (_SCHEDULED_PATH, "scheduled scan path"),
+    (_PIPELINE_PATH,  "shared signal pipeline"),
 ])
 def test_scan_path_uses_shared_gate(path, label):
     """Both paths must call the shared helper, not their own comparison."""
@@ -95,8 +101,7 @@ def test_scan_path_uses_shared_gate(path, label):
 
 
 @pytest.mark.parametrize("path,label", [
-    (_MANUAL_PATH,    "manual scan path"),
-    (_SCHEDULED_PATH, "scheduled scan path"),
+    (_PIPELINE_PATH,  "shared signal pipeline"),
 ])
 def test_scan_path_does_not_inline_threshold(path, label):
     """
@@ -119,7 +124,7 @@ def test_scan_path_does_not_inline_threshold(path, label):
 def test_threshold_is_defined_once():
     """The literal 50 should live in exactly one place."""
     assert CONFLUENCE_ALERT_MIN_SCORE == 50
-    for path in (_MANUAL_PATH, _SCHEDULED_PATH):
+    for path in (_PIPELINE_PATH,):
         assert "CONFLUENCE_ALERT_MIN_SCORE = " not in path.read_text(), (
             f"{path.name} redefines the threshold instead of importing it."
         )
