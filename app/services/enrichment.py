@@ -25,6 +25,13 @@ def _get_client():
     return _client
 
 
+# WARM starts at 50. A single legal filing that lands within this many points of
+# it is treated as a near miss and floored up rather than buried as COLD — the
+# model is reading a sparse trademark record, so the boundary is genuinely fuzzy.
+# Set from the live score distribution: this band is ~14% of scored signals,
+# against ~88% if any legal signal were floored unconditionally.
+_TIER_FLOOR_NEAR_MISS = 35
+
 SYSTEM_PROMPT = """You are a senior investment analyst at Bullish, a New York-based seed-stage consumer brand venture fund. Your job is to evaluate whether a newly filed trademark represents a potential Bullish investment opportunity — recognizing that at this stage, we're reading early signals, not evaluating a pitch deck.
 
 BULLISH IN A NUTSHELL:
@@ -391,12 +398,43 @@ def enrich_signal(signal: dict) -> dict:
         _has_form_d     = "delaware"  in _signal_types
         _level          = result.get("watch_level", "cold")
 
+        try:
+            _score = float(result.get("bullish_score") or 0)
+        except (TypeError, ValueError):
+            _score = 0.0
+
         if _has_conviction:
             result["watch_level"]       = "hot"
             result["tier_floor_reason"] = "conviction_match"
-        elif (_has_tm or _has_form_d) and _level == "cold":
-            result["watch_level"]       = "warm"
-            result["tier_floor_reason"] = "tm_plus_form_d" if (_has_tm and _has_form_d) else ("trademark" if _has_tm else "form_d")
+        elif _level == "cold" and (_has_tm or _has_form_d):
+            # Floor a COLD legal signal up to WARM only when there is a reason
+            # to look again. Two qualify:
+            #   • TRIANGULATION — a brand filing BOTH a trademark and a Form D is
+            #     being built across two independent legal channels. That is the
+            #     core edge and it outranks the model's read of a sparse filing.
+            #   • NEAR MISS — a single legal signal that scored within
+            #     _TIER_FLOOR_NEAR_MISS of WARM. A 47 should not read the same
+            #     as a 4.
+            #
+            # This condition used to be simply (has_trademark or has_form_d),
+            # which is trivially true for EVERY trademark. It was dead code until
+            # P1 started passing signal_types, and measured against the live
+            # corpus it would have promoted 88% of all scored signals — including
+            # 260 that scored 0 because they failed the consumer gate outright
+            # (B2B, ad-supported, already-established brands). A tier every
+            # signal reaches is not a tier, and it would have buried the ~11%
+            # that genuinely earned WARM.
+            #
+            # Nothing is hidden either way: COLD signals stay in the database and
+            # on the dashboard. This only governs the badge the team triages on,
+            # so it ranks rather than gates — consistent with the consumer gate
+            # staying default-include.
+            if _has_tm and _has_form_d:
+                result["watch_level"]       = "warm"
+                result["tier_floor_reason"] = "tm_plus_form_d"
+            elif _score >= _TIER_FLOOR_NEAR_MISS:
+                result["watch_level"]       = "warm"
+                result["tier_floor_reason"] = "trademark_near_miss" if _has_tm else "form_d_near_miss"
 
         result["enriched"] = True
         return result
