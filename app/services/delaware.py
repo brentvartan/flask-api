@@ -28,6 +28,20 @@ logger = logging.getLogger(__name__)
 EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
 REQUEST_TIMEOUT  = 20
 
+# ─── EDGAR resilience knobs ──────────────────────────────────────────────────
+# efts.sec.gov intermittently returns 500s during SEC's overnight maintenance
+# window (the same URL is healthy at midday).  With zero retry, one transient
+# blip killed an entire night's Form D collection, so every full-text query
+# retries with exponential backoff before giving up.
+EDGAR_MAX_ATTEMPTS    = 4                        # 1 initial try + 3 retries
+EDGAR_BACKOFF_BASE    = 2                        # sleeps of 2s, 4s, 8s
+EDGAR_MAX_BACKOFF     = 60                       # ceiling for a Retry-After header
+EDGAR_RETRY_STATUSES  = {429, 500, 502, 503, 504}
+
+# When the count probe itself fails, sweep this many filings blind rather than
+# returning nothing — a probe outage must degrade coverage, never zero it.
+EDGAR_PROBE_FALLBACK_FILINGS = 1500
+
 # Form D "items" codes that indicate investment funds / VC vehicles — not
 # operating companies.  We exclude filings whose ONLY item codes are these.
 # NOTE: "06a"/"06b"/"06c" (Reg D Rule 506 exemptions) must NOT be here —
@@ -314,27 +328,93 @@ def fetch_form_d_related_persons(adsh: str, cik: str) -> list[dict]:
         return []
 
 
+def _retry_after_seconds(resp, default: float) -> float:
+    """
+    Read a Retry-After header (delta-seconds form) off a 429, falling back to
+    `default` when it is absent or not a plain number.  Clamped so a hostile or
+    malformed header can never stall the nightly job.
+    """
+    raw = ""
+    try:
+        raw = (resp.headers.get("Retry-After") or "").strip()
+    except Exception:          # headers missing / not a mapping
+        return default
+    try:
+        wait = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(wait, EDGAR_MAX_BACKOFF))
+
+
 def _edgar_query(q: str, start_str: str, end_str: str, from_: int, size: int) -> dict:
-    """Run one EDGAR full-text Form D query and return raw JSON."""
-    resp = requests.get(
-        EDGAR_SEARCH_URL,
-        params={
-            "q":         q,
-            "forms":     "D",
-            "dateRange": "custom",
-            "startdt":   start_str,
-            "enddt":     end_str,
-            "from":      from_,
-            "size":      size,
-        },
-        headers={
-            "User-Agent": "Bullish Stealth Finder research@bullish.co",
-            "Accept":     "application/json",
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    """
+    Run one EDGAR full-text Form D query and return raw JSON.
+
+    Retries up to EDGAR_MAX_ATTEMPTS times with exponential backoff (2s/4s/8s)
+    on HTTP 5xx, HTTP 429 (honouring Retry-After), and on connection/timeout
+    errors.  A 4xx other than 429 is our own bug, not SEC's — those raise on
+    the first response with no retry.
+
+    Raises requests.RequestException (HTTPError included) when every attempt
+    fails, so the existing caller contract is unchanged.
+    """
+    params = {
+        "q":         q,
+        "forms":     "D",
+        "dateRange": "custom",
+        "startdt":   start_str,
+        "enddt":     end_str,
+        "from":      from_,
+        "size":      size,
+    }
+    headers = {
+        # SEC asks every automated client to identify itself — keep this.
+        "User-Agent": "Bullish Stealth Finder research@bullish.co",
+        "Accept":     "application/json",
+    }
+
+    for attempt in range(EDGAR_MAX_ATTEMPTS):
+        is_last = attempt == EDGAR_MAX_ATTEMPTS - 1
+        backoff = EDGAR_BACKOFF_BASE * (2 ** attempt)   # 2, 4, 8, …
+
+        try:
+            resp = requests.get(
+                EDGAR_SEARCH_URL,
+                params=params,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            if is_last:
+                logger.warning(
+                    "EDGAR query failed after %d attempts (network): %s",
+                    EDGAR_MAX_ATTEMPTS, exc,
+                )
+                raise
+            logger.warning(
+                "EDGAR query network error (attempt %d/%d): %s — retrying in %.0fs",
+                attempt + 1, EDGAR_MAX_ATTEMPTS, exc, backoff,
+            )
+            time.sleep(backoff)
+            continue
+
+        status = getattr(resp, "status_code", None)
+        if status in EDGAR_RETRY_STATUSES and not is_last:
+            wait = _retry_after_seconds(resp, backoff) if status == 429 else backoff
+            logger.warning(
+                "EDGAR query HTTP %s (attempt %d/%d) — retrying in %.0fs",
+                status, attempt + 1, EDGAR_MAX_ATTEMPTS, wait,
+            )
+            time.sleep(wait)
+            continue
+
+        # Success, a non-retryable 4xx, or a retryable status on the final
+        # attempt — raise_for_status() turns the last two into an HTTPError.
+        resp.raise_for_status()
+        return resp.json()
+
+    # Unreachable: the loop always returns or raises.
+    raise requests.RequestException("EDGAR query exhausted all attempts")
 
 
 def _extract_signal(src: dict, seen_names: set, end_dt: datetime) -> dict | None:
@@ -513,12 +593,19 @@ def search_recent_delaware_entities(
 
     Domain corroboration is handled by CT logs (ctlogs.py) — not DomainsDB.
 
+    RESILIENCE: every EDGAR call retries with backoff (_edgar_query). If the
+    count probe still fails, we do not bail out — we sweep a fixed
+    EDGAR_PROBE_FALLBACK_FILINGS-deep page range instead, so an SEC outage
+    costs coverage rather than the whole night's Form D collection.
+
     Returns:
         {
             "signals":      list of signal dicts,
-            "total_found":  int,
+            "total_found":  int (filings in window; a swept-count FLOOR when
+                                 the count probe was unavailable),
             "fetched":      int (Form D signals only),
-            "error":        str | None,
+            "error":        str | None (set only on a mid-sweep page failure;
+                                 partial signals are still returned),
         }
 
     Each Form D signal dict may carry:
@@ -530,24 +617,39 @@ def search_recent_delaware_entities(
     start_str = start_dt.strftime("%Y-%m-%d")
     end_str   = end_dt.strftime("%Y-%m-%d")
 
-    signals     = []
-    total_found = 0
-    seen_names  = set()
-    page_size   = 100
-    error       = None
+    signals      = []
+    total_found  = 0
+    seen_names   = set()
+    page_size    = 100
+    error        = None
+    probe_failed = False
+    raw_seen     = 0          # filings actually swept — the total_found floor
 
     # ── Probe: discover true Form D count in this window ──────────────────────
     try:
         probe       = _edgar_query("", start_str, end_str, 0, 1)
         total_found = probe.get("hits", {}).get("total", {}).get("value", 0)
     except requests.RequestException as exc:
-        return {"signals": [], "total_found": 0,
-                "fetched": 0, "error": str(exc)}
+        # Probe outage must degrade coverage, not zero it.  We do NOT set
+        # "error" here: callers treat a non-null error as "discard this
+        # collection", and a blind sweep still returns real Form D signals.
+        probe_failed = True
+        logger.warning(
+            "EDGAR count probe failed after retries (%s) — falling back to a "
+            "blind sweep of up to %d filings",
+            exc, min(EDGAR_PROBE_FALLBACK_FILINGS, max_filings),
+        )
 
     # ── Broad sweep: cover the full universe up to max_filings ────────────────
-    pages_needed = (total_found + page_size - 1) // page_size
-    pages_cap    = (max_filings + page_size - 1) // page_size
-    pages_broad  = min(pages_needed, pages_cap)
+    pages_cap = (max_filings + page_size - 1) // page_size
+    if probe_failed:
+        # Unknown total: sweep a sane fixed depth and let the empty-page break
+        # below stop us early if the window is smaller than the fallback.
+        fallback_filings = min(EDGAR_PROBE_FALLBACK_FILINGS, max_filings)
+        pages_broad      = max(1, (fallback_filings + page_size - 1) // page_size)
+    else:
+        pages_needed = (total_found + page_size - 1) // page_size
+        pages_broad  = min(pages_needed, pages_cap)
 
     for page in range(pages_broad):
         if len(signals) >= max_results:
@@ -561,6 +663,7 @@ def search_recent_delaware_entities(
         raw_hits = data.get("hits", {}).get("hits", [])
         if not raw_hits:
             break
+        raw_seen += len(raw_hits)
 
         for hit in raw_hits:
             if len(signals) >= max_results:
@@ -580,6 +683,11 @@ def search_recent_delaware_entities(
     # Strip internal-only keys before returning
     for s in signals:
         s.pop("_name", None)
+
+    # Probe outage: report the filings we actually saw as the total floor
+    # rather than a bare 0, so the number never reads as "nothing was filed".
+    if probe_failed:
+        total_found = raw_seen
 
     return {
         "signals":     signals,

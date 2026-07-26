@@ -24,6 +24,32 @@ def _job_lock_key(job_id: str) -> str:
     return f"__jlock_{job_id}__"
 
 
+# ─── System-row ownership ─────────────────────────────────────────────────────
+
+def _system_owner_id():
+    """
+    Resolve a REAL users.id to own scheduler bookkeeping rows (heartbeat,
+    job-lock TTL).
+
+    Item.owner_id is a NOT NULL FK to users.id. These rows used to hardcode
+    owner_id=1, and production has no user 1 — so every insert raised an
+    IntegrityError that the surrounding broad except swallowed, permanently
+    zeroing the heartbeat and the lock TTL row.
+
+    Prefers the lowest-id admin, falls back to the lowest-id user, and returns
+    None when the users table is empty (callers must skip the write, not raise).
+    Deliberately NOT cached: a user deleted later must not poison the process.
+
+    Must be called inside an app context.
+    """
+    from ..models.user import User
+    row = (
+        User.query.filter_by(role="admin").order_by(User.id.asc()).first()
+        or User.query.order_by(User.id.asc()).first()
+    )
+    return row.id if row else None
+
+
 def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
     """
     Prevent duplicate job runs across Gunicorn workers.
@@ -38,6 +64,10 @@ def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
     Committing after updating the TTL row releases the advisory lock (it's xact-scoped),
     so subsequent workers that then acquire the advisory lock will see the updated TTL
     and also return False.
+
+    Fails CLOSED: any error resolving the lock returns False (skip the run). The
+    old "run anyway" fallback meant a persistent lock error fired the job in every
+    worker at once.
     """
     from ..models.item import Item
     from ..extensions import db
@@ -76,10 +106,16 @@ def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
                 meta["ran_at"] = now.isoformat()
                 lock.description = json.dumps(meta)
             else:
+                owner_id = _system_owner_id()
+                if owner_id is None:
+                    logger.error(
+                        "Job %s: no user row to own the lock — skipping run", job_id
+                    )
+                    return False
                 lock = Item(
                     title=lock_title,
                     item_type="system",
-                    owner_id=1,
+                    owner_id=owner_id,
                     description=json.dumps({"ran_at": now.isoformat()}),
                 )
                 db.session.add(lock)
@@ -90,8 +126,13 @@ def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
             db.session.commit()
             return True
         except Exception as exc:
-            logger.warning("Job lock check failed for %s: %s — running anyway", job_id, exc)
-            return True
+            # Fail CLOSED. Every Gunicorn worker can end up running this check,
+            # so answering "you hold the lock" on a persistent error means N
+            # workers run the same job and pay for enrichment N times. A skipped
+            # run is far cheaper than a multiplied one — and the next scheduled
+            # run (or a manual trigger) recovers it.
+            logger.error("Job lock check failed for %s: %s — skipping run", job_id, exc)
+            return False
 
 
 def _parse_article_date(date_str: str):
@@ -151,17 +192,30 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     sources_ran = []
     errors = []
 
+    def _collect(label: str, result: dict) -> None:
+        """
+        Merge one collector's output into this run.
+
+        ALWAYS keeps the signals a collector managed to gather, even when it
+        also reports an error. A mid-sweep upstream failure means FEWER
+        filings, not bad ones — the old `if not error: extend(...)` pattern
+        threw away every page already collected because page N returned a
+        transient 500, which is how a single EDGAR blip cost a whole night of
+        Form D coverage. The error is still recorded and lands on
+        ScanRun.error_message, so a degraded source stays visible.
+        """
+        signals.extend(result.get("signals") or [])
+        if result.get("error"):
+            logger.warning("%s scan error: %s", label, result["error"])
+            errors.append(f"{label}: {result['error']}")
+
     if scan_type in ('full', 'trademark'):
         sources_ran.append('trademark')
         tm_result = search_recent_trademarks(
             days_back=days_back,
             max_results=scan.max_results,
         )
-        if not tm_result.get("error"):
-            signals.extend(tm_result["signals"])
-        else:
-            logger.warning("USPTO scan error: %s", tm_result["error"])
-            errors.append(f"USPTO: {tm_result['error']}")
+        _collect("USPTO", tm_result)
 
     if scan_type in ('full', 'delaware'):
         sources_ran.append('delaware')
@@ -169,11 +223,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             days_back=days_back,
             max_results=max(500, scan.max_results),
         )
-        if not de_result.get("error"):
-            signals.extend(de_result["signals"])
-        else:
-            logger.warning("Delaware scan error: %s", de_result["error"])
-            errors.append(f"Delaware: {de_result['error']}")
+        _collect("Delaware", de_result)
 
     # Product Hunt — default-off in full scans (post-stealth corroborator; set
     # ENABLE_PRODUCTHUNT_SCAN=true to include in full scans).
@@ -185,11 +235,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 days_back=days_back,
                 max_results=scan.max_results,
             )
-            if not ph_result.get("error"):
-                signals.extend(ph_result["signals"])
-            else:
-                logger.warning("Product Hunt scan error: %s", ph_result["error"])
-                errors.append(f"ProductHunt: {ph_result['error']}")
+            _collect("ProductHunt", ph_result)
         except Exception as exc:
             logger.warning("Product Hunt import/scan failed: %s", exc)
             errors.append(f"ProductHunt: {exc}")
@@ -206,11 +252,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 days_back=days_back,
                 max_results=scan.max_results,
             )
-            if not as_result.get("error"):
-                signals.extend(as_result["signals"])
-            else:
-                logger.warning("App Store scan error: %s", as_result["error"])
-                errors.append(f"AppStore: {as_result['error']}")
+            _collect("AppStore", as_result)
         except Exception as exc:
             logger.warning("App Store import/scan failed: %s", exc)
             errors.append(f"AppStore: {exc}")
@@ -225,11 +267,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 days_back=days_back,
                 max_results=scan.max_results,
             )
-            if not nw_result.get("error"):
-                signals.extend(nw_result["signals"])
-            else:
-                logger.warning("Newswire scan error: %s", nw_result["error"])
-                errors.append(f"Newswire: {nw_result['error']}")
+            _collect("Newswire", nw_result)
         except Exception as exc:
             logger.warning("Newswire import/scan failed: %s", exc)
             errors.append(f"Newswire: {exc}")
@@ -242,11 +280,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 days_back=days_back,
                 max_results=scan.max_results,
             )
-            if not ct_result.get("error"):
-                signals.extend(ct_result["signals"])
-            else:
-                logger.warning("CT logs scan error: %s", ct_result["error"])
-                errors.append(f"CTLogs: {ct_result['error']}")
+            _collect("CTLogs", ct_result)
         except Exception as exc:
             logger.warning("CT logs import/scan failed: %s", exc)
             errors.append(f"CTLogs: {exc}")
@@ -259,11 +293,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 days_back=days_back,
                 max_results=scan.max_results,
             )
-            if not ps_result.get("error"):
-                signals.extend(ps_result["signals"])
-            else:
-                logger.warning("Press stealth scan error: %s", ps_result["error"])
-                errors.append(f"PressStealth: {ps_result['error']}")
+            _collect("PressStealth", ps_result)
         except Exception as exc:
             logger.warning("Press stealth import/scan failed: %s", exc)
             errors.append(f"PressStealth: {exc}")
@@ -645,8 +675,14 @@ def _write_scheduler_heartbeat(app):
             if row:
                 row.description = json.dumps({"last_run": now.isoformat()})
             else:
+                owner_id = _system_owner_id()
+                if owner_id is None:
+                    logger.error(
+                        "Heartbeat write skipped: no user row to own the system item"
+                    )
+                    return
                 db.session.add(Item(
-                    title=title, item_type="system", owner_id=1,
+                    title=title, item_type="system", owner_id=owner_id,
                     description=json.dumps({"last_run": now.isoformat()}),
                 ))
             db.session.commit()
@@ -1380,9 +1416,14 @@ def start_scheduler(app):
         from apscheduler.triggers.cron import CronTrigger
 
         _scheduler = BackgroundScheduler(daemon=True)
+        # 11:00 UTC = 07:00 ET. The old 06:00 UTC (02:00 ET) slot landed inside
+        # SEC EDGAR's overnight maintenance window, where efts.sec.gov returns
+        # intermittent 500s — that alone killed 8 of the last 10 Form D passes.
+        # 07:00 ET is comfortably in EDGAR's healthy window and still lands
+        # before the US workday.
         _scheduler.add_job(
             _run_all_scheduled,
-            trigger=CronTrigger(hour=6, minute=0, timezone="UTC"),
+            trigger=CronTrigger(hour=11, minute=0, timezone="UTC"),
             args=[app],
             id="daily_bullish_scan",
             replace_existing=True,
@@ -1443,7 +1484,7 @@ def start_scheduler(app):
         )
         _scheduler.start()
         logger.info(
-            "Bullish scheduler started — daily scan 06:00 UTC, weekly digest Mon 09:00 UTC, "
+            "Bullish scheduler started — daily scan 11:00 UTC, weekly digest Mon 09:00 UTC, "
             "founder news Wed 08:00 UTC, press monitor Thu 08:00 UTC, "
             "inbox audit reminder 1st 07:00 UTC, watchlist headline sweep 1st 08:00 UTC, "
             "quarterly LinkedIn poll reminder Jan/Apr/Jul/Oct 1 09:00 UTC, "

@@ -108,16 +108,30 @@ def _looks_like_brand(domain: str) -> bool:
     return True
 
 
-def _query_crtsh(pattern: str, days_back: int) -> list[tuple]:
-    """
-    Query crt.sh for domains matching pattern with certs issued in last N days.
-    Returns list of (not_before, domain) tuples for recency-based sorting upstream.
+# ── crt.sh fetch layer ────────────────────────────────────────────────────────
 
-    Important: recency filter runs BEFORE the cap so stale certs don't silently
-    consume the MAX_PER_PATTERN budget.
-    """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
 
+class CrtShError(Exception):
+    """
+    Raised when a single crt.sh pattern query cannot be completed.
+
+    Carries the HTTP status when one was seen so the caller can name the failure
+    in the scan's error message instead of reporting a clean, empty run.
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+def _fetch_crtsh(pattern: str) -> list:
+    """
+    Fetch the raw crt.sh JSON payload for one pattern.
+
+    Raises CrtShError on ANY failure (HTTP error, network error, bad JSON,
+    unexpected payload shape). A dead source must never be swallowed into an
+    empty-but-successful result — see search_recent_ct_domains.
+    """
     url = f"{CRTSH_URL}?q={urllib.parse.quote(pattern)}&output=json"
     req = urllib.request.Request(
         url,
@@ -129,27 +143,64 @@ def _query_crtsh(pattern: str, days_back: int) -> list[tuple]:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         logger.warning("crt.sh HTTP %s for pattern '%s'", e.code, pattern)
-        return []
-    except (urllib.error.URLError, json.JSONDecodeError, Exception) as e:
+        raise CrtShError(f"HTTP {e.code}", status=e.code) from e
+    except Exception as e:
         logger.warning("crt.sh error for pattern '%s': %s", pattern, e)
-        return []
+        raise CrtShError(str(e) or e.__class__.__name__) from e
 
     if not isinstance(data, list):
-        return []
+        logger.warning(
+            "crt.sh returned %s (expected list) for pattern '%s'",
+            type(data).__name__, pattern,
+        )
+        raise CrtShError(f"unexpected response type {type(data).__name__}")
+
+    return data
+
+
+def _query_crtsh(pattern: str, days_back: int) -> list[tuple]:
+    """
+    Query crt.sh for domains matching pattern with certs issued in last N days.
+    Returns list of (domain, not_before) tuples for recency-based sorting upstream.
+
+    Raises CrtShError if the pattern query itself failed, so the caller can count
+    the failure rather than mistake it for "no matches".
+
+    Important: recency filter runs BEFORE the cap so stale certs don't silently
+    consume the MAX_PER_PATTERN budget.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+
+    data = _fetch_crtsh(pattern)
 
     # Filter first (recency), then cap — never cap before filter
-    hits: dict = {}  # domain → newest not_before seen
+    hits: dict = {}  # domain → newest not_before seen (always tz-aware UTC)
     for entry in data:
+        if not isinstance(entry, dict):
+            continue  # one malformed record must never abort the whole pattern
+
         not_before_str = entry.get("not_before", "")
         try:
             not_before = datetime.fromisoformat(not_before_str.replace("Z", "+00:00"))
+            # crt.sh emits not_before WITHOUT a timezone designator
+            # ("2026-07-20T14:03:11"), so fromisoformat yields a NAIVE datetime
+            # and comparing it against the aware cutoff raises TypeError.
+            # Normalise to UTC before any comparison.
+            if not_before.tzinfo is None:
+                not_before = not_before.replace(tzinfo=timezone.utc)
+            else:
+                not_before = not_before.astimezone(timezone.utc)
             if not_before < cutoff:
                 continue
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
+            # TypeError is belt-and-braces: a single unparseable record must
+            # never escape the loop and abort the entire pattern query.
             continue
 
         for field in ("common_name", "name_value"):
-            raw = entry.get(field, "")
+            raw = entry.get(field) or ""
+            if not isinstance(raw, str):
+                continue  # null / non-string field must not abort the pattern
             for line in raw.split("\n"):
                 line = line.strip().lstrip("*").lstrip(".").lower()
                 if not line:
@@ -179,6 +230,9 @@ def search_recent_ct_domains(days_back: int = 14, max_results: int = 100) -> dic
             "total_found": int,
             "fetched": int,
             "error": str | None,
+            "patterns_attempted": int,
+            "patterns_succeeded": int,
+            "patterns_failed": int,
         }
     """
     days_back   = max(1, min(days_back, 30))
@@ -190,21 +244,33 @@ def search_recent_ct_domains(days_back: int = 14, max_results: int = 100) -> dic
     all_domain_hits: dict = {}
     errors = []
 
+    # ── Per-pattern outcome tracking ─────────────────────────────────────────
+    # A dead source must not look healthy. crt.sh has gone dark for days at a
+    # time; without these counters every pattern can fail and the scan still
+    # records a clean run with error=None.
+    patterns_attempted = len(SEARCH_PATTERNS)
+    patterns_succeeded = 0
+    patterns_failed    = 0
+    last_status        = None   # last HTTP status seen on a failing pattern
+
     with ThreadPoolExecutor(max_workers=len(SEARCH_PATTERNS)) as pool:
         futures = {pool.submit(_query_crtsh, p, days_back): p for p in SEARCH_PATTERNS}
         for future in as_completed(futures):
             pattern = futures[future]
             try:
                 found = future.result()
+                patterns_succeeded += 1
                 for domain, not_before in found:
                     if domain not in all_domain_hits or not_before > all_domain_hits[domain]:
                         all_domain_hits[domain] = not_before
                 logger.debug("CT pattern '%s' → %d domains", pattern, len(found))
             except Exception as exc:
+                patterns_failed += 1
+                status = getattr(exc, "status", None)
+                if status is not None:
+                    last_status = status
                 errors.append(f"{pattern}: {exc}")
-
-    if not all_domain_hits and errors:
-        return {"signals": [], "total_found": 0, "fetched": 0, "error": errors[0]}
+                logger.warning("CT pattern '%s' failed: %s", pattern, exc)
 
     # Cap by recency (newest first) — not alphabetically
     sorted_domains = [
@@ -236,9 +302,31 @@ def search_recent_ct_domains(days_back: int = 14, max_results: int = 100) -> dic
             "timestamp":    now_ts,
         })
 
+    # ── Honest error reporting ───────────────────────────────────────────────
+    # Every pattern failed → the source itself is dark. Surface a named error so
+    # scheduler.py writes it to ScanRun.error_message and the UI shows it.
+    if patterns_failed and patterns_succeeded == 0:
+        detail = (
+            f"last HTTP status {last_status}" if last_status is not None
+            else f"last error: {errors[-1]}"
+        )
+        error = (
+            f"crt.sh unreachable — all {patterns_failed}/{patterns_attempted} "
+            f"pattern queries failed ({detail})"
+        )
+        logger.warning("CT log scan produced no signals: %s", error)
+    elif errors and not signals:
+        # Partial outage that yielded nothing: still report rather than pretend.
+        error = errors[0]
+    else:
+        error = None
+
     return {
-        "signals":     signals,
-        "total_found": len(all_domain_hits),
-        "fetched":     len(signals),
-        "error":       errors[0] if errors and not signals else None,
+        "signals":            signals,
+        "total_found":        len(all_domain_hits),
+        "fetched":            len(signals),
+        "error":              error,
+        "patterns_attempted": patterns_attempted,
+        "patterns_succeeded": patterns_succeeded,
+        "patterns_failed":    patterns_failed,
     }

@@ -23,6 +23,45 @@ def _brand_key(name: str) -> str:
     return normalize_brand(name or "")
 
 
+# ── Datetime normalisation ────────────────────────────────────────────────────
+
+def _as_utc(dt: datetime) -> datetime:
+    """
+    Return *dt* as a UTC-aware datetime.
+
+    Naive values are assumed to already be UTC. Values that are aware but carry a
+    LOCAL offset (Postgres hands back timestamptz in the session timezone, e.g.
+    -04:00) are CONVERTED, not left alone — taking .date() off a -04:00 datetime
+    yields the local calendar day, which is one day behind the UTC day after
+    20:00 ET and silently shifts every lead-time number by a day.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _signal_datetime(meta: dict, created_at: datetime | None) -> datetime | None:
+    """
+    Return the real-world date of a signal, in UTC.
+
+    Every collector stores the true event date in meta['timestamp'] — the SEC
+    filing date (delaware), the USPTO filing date (trademark), the article
+    publication date (press_stealth/newswire), the cert not_before (domain_ct).
+    ``Item.created_at`` is only when the scanner happened to save the row, which
+    for a trademark filed 18 months ago is *today*. Prefer the event date; fall
+    back to created_at when the meta timestamp is absent or unparseable.
+    """
+    raw = meta.get("timestamp")
+    if raw:
+        try:
+            return _as_utc(datetime.fromisoformat(str(raw).replace("Z", "+00:00")))
+        except (TypeError, ValueError):
+            logger.warning("Coverage: unparseable signal timestamp %r — using created_at", raw)
+    if created_at is None:
+        return None
+    return _as_utc(created_at)
+
+
 def record_press_confirm(brand_name: str, confirmed_at: str, app, source_url: str = "") -> dict:
     """
     Record that a brand appeared in press/newsletter on confirmed_at (ISO date string).
@@ -66,6 +105,13 @@ def get_coverage_metrics(app, days_back: int = 90) -> dict:
     """
     Compute both coverage metrics.
 
+    ``days_back`` is the reporting window on the CONFIRMATION side only — it
+    bounds which scanner-derived press signals count as "recently confirmed".
+    Early signals (Form D, trademark, CT logs) are searched across all history,
+    and manual press-confirm records are never windowed, so a 6–24 month lead is
+    representable. Windowing the early side would have capped this metric at
+    days_back days by construction.
+
     Returns:
     {
         "inbox_recall": {
@@ -106,11 +152,16 @@ def get_coverage_metrics(app, days_back: int = 90) -> dict:
             }
 
         # ── 2. Lead time: auto-detected from signal pairs ─────────────────────
+        # days_back scopes the CONFIRMATION side only. Early signals are searched
+        # across ALL history on purpose: a Form D or trademark routinely precedes
+        # press by 6–24 months, so windowing the early side capped this metric at
+        # days_back (90) and made the product's entire lead-time claim
+        # mathematically unrepresentable.
         cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
 
         signals = (
             Item.query
-            .filter(Item.item_type == "signal", Item.created_at >= cutoff)
+            .filter(Item.item_type == "signal")
             .all()
         )
 
@@ -127,24 +178,29 @@ def get_coverage_metrics(app, days_back: int = 90) -> dict:
             if not key:
                 continue
 
-            dt = sig.created_at
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+            dt = _signal_datetime(meta, sig.created_at)
+            if dt is None:
+                continue
 
             if sig_type in _EARLY_SIGNAL_TYPES:
                 if key not in early_by_brand or dt < early_by_brand[key]:
                     early_by_brand[key] = dt
             elif sig_type in _PRESS_SIGNAL_TYPES:
+                # Scanner-derived press is the rolling "what surfaced recently"
+                # stream — that side stays windowed by days_back.
+                if dt < cutoff:
+                    continue
                 if key not in press_by_brand or dt < press_by_brand[key]:
                     press_by_brand[key] = dt
 
-        # Include manual press-confirm records
+        # Include manual press-confirm records. These are curated operator ground
+        # truth (a handful of rows, deliberately entered) and are NOT windowed —
+        # backfilling a historical confirmation is how the 6–24 month lead gets
+        # demonstrated at all.
         for c in Item.query.filter_by(item_type="press_confirm").all():
             try:
                 meta = json.loads(c.description or "{}")
-                confirmed_at = datetime.fromisoformat(meta.get("confirmed_at", ""))
-                if confirmed_at.tzinfo is None:
-                    confirmed_at = confirmed_at.replace(tzinfo=timezone.utc)
+                confirmed_at = _as_utc(datetime.fromisoformat(meta.get("confirmed_at", "")))
                 key = _brand_key(c.title)
                 if not key:
                     continue
@@ -158,8 +214,9 @@ def get_coverage_metrics(app, days_back: int = 90) -> dict:
             early_dt = early_by_brand.get(key)
             if not early_dt:
                 continue
-            early_date = early_dt.date()
-            press_date = press_dt.date()
+            # Always take the calendar day in UTC — see _as_utc().
+            early_date = early_dt.astimezone(timezone.utc).date()
+            press_date = press_dt.astimezone(timezone.utc).date()
             if early_date < press_date:
                 days_lead = (press_date - early_date).days
                 brands_with_lead.append({

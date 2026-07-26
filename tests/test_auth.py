@@ -3,6 +3,17 @@ from app.services.tokens import generate_reset_token
 
 
 class TestRegister:
+    """
+    Self-registration is disabled unless ENABLE_OPEN_REGISTRATION is set (the
+    supported onboarding path is the admin invite flow). These tests enable the
+    flag so they still exercise the registration LOGIC; the default-off gate
+    itself is covered in test_p0_security.py::TestOpenRegistrationGate.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _enable_open_registration(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_OPEN_REGISTRATION", "true")
+
     def test_register_success(self, client, db):
         resp = client.post("/api/auth/register", json={
             "email": "new@bullish.co",

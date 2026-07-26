@@ -1,3 +1,6 @@
+import logging
+import os
+
 from flask import request, jsonify, current_app
 from flask_jwt_extended import (
     create_access_token,
@@ -10,13 +13,15 @@ from flask_jwt_extended import (
 from itsdangerous import SignatureExpired, BadSignature
 from marshmallow import ValidationError
 from . import bp
-from ...extensions import db, bcrypt
+from ...extensions import db, bcrypt, jwt
 from ...models.user import User
 from ...models.token_blocklist import TokenBlocklist
 from ...schemas import LogoutSchema, ForgotPasswordSchema, ResetPasswordSchema, InviteSchema, AcceptInviteSchema
 from ...services.tokens import generate_reset_token, verify_reset_token, generate_invite_token, verify_invite_token
 from ...services.email import send_password_reset_email, send_invite_email
 from ...utils import db_get_user
+
+logger = logging.getLogger(__name__)
 
 logout_schema = LogoutSchema()
 forgot_password_schema = ForgotPasswordSchema()
@@ -25,8 +30,54 @@ invite_schema = InviteSchema()
 accept_invite_schema = AcceptInviteSchema()
 
 
+# ── Active-user token guard ───────────────────────────────────────────────────
+# Deactivating or deleting a user must take effect immediately. Without this,
+# a revoked user's 30-day refresh token keeps minting fresh access tokens.
+# This callback runs on every @jwt_required request — access AND refresh — and
+# returning None makes Flask-JWT-Extended reject the token with a 401.
+# It is registered on the shared JWTManager singleton at blueprint import time,
+# which create_app() does before the app serves any request.
+
+@jwt.user_lookup_loader
+def load_active_user(jwt_header, jwt_data):
+    """Resolve a JWT subject to a live, active User — or None to force a 401."""
+    try:
+        user = db.session.get(User, int(jwt_data["sub"]))
+    except (KeyError, TypeError, ValueError):
+        logger.warning("JWT rejected: unusable identity claim %r", jwt_data.get("sub"))
+        return None
+
+    if user is None:
+        logger.info("JWT rejected: user %s no longer exists", jwt_data.get("sub"))
+        return None
+    if not user.is_active:
+        logger.info("JWT rejected: user %s is deactivated", user.email)
+        return None
+    return user
+
+
+# ── Open self-registration (default OFF) ──────────────────────────────────────
+# Anyone who can shape a string ending in "@bullish.co" could previously mint
+# themselves a full account. The supported way to onboard a teammate is the
+# admin invite flow (/invite → /accept-invite); this route stays available only
+# when ENABLE_OPEN_REGISTRATION is explicitly turned on.
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _open_registration_enabled():
+    """True only when ENABLE_OPEN_REGISTRATION is explicitly set to a truthy value."""
+    return os.environ.get("ENABLE_OPEN_REGISTRATION", "").strip().lower() in _TRUTHY
+
+
 @bp.route("/register", methods=["POST"])
 def register():
+    if not _open_registration_enabled():
+        logger.warning("Blocked self-registration attempt from %s", request.remote_addr)
+        return jsonify({
+            "error": "Self-registration is disabled. Ask a Bullish admin to invite you."
+        }), 403
+
     data = request.get_json()
 
     required = ("email", "password", "first_name", "last_name")
