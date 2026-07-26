@@ -141,6 +141,15 @@ def create_item():
         _parsed_type = _json.loads(raw_desc).get("_type") if raw_desc else None
     except Exception:
         _parsed_type = None
+    # _type is caller-controlled, so it must not be able to mint a control row:
+    # an item_type of "system"/"settings" would make the row internal — invisible
+    # to list/get and undeletable through this API by anyone, including admins.
+    if _parsed_type in _INTERNAL_ITEM_TYPES:
+        logger.warning(
+            "Blocked create of item with reserved _type %r by user %s", _parsed_type, user_id
+        )
+        return jsonify({"error": f"'{_parsed_type}' is a reserved record type"}), 403
+
     item = Item(title=data["title"], description=raw_desc, item_type=_parsed_type, owner_id=user_id)
     db.session.add(item)
     db.session.commit()
@@ -206,6 +215,18 @@ def update_item(item_id):
                 item.id, item.title, user_id,
             )
         return jsonify({"error": "Item not found"}), 404
+
+    # Guard the INCOMING title too, not just the existing row. Otherwise the
+    # namespace is bypassable by rename: create an innocuous row, then PUT it a
+    # title of "__bullish_settings__" and you have a second settings row. Every
+    # singleton lookup is filter_by(title=...).first() with no ORDER BY, so which
+    # row wins is arbitrary — the same alert hijack the create guard blocks.
+    if _is_internal(data.get("title")):
+        logger.warning(
+            "Blocked rename of item %s into the reserved namespace (%r) by user %s",
+            item.id, data.get("title"), user_id,
+        )
+        return jsonify({"error": "Titles beginning with '__' are reserved for system records"}), 403
 
     # NOTE: ordinary signal/watchlist rows stay team-writable on purpose. Every
     # row is visible to the whole team (see list_items), watchlist entries are

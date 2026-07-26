@@ -627,8 +627,25 @@ def search_recent_delaware_entities(
 
     # ── Probe: discover true Form D count in this window ──────────────────────
     try:
-        probe       = _edgar_query("", start_str, end_str, 0, 1)
-        total_found = probe.get("hits", {}).get("total", {}).get("value", 0)
+        probe = _edgar_query("", start_str, end_str, 0, 1)
+        try:
+            total_found = int(probe.get("hits", {}).get("total", {}).get("value", 0))
+        except (TypeError, ValueError):
+            total_found = 0
+        # A 200 is not proof the probe was USEFUL. If the payload shape changes,
+        # or an error page comes back as JSON, total_found lands on 0 — and 0
+        # means pages_broad == 0, so the sweep never runs and the night is zeroed
+        # while the run still looks clean. Any real multi-day window holds
+        # thousands of Form Ds, so treat a zero as untrustworthy and sweep
+        # anyway; if the window genuinely is empty the first page returns no
+        # hits and the loop breaks immediately, costing one request.
+        if total_found <= 0:
+            probe_failed = True
+            logger.warning(
+                "EDGAR count probe returned an unusable total (%r) despite HTTP 200 "
+                "— falling back to a blind sweep",
+                probe.get("hits", {}).get("total"),
+            )
     except requests.RequestException as exc:
         # Probe outage must degrade coverage, not zero it.  We do NOT set
         # "error" here: callers treat a non-null error as "discard this

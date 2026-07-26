@@ -152,6 +152,27 @@ class TestProtectedSingletons:
         assert resp.status_code == 403
         assert Item.query.filter_by(title="__bullish_settings__").count() == 1
 
+    def test_cannot_rename_an_ordinary_row_into_the_reserved_namespace(
+        self, client, db, user_token, settings_item
+    ):
+        """The create guard is worthless if PUT can rename around it."""
+        item_id = make_item(client, user_token, "Harmless").get_json()["item"]["id"]
+        resp = client.put(f"/api/items/{item_id}",
+                          json={"title": "__bullish_settings__", "description": self.HIJACK},
+                          headers={"Authorization": f"Bearer {user_token}"})
+        assert resp.status_code == 403
+        assert Item.query.filter_by(title="__bullish_settings__").count() == 1
+        stored = json.loads(db.session.get(Item, settings_item.id).description)
+        assert stored["alert_emails"] == ["brent@bullish.co"]
+
+    def test_cannot_create_a_row_with_a_reserved_item_type(self, client, db, user_token):
+        """A caller-supplied _type must not be able to mint an internal row."""
+        resp = client.post("/api/items",
+                           json={"title": "Sneaky", "description": json.dumps({"_type": "system"})},
+                           headers={"Authorization": f"Bearer {user_token}"})
+        assert resp.status_code == 403
+        assert Item.query.filter_by(title="Sneaky").count() == 0
+
     def test_bulk_import_skips_reserved_titles(self, client, db, user_token):
         resp = client.post("/api/items/bulk", json={"items": [
             {"title": "__bullish_settings__", "description": self.HIJACK},
@@ -219,11 +240,23 @@ class TestProductionConfigSecrets:
         assert cfg["JWT_SECRET_KEY"] == "prod-jwt-secret"
 
     def test_dev_and_test_configs_load_without_secrets(self, monkeypatch):
-        """Local dev and CI must keep working with no secrets in the environment."""
+        """
+        Local dev and CI must keep working with no secrets in the environment —
+        only ProductionConfig is allowed to refuse to load.
+
+        Asserts loadability, NOT the placeholder string: the base Config binds
+        os.environ.get(...) at class-definition time, so whatever was set when
+        this module was first imported is already baked in. CI does export
+        SECRET_KEY, so asserting the placeholder value here fails on CI while
+        passing locally — the kind of environment-dependent test that trains
+        people to ignore a red build.
+        """
         monkeypatch.delenv("SECRET_KEY", raising=False)
         monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
-        assert _load(TestingConfig)["SECRET_KEY"] == "change-me-in-production"
-        assert _load(DevelopmentConfig)["JWT_SECRET_KEY"] == "jwt-change-me-in-production"
+        for cfg in (TestingConfig, DevelopmentConfig):
+            loaded = _load(cfg)          # must not raise
+            assert loaded["SECRET_KEY"]
+            assert loaded["JWT_SECRET_KEY"]
 
 
 # ── Fix 4: revoked users lose their tokens ────────────────────────────────────

@@ -136,6 +136,7 @@ def get_coverage_metrics(app, days_back: int = 90) -> dict:
     }
     """
     from ..models.item import Item
+    from ..extensions import db
     from .inbox_audit import get_latest_audit
 
     with app.app_context():
@@ -164,10 +165,15 @@ def get_coverage_metrics(app, days_back: int = 90) -> dict:
         # mathematically unrepresentable.
         cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
 
+        # Only the columns this loop reads, streamed rather than materialised
+        # as full ORM objects. The early side is deliberately unwindowed (see
+        # above), so this set is all of history and grows every night — loading
+        # whole Item rows here would turn an admin page view into a full-table
+        # fetch of every signal description ever written.
         signals = (
-            Item.query
+            db.session.query(Item.title, Item.description, Item.created_at)
             .filter(Item.item_type == "signal")
-            .all()
+            .yield_per(1000)
         )
 
         early_by_brand: dict[str, datetime] = {}
