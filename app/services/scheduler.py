@@ -231,6 +231,64 @@ def _parse_article_date(date_str: str):
     return None
 
 
+# ─── Save / enrich budgets ────────────────────────────────────────────────────
+
+# Rows per commit in the save loop. Deep paging returns ~8,500 signals a run;
+# one transaction around all of them left every row invisible and losable until
+# the end of a long loop.
+_SAVE_CHUNK = 500
+
+# How many signals one run may SCORE. Collection is deliberately unbounded and
+# enrichment deliberately is not: saving is cheap and is what guarantees
+# coverage, while scoring costs an API call per signal. A saved-but-unscored
+# signal is never lost — it sits in the corpus and a later run picks it up — so
+# capping this trades latency for predictable cost and runtime, not coverage.
+#
+# Sized above one day of new signals (~1,050 measured) so steady state clears
+# everything and still drains ~1,000/day of the one-off backlog from the first
+# deep sweep.
+_DEFAULT_ENRICH_BUDGET = 2000
+
+
+def _enrich_budget() -> int:
+    """Per-run scoring budget, overridable with SCAN_ENRICH_BUDGET."""
+    raw = os.environ.get("SCAN_ENRICH_BUDGET", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning("SCAN_ENRICH_BUDGET=%r is not an integer — using default", raw)
+    return _DEFAULT_ENRICH_BUDGET
+
+
+def _backlog_item_ids(limit: int, exclude: set) -> list:
+    """
+    Oldest signals that were saved but never scored, for draining leftover budget.
+
+    Un-scored rows carry no "enrichment" key at all, so a substring test on the
+    JSON description finds them without a schema change. Oldest first: a signal
+    that has waited longest is the one most at risk of being forgotten.
+    """
+    from ..models.item import Item
+
+    if limit <= 0:
+        return []
+    try:
+        rows = (
+            Item.query
+            .filter(Item.item_type == "signal")
+            .filter(~Item.description.contains('"enrichment"'))
+            .order_by(Item.created_at.asc())
+            .limit(limit + len(exclude))
+            .with_entities(Item.id)
+            .all()
+        )
+    except Exception as exc:
+        logger.warning("Backlog lookup failed: %s — scoring new signals only", exc)
+        return []
+    return [r.id for r in rows if r.id not in exclude][:limit]
+
+
 # ─── Core: run a single scan now ──────────────────────────────────────────────
 
 def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
@@ -462,8 +520,17 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         existing_fps.add(fp)
         new_saved += 1
 
+        # Commit in chunks. The sweep now returns ~8,500 signals a run rather
+        # than the ~200 this path was written for, and holding one transaction
+        # open across all of them kept every row invisible — and losable — until
+        # the very end. Saving is the cheap half of the job and the half that
+        # guarantees coverage, so it must land durably and early.
+        if new_saved % _SAVE_CHUNK == 0:
+            db.session.commit()
+
     if new_saved > 0:
         db.session.commit()
+        logger.info("Saved %d new signals (%d collected)", new_saved, len(signals))
 
     # ── 3b. Background domain checks for newly saved domain signals ───────────
     for item_id in new_item_ids:
@@ -500,7 +567,26 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     # Resolved once per run — the pipeline would otherwise re-query settings per signal.
     pipeline_alert_emails = resolve_alert_emails()
 
-    for item_id in new_item_ids:
+    # Enrichment is BUDGETED; collection is not. Deep paging now saves ~8,500
+    # signals a run, and scoring every one serially would take many hours and
+    # cost accordingly. Coverage of the CORPUS does not depend on that: every
+    # signal is already saved above, so nothing is ever lost by scoring it
+    # later. Newest first (a fresh filing is the point of the product), then any
+    # remaining budget drains the oldest un-scored rows so a backlog cannot sit
+    # there forever. Tune with SCAN_ENRICH_BUDGET.
+    enrich_budget = _enrich_budget()
+    to_process = list(new_item_ids[:enrich_budget])
+    if len(to_process) < enrich_budget:
+        to_process += _backlog_item_ids(enrich_budget - len(to_process),
+                                        exclude=set(new_item_ids))
+    deferred = max(0, len(new_item_ids) - len(to_process))
+    if deferred:
+        logger.info(
+            "Enrichment budget %d — scoring %d now, %d saved signals deferred to a later run",
+            enrich_budget, len(to_process), deferred,
+        )
+
+    for item_id in to_process:
         try:
             outcome = process_saved_signal(
                 item_id,
