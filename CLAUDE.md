@@ -32,6 +32,65 @@ The **Bullish Stealth Startup Finder** finds consumer brands before public annou
 
 ---
 
+## Traps — read before changing anything here
+
+Every one of these was a live defect found in production, and every one shares a shape:
+**something was believed correct but had only ever been checked on one path.** When you
+"fix" something in this repo, the first question is *where else is this implemented?*
+
+### 1. The dual-path divergence (the recurring one)
+`app/api/scans/routes.py` (manual scans) and `app/services/scheduler.py` (nightly scans)
+**independently implement the same concepts** — enrichment, confluence, alerting, signal
+persistence. They have silently diverged at least three times:
+- Independent hardcoded `json.dumps` field whitelists (both fixed 2026-07).
+- The confluence score gate: shipped 2026-07-22 but live on the SCHEDULED path only.
+  The manual path spawned enrichment and confluence as *parallel threads*, so confluence
+  won the race and emailed before any score existed — flooding the inbox with COLD brands.
+- Conviction/alumni matching: still only wired on some paths.
+
+**The control:** `tests/test_confluence_alert_gate.py` reads both source files and fails if
+either re-inlines a numeric threshold instead of calling the shared helper. Prefer that
+pattern — a shared function plus a grep-based drift test — over collapsing the two paths.
+A refactor of ~800 lines of live spend-and-email code is not worth the blast radius.
+
+### 2. Timezone: `.date()` discards, comparison normalises
+`Item.created_at` comes back from the DB **timezone-aware but in the server's local zone**
+(UTC-04:00), not UTC. A guard that only handles *naive* datetimes does nothing here.
+Calling `.date()` on a local-time value lands on the previous calendar day for anything
+timestamped 00:00–04:00 UTC. This inflated `lead_time` by a day for ~1 in 6 signals,
+always in the flattering direction. Use `coverage.py::_as_utc()`, which *converts* aware
+values rather than trusting them.
+
+Note the asymmetry: `<` comparisons between aware datetimes in different zones are
+**correct** — Python normalises them. Only `.date()` is dangerous. That's why the
+`tzinfo is None` guards in `newswire.py`, `press_stealth.py` and `producthunt.py` are fine.
+
+### 3. Silent failure is the default failure mode here
+Bare `except Exception` blocks that log a warning have hidden real breakage for months:
+- `inbox_audit._store_audit_result` passed `name=` to `Item` (which has only `title`).
+  The `TypeError` was swallowed, so **no audit row was ever written** — the 30.4% coverage
+  figure lived in a per-worker module global and died on every deploy.
+- `ctlogs._query_crtsh`'s bare except means futures never raise, so the `errors` list is
+  always empty and the error-reporting branches are dead code.
+
+When a metric or an engine can fail, prefer raising. If an engine returns zero results it
+must be distinguishable from a quiet day.
+
+### 4. Internal control rows live in the `items` table
+`__bullish_settings__` (Slack webhook + alert emails), `__jlock_<job>__` (gates the nightly
+scan) and `__scheduler_heartbeat__` are ordinary `Item` rows. Signal items are
+**intentionally shared across the whole team** — do NOT owner-scope the items API, it will
+break SignalDetail/MatchCard/Watchlist. The correct boundary is `_is_internal()` in
+`app/api/items/routes.py`: control rows simply do not exist through `/api/items`.
+
+### 5. Prompt caching is load-bearing on cost
+`enrichment.SYSTEM_PROMPT` is ~7,600 tokens and identical on every call. It is passed as a
+system **block** with `cache_control: ephemeral`. Keep it the FIRST block and never
+interpolate per-signal text into it, or the prefix changes and every call is a cache miss —
+roughly doubling per-signal enrichment cost.
+
+---
+
 ## Signal model
 
 | Model | Purpose |

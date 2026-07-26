@@ -456,7 +456,11 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
 
     # ── 5. Confluence detection for newly saved signals ───────────────────────
     try:
-        from ..services.confluence import record_signal_and_check_confluence, send_confluence_alert_for_hit
+        from ..services.confluence import (
+            record_signal_and_check_confluence,
+            send_confluence_alert_for_hit,
+            should_send_confluence_alert,
+        )
 
         confluence_alert_emails_str = os.environ.get("ALERT_EMAILS", "").strip()
         try:
@@ -496,12 +500,12 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 )
                 _conf_score = enrichment.get("bullish_score")
                 if result["is_confluence"] and result.get("hit_id") and confluence_alert_emails:
-                    if _conf_score is None or _conf_score >= 50:
+                    if should_send_confluence_alert(_conf_score):
                         send_confluence_alert_for_hit(result["hit_id"], confluence_alert_emails)
                         logger.info("Confluence alert sent for %s (score=%s)", item.title, _conf_score)
                     else:
                         logger.info(
-                            "Confluence alert suppressed for COLD brand %s (score=%s)",
+                            "Confluence alert suppressed for %s (score=%s) — below threshold or unscored",
                             item.title, _conf_score,
                         )
             except Exception as exc:

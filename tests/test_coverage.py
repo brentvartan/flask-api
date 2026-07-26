@@ -7,7 +7,7 @@ import json
 import pytest
 from datetime import datetime, timedelta, timezone
 
-from app.services.coverage import get_coverage_metrics, record_press_confirm
+from app.services.coverage import get_coverage_metrics, record_press_confirm, _brand_key
 
 
 # ── record_press_confirm ──────────────────────────────────────────────────────
@@ -64,22 +64,30 @@ def test_inbox_recall_no_audit(db, admin_user, app):
 
 
 def test_inbox_recall_from_audit(db, admin_user, app):
-    """get_coverage_metrics returns coverage_pct from the latest stored audit."""
-    import app.services.inbox_audit as _ia_mod
-    _ia_mod._latest_audit = {
+    """
+    get_coverage_metrics reads coverage_pct from the latest PERSISTED audit.
+
+    Previously this test poked a module-global cache (_latest_audit), which is the
+    design that hid the real defect: the DB write had never once succeeded, and the
+    global made it look like it had. The global was removed on 2026-07-25 — it was
+    per-gunicorn-worker and died on deploy — so this now exercises the real path.
+    """
+    from app.services.inbox_audit import _store_audit_result
+
+    _store_audit_result({
         "coverage_pct": 42.5,
         "found_count": 17,
         "missing_count": 23,
         "total_checked": 40,
         "run_at": "2026-06-15T10:00:00+00:00",
-    }
-    try:
-        result = get_coverage_metrics(app, days_back=90)
-        assert result["inbox_recall"]["coverage_pct"] == 42.5
-        assert result["inbox_recall"]["found_count"] == 17
-        assert result["inbox_recall"]["as_of"] == "2026-06-15T10:00:00+00:00"
-    finally:
-        _ia_mod._latest_audit = None
+        "found": [],
+        "missing": [],
+    }, app)
+
+    result = get_coverage_metrics(app, days_back=90)
+    assert result["inbox_recall"]["coverage_pct"] == 42.5
+    assert result["inbox_recall"]["found_count"] == 17
+    assert result["inbox_recall"]["as_of"] == "2026-06-15T10:00:00+00:00"
 
 
 # ── get_coverage_metrics — lead time ─────────────────────────────────────────
@@ -187,7 +195,10 @@ def test_lead_time_manual_press_confirm(db, admin_user, app):
     from app.models.item import Item
     from app.extensions import db as _db
 
-    now = datetime.now(timezone.utc)
+    # Pin the time-of-day to midday UTC. This test used to use datetime.now() and
+    # failed whenever it ran between 00:00-04:00 UTC — see
+    # test_lead_time_is_stable_across_utc_midnight_boundary below for the root cause.
+    now = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
     early_dt = now - timedelta(days=45)
 
     with app.app_context():
@@ -210,6 +221,52 @@ def test_lead_time_manual_press_confirm(db, admin_user, app):
     assert "confirmbrand" in brand_keys
     matched = next(b for b in result["lead_time"]["brands"] if b["brand"] == "confirmbrand")
     assert matched["days_lead"] == 30
+
+
+@pytest.mark.parametrize("utc_hour", [0, 1, 2, 3, 4, 12, 23])
+def test_lead_time_is_stable_across_utc_midnight_boundary(db, admin_user, app, utc_hour):
+    """
+    days_lead must not depend on the time of day a signal was recorded.
+
+    Regression (2026-07-25): the DB returns created_at as timezone-AWARE but in the
+    server's LOCAL zone (e.g. UTC-04:00). coverage.py only normalised NAIVE datetimes,
+    so aware-but-local values reached .date() untouched. For signals timestamped
+    between 00:00 and 04:00 UTC, the local date is the PREVIOUS day, which inflated
+    days_lead by one — always in the direction that flatters the product.
+
+    Without _as_utc(), the utc_hour < 4 cases fail with 31 != 30.
+    """
+    from app.models.item import Item
+    from app.extensions import db as _db
+
+    base = datetime.now(timezone.utc).replace(
+        hour=utc_hour, minute=30, second=0, microsecond=0
+    )
+    early_dt = base - timedelta(days=45)
+    title = f"BoundaryBrand{utc_hour}"
+
+    with app.app_context():
+        item = Item(
+            title=title,
+            owner_id=admin_user.id,
+            item_type="signal",
+            description=json.dumps({"_type": "signal", "signal_type": "trademark"}),
+        )
+        item.created_at = early_dt
+        _db.session.add(item)
+        _db.session.commit()
+
+    record_press_confirm(title, (early_dt + timedelta(days=30)).date().isoformat(), app)
+
+    result = get_coverage_metrics(app, days_back=90)
+    matched = next(
+        (b for b in result["lead_time"]["brands"] if b["brand"] == _brand_key(title)), None
+    )
+    assert matched is not None, f"{title} missing from lead_time output"
+    assert matched["days_lead"] == 30, (
+        f"signal recorded at {utc_hour:02d}:30 UTC produced days_lead="
+        f"{matched['days_lead']}, expected 30 — timezone normalisation regressed"
+    )
 
 
 def test_coverage_response_shape(db, admin_user, app):

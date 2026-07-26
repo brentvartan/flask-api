@@ -27,13 +27,18 @@ def _brand_key(name: str) -> str:
 
 def _as_utc(dt: datetime) -> datetime:
     """
-    Return *dt* as a UTC-aware datetime.
+    Normalise a datetime to UTC before any .date() comparison.
 
-    Naive values are assumed to already be UTC. Values that are aware but carry a
-    LOCAL offset (Postgres hands back timestamptz in the session timezone, e.g.
-    -04:00) are CONVERTED, not left alone — taking .date() off a -04:00 datetime
-    yields the local calendar day, which is one day behind the UTC day after
-    20:00 ET and silently shifts every lead-time number by a day.
+    Both branches matter. Naive values are assumed to already be UTC — that is
+    how we write them. AWARE values must be CONVERTED, not trusted: the driver
+    hands `created_at` back in the server's local zone (e.g. UTC-04:00), and
+    calling .date() on that lands on the previous calendar day for timestamps
+    between 00:00 and 04:00 UTC.
+
+    That silently inflated lead_time by one day for ~1/6 of all signals, always
+    in the flattering direction, and surfaced only as a test that failed after
+    20:00 ET. Lead time is the metric this product is judged by — it has to be
+    computed in one fixed zone.
     """
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)

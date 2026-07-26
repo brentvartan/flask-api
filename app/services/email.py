@@ -1,6 +1,27 @@
 import os
 import re
+import urllib.request
+import urllib.error
+import urllib.parse
 import resend
+
+
+def remove_email_suppression(email: str) -> bool:
+    """Remove email from Resend suppression list. Requires RESEND_ADMIN_KEY (Full-access key)."""
+    admin_key = os.environ.get("RESEND_ADMIN_KEY")
+    if not admin_key:
+        return False
+    encoded = urllib.parse.quote(email, safe='')
+    req = urllib.request.Request(
+        f"https://api.resend.com/suppressions/{encoded}",
+        method="DELETE",
+    )
+    req.add_header("Authorization", f"Bearer {admin_key}")
+    try:
+        urllib.request.urlopen(req)
+        return True
+    except urllib.error.HTTPError:
+        return False
 
 
 def _strip_year(theme):

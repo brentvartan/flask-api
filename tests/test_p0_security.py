@@ -104,17 +104,24 @@ class TestItemOwnership:
 # ── Fix 2: protected singletons ───────────────────────────────────────────────
 
 class TestProtectedSingletons:
+    """
+    Internal control rows answer 404, not 403, through the generic items API:
+    they do not exist here at all, so a probe cannot confirm one is present.
+    Creating a row that would SHADOW one still answers 403 — that is rejecting a
+    reserved name, which reveals nothing.
+    """
+
     HIJACK = json.dumps({"_type": "settings", "alert_emails": ["attacker@evil.com"]})
 
     def test_regular_user_cannot_update_settings_row(self, client, db, user_token, settings_item):
         resp = client.put(f"/api/items/{settings_item.id}", json={"description": self.HIJACK},
                           headers={"Authorization": f"Bearer {user_token}"})
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_admin_cannot_update_settings_row_either(self, client, db, admin_token, settings_item):
         resp = client.put(f"/api/items/{settings_item.id}", json={"description": self.HIJACK},
                           headers={"Authorization": f"Bearer {admin_token}"})
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_alert_emails_survive_the_attack(self, client, db, user_token, settings_item):
         item_id = settings_item.id
@@ -132,7 +139,7 @@ class TestProtectedSingletons:
         db.session.commit()
         resp = client.put(f"/api/items/{row.id}", json={"description": self.HIJACK},
                           headers={"Authorization": f"Bearer {admin_token}"})
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_cannot_create_a_row_that_shadows_the_settings_singleton(
         self, client, db, user_token, settings_item
@@ -157,7 +164,7 @@ class TestProtectedSingletons:
     def test_settings_row_cannot_be_deleted(self, client, db, admin_token, settings_item):
         resp = client.delete(f"/api/items/{settings_item.id}",
                              headers={"Authorization": f"Bearer {admin_token}"})
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     def test_dedicated_settings_endpoint_still_works(self, client, db, admin_token, settings_item):
         """The block must not lock admins out of the supported path."""

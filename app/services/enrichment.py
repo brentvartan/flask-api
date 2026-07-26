@@ -6,8 +6,11 @@ thesis — scoring it on consumer brand fit, repeat potential, cultural alignmen
 remarkability, and overall Bullish conviction.
 """
 import json
+import logging
 import os
 import anthropic
+
+logger = logging.getLogger(__name__)
 
 _client = None
 
@@ -345,10 +348,31 @@ def enrich_signal(signal: dict) -> dict:
         message = _get_client().messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1600,
-            system=SYSTEM_PROMPT,
+            # SYSTEM_PROMPT is ~7,600 tokens (the full thesis, scorecard, ~40 calibration
+            # anchors) and is byte-identical on every call, so it is a textbook cache
+            # target — well above Sonnet's 1,024-token minimum cacheable prefix. It is
+            # billed at full rate on the first call of each 5-minute window and at ~10%
+            # thereafter, which is most of the per-signal enrichment cost. Keep this block
+            # the FIRST system block and do not interpolate per-signal text into it, or
+            # the prefix changes and every call becomes a cache miss again.
+            system=[{
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
             messages=[{"role": "user", "content": user_message}],
             timeout=60,
         )
+
+        _usage = getattr(message, "usage", None)
+        if _usage is not None:
+            logger.info(
+                "enrich cache: read=%s created=%s uncached_in=%s out=%s",
+                getattr(_usage, "cache_read_input_tokens", None),
+                getattr(_usage, "cache_creation_input_tokens", None),
+                getattr(_usage, "input_tokens", None),
+                getattr(_usage, "output_tokens", None),
+            )
 
         text = message.content[0].text.strip()
 

@@ -13,12 +13,12 @@ from flask_jwt_extended import (
 from itsdangerous import SignatureExpired, BadSignature
 from marshmallow import ValidationError
 from . import bp
-from ...extensions import db, bcrypt, jwt
+from ...extensions import db, bcrypt
 from ...models.user import User
 from ...models.token_blocklist import TokenBlocklist
 from ...schemas import LogoutSchema, ForgotPasswordSchema, ResetPasswordSchema, InviteSchema, AcceptInviteSchema
 from ...services.tokens import generate_reset_token, verify_reset_token, generate_invite_token, verify_invite_token
-from ...services.email import send_password_reset_email, send_invite_email
+from ...services.email import send_password_reset_email, send_invite_email, remove_email_suppression
 from ...utils import db_get_user
 
 logger = logging.getLogger(__name__)
@@ -28,32 +28,6 @@ forgot_password_schema = ForgotPasswordSchema()
 reset_password_schema = ResetPasswordSchema()
 invite_schema = InviteSchema()
 accept_invite_schema = AcceptInviteSchema()
-
-
-# ── Active-user token guard ───────────────────────────────────────────────────
-# Deactivating or deleting a user must take effect immediately. Without this,
-# a revoked user's 30-day refresh token keeps minting fresh access tokens.
-# This callback runs on every @jwt_required request — access AND refresh — and
-# returning None makes Flask-JWT-Extended reject the token with a 401.
-# It is registered on the shared JWTManager singleton at blueprint import time,
-# which create_app() does before the app serves any request.
-
-@jwt.user_lookup_loader
-def load_active_user(jwt_header, jwt_data):
-    """Resolve a JWT subject to a live, active User — or None to force a 401."""
-    try:
-        user = db.session.get(User, int(jwt_data["sub"]))
-    except (KeyError, TypeError, ValueError):
-        logger.warning("JWT rejected: unusable identity claim %r", jwt_data.get("sub"))
-        return None
-
-    if user is None:
-        logger.info("JWT rejected: user %s no longer exists", jwt_data.get("sub"))
-        return None
-    if not user.is_active:
-        logger.info("JWT rejected: user %s is deactivated", user.email)
-        return None
-    return user
 
 
 # ── Open self-registration (default OFF) ──────────────────────────────────────
@@ -247,6 +221,8 @@ def invite():
     frontend_url = current_app.config.get("FRONTEND_URL", "http://localhost:5173")
     invite_url = f"{frontend_url}/accept-invite?token={token}"
     invited_by = f"{current_user.first_name} {current_user.last_name}"
+
+    remove_email_suppression(email)
 
     try:
         send_invite_email(email, invite_url, invited_by)

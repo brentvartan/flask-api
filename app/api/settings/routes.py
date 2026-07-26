@@ -25,6 +25,14 @@ def _default_settings():
 @bp.route("", methods=["GET"])
 @jwt_required()
 def get_settings():
+    # Admin-gated to match PATCH below. The payload contains slack_webhook_url and
+    # the alert_emails list — reading it is as sensitive as writing it, and PATCH
+    # has always required admin while GET did not. No frontend caller relies on the
+    # unauthenticated-read behaviour (settings.get in src/api/client.js is unused).
+    user = db_get_user()
+    if not user or not user.is_admin():
+        return jsonify({"error": "Admin access required"}), 403
+
     item = _get_settings_item()
     if item:
         try:

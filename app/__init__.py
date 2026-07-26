@@ -62,12 +62,29 @@ def create_app(config_name=None):
     # JWT token blocklist
     from .models.token_blocklist import TokenBlocklist
 
+    from .models.user import User
+
     @jwt.token_in_blocklist_loader
     def check_if_token_revoked(jwt_header, jwt_payload):
         jti = jwt_payload["jti"]
-        return db.session.query(
+        revoked = db.session.query(
             TokenBlocklist.query.filter_by(jti=jti).exists()
         ).scalar()
+        if revoked:
+            return True
+
+        # Treat a deactivated account as revoked. Without this, deactivating someone
+        # in Settings -> Team leaves their existing access token working until it
+        # expires, and their 30-day refresh token able to mint new ones the whole
+        # time — so "Deactivate" revoked nothing for up to a month.
+        try:
+            identity = jwt_payload.get("sub")
+            user = db.session.get(User, int(identity)) if identity is not None else None
+        except (TypeError, ValueError):
+            return True
+        if user is None or not user.is_active:
+            return True
+        return False
 
     # JWT error handlers
     @jwt.expired_token_loader
