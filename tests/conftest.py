@@ -3,6 +3,38 @@ from app import create_app
 from app.extensions import db as _db
 
 
+# ── No test may ever spend money ──────────────────────────────────────────────
+# Autouse and session-wide, so it covers every test including ones written later.
+#
+# The enrichment path calls Anthropic in two places now: enrich_signal (Sonnet)
+# and, since P2, triage_signal (Haiku) which runs inside the shared pipeline on
+# every saved trademark. Any pipeline test that forgets to patch BOTH would issue
+# real, billable calls on a developer machine that happens to have the key
+# exported — silently, and once per signal.
+#
+# Clearing the credentials makes _get_client() raise, which both stages already
+# handle: triage fails OPEN (worth_scoring=True, no network) and enrich_signal
+# returns {"enriched": False, ...}. Tests that need a working client patch
+# _get_client directly, which takes precedence over this.
+_PAID_API_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "SERPAPI_API_KEY",
+    "PROXYCURL_API_KEY",
+    "RESEND_API_KEY",
+)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_paid_api_calls():
+    import os
+
+    saved = {k: os.environ.pop(k, None) for k in _PAID_API_KEYS}
+    yield
+    for k, v in saved.items():
+        if v is not None:
+            os.environ[k] = v
+
+
 @pytest.fixture(scope="session")
 def app():
     app = create_app("testing")

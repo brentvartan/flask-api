@@ -134,6 +134,77 @@ def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
             return False
 
 
+# ─── USPTO trademark sweep budget + watermark ─────────────────────────────────
+
+# Per-run returned-signal budget for the trademark collector.
+#
+# ScheduledScan.max_results defaults to 200, which is roughly a fifth of ONE
+# day's genuine consumer candidates (~1,050/day measured live 2026-07-26). With
+# the sweep sorted filedDate DESC, a budget that small truncates every run
+# mid-day, and the remainder is a permanent miss because the next run's sweep
+# starts from a newer horizon. The floor is set above a peak day with margin;
+# cheap triage downstream is what makes a budget this size affordable.
+# max() so an operator who deliberately configured a LARGER scan still wins.
+_TRADEMARK_SIGNAL_BUDGET = 9000
+
+# Control row holding the trademark sweep watermark (see trademarks.py — USPTO
+# indexes filings days-to-weeks after their filedDate, so a filedDate-windowed
+# sweep alone loses the late tail forever).
+_TM_WATERMARK_TITLE = "__tm_load_watermark__"
+
+
+def _read_trademark_watermark():
+    """
+    Return the datetime of the last clean trademark sweep, or None.
+
+    None means "no watermark yet" and the collector simply skips its
+    late-arrival pass — a first run has nothing to catch up on.
+    Must be called inside an app context.
+    """
+    from ..models.item import Item
+    try:
+        row = Item.query.filter_by(title=_TM_WATERMARK_TITLE, item_type="system").first()
+        if not row:
+            return None
+        raw = json.loads(row.description or "{}").get("swept_at")
+        return datetime.fromisoformat(raw) if raw else None
+    except Exception as exc:
+        logger.warning("Trademark watermark read failed: %s — sweeping without it", exc)
+        return None
+
+
+def _write_trademark_watermark(swept_at: str) -> None:
+    """
+    Persist the watermark returned by a CLEAN trademark sweep.
+
+    trademarks.py returns swept_at=None when the sweep errored part-way, and the
+    caller must not advance the watermark in that case: the failed run never saw
+    everything loaded before its start time, and moving the watermark past those
+    records would silently recreate the permanent miss.
+    Must be called inside an app context.
+    """
+    from ..models.item import Item
+    from ..extensions import db
+    if not swept_at:
+        return
+    try:
+        row = Item.query.filter_by(title=_TM_WATERMARK_TITLE, item_type="system").first()
+        if row:
+            row.description = json.dumps({"swept_at": swept_at})
+        else:
+            owner_id = _system_owner_id()
+            if owner_id is None:
+                logger.error("Trademark watermark write skipped: no user row to own it")
+                return
+            db.session.add(Item(
+                title=_TM_WATERMARK_TITLE, item_type="system", owner_id=owner_id,
+                description=json.dumps({"swept_at": swept_at}),
+            ))
+        db.session.commit()
+    except Exception as exc:
+        logger.warning("Trademark watermark write failed: %s", exc)
+
+
 def _parse_article_date(date_str: str):
     """
     Parse SerpAPI date strings into UTC datetimes for client-side age filtering.
@@ -214,9 +285,18 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         sources_ran.append('trademark')
         tm_result = search_recent_trademarks(
             days_back=days_back,
-            max_results=scan.max_results,
+            max_results=max(_TRADEMARK_SIGNAL_BUDGET, scan.max_results),
+            loaded_since=_read_trademark_watermark(),
         )
         _collect("USPTO", tm_result)
+        # Advance only on a clean sweep — search_recent_trademarks returns
+        # swept_at=None when it failed part-way, and _write_... ignores None.
+        _write_trademark_watermark(tm_result.get("swept_at"))
+        if tm_result.get("late_arrivals"):
+            logger.info(
+                "USPTO: %d late-indexed filings recovered by the watermark pass",
+                tm_result["late_arrivals"],
+            )
 
     if scan_type in ('full', 'delaware'):
         sources_ran.append('delaware')

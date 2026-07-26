@@ -24,11 +24,19 @@ Stage order is load-bearing:
   (d) conviction, then alumni — alumni only when there is no conviction match
   (e) Form D related persons  — promotes a named officer's match to the top level
   (f) acquisition detection   — grows the exit-watch brand list
-  (g) CONFLUENCE, then ENRICH — enrichment.py's tier floors read signal["signal_types"]
+  (g) CONFLUENCE, then TRIAGE, then ENRICH
+                              — enrichment.py's tier floors read signal["signal_types"]
                                 and its confluence prompt boost reads signal_count >= 2.
                                 Neither scan path passed them before, so the
                                 "never bury a trademark or Form D as cold" floor and
                                 the multi-signal boost were dead code at scan time.
+                                TRIAGE (P2) sits between them: a cheap Haiku gate that
+                                decides whether the expensive Sonnet scoring pass is
+                                worth making. It runs AFTER confluence and AFTER people
+                                matching precisely so it can be BYPASSED for the signals
+                                that must never be gated by a cheap model — a conviction
+                                founder, an exit alumnus, or a brand confluence has
+                                already seen in 2+ distinct signal types.
   (h) persist enrichment
   (i) confluence alert        — AFTER enrichment, gated by should_send_confluence_alert()
   (j) watchlist-match alert    — conviction OR alumni named on this signal
@@ -45,6 +53,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 
 from flask import current_app
 
@@ -54,6 +63,11 @@ logger = logging.getLogger(__name__)
 # the highest-urgency moment to identify the founder — hence the lower floor.
 FOUNDER_ENRICHMENT_MIN_SCORE = 70
 FOUNDER_ENRICHMENT_MIN_SCORE_NEWSWIRE = 50
+
+# Kill switch for Stage 1. Default ON; setting ENABLE_TRIAGE to one of these
+# values restores exactly the pre-P2 behaviour — every saved signal goes straight
+# to the full Sonnet scoring pass.
+_TRIAGE_OFF_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 # ─── Alert recipients ─────────────────────────────────────────────────────────
@@ -158,10 +172,22 @@ def extract_form_d_related_persons(meta: dict) -> list:
 
     Requires meta['_adsh'] and meta['_cik'] — which the scheduled path only began
     persisting in P1. Returns [] when the filing IDs are absent or EDGAR fails.
+
+    Skipped entirely when the collector already attached officers. Since P2,
+    delaware.py extracts them for EVERY Form D signal during collection rather
+    than the first 50, so re-fetching here would ask SEC for the exact same
+    primary_doc.xml a second time and overwrite the result with identical data —
+    doubling our request volume against a free public endpoint for nothing. The
+    fetch stays as a fallback for signals collected before that change, and for
+    the manual per-signal paths.
     """
     from .conviction import check_conviction_match_multi
     from .delaware import fetch_form_d_related_persons as _fetch
     from .exit_watch import check_exit_alumni_match_multi
+
+    already = meta.get("related_persons")
+    if already:
+        return already
 
     adsh = meta.get("_adsh", "")
     cik  = meta.get("_cik", "")
@@ -220,6 +246,81 @@ def build_person_names(meta: dict) -> list:
     return names
 
 
+def triage_enabled() -> bool:
+    """
+    (g) Is the cheap Stage-1 gate switched on?
+
+    Default ON. ENABLE_TRIAGE=0|false|no|off disables Stage 1 entirely and
+    restores pre-P2 behaviour: every saved signal goes straight to the full
+    Sonnet scoring pass. One env var, no redeploy of logic — because the failure
+    mode of a bad gate is silently invisible brands, and that has to be
+    revertible in seconds.
+    """
+    raw = os.environ.get("ENABLE_TRIAGE")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _TRIAGE_OFF_VALUES
+
+
+# Triage exists to make ~1,000 trademark filings a day affordable to score. It
+# applies to TRADEMARK SIGNALS ONLY, and deliberately so.
+#
+# Every other collector is low-volume — Form D runs ~110 candidates a WEEK,
+# newswire and press tens per week — so gating them saves almost nothing while
+# risking the thing the product is for. Form D is Job 1, and a Form D record is
+# inherently sparse: the gate would see little more than "NORTHSTAR LABS INC /
+# Category: Unknown" and could reasonably reject a genuine first-capital-raise
+# filing by a real consumer brand. That is the most expensive possible mistake
+# here, and no amount of prompt tuning makes a cheap model reliable on a record
+# that carries almost no text.
+_TRIAGEABLE_SIGNAL_TYPES = frozenset({"trademark"})
+
+
+def triage_bypass_reason(conviction, alumni, conf_result: dict,
+                         signal_type: str = "trademark") -> str | None:
+    """
+    (g) Should this signal skip the gate and go straight to full scoring?
+
+    Bypassed when:
+      • not_triageable    — anything other than a trademark. See the note above:
+                            triage buys volume relief on trademarks and nothing
+                            else, and Form D (Job 1) must never be gated.
+      • conviction_match  — a Bullish conviction-list founder is named. Job 2.
+      • exit_alumni_match — a tracked exit operator is named. Job 2.
+      • multi_signal      — confluence has seen this brand in 2+ DISTINCT signal
+                            types (confluence's signal_count is len(distinct
+                            types), not an event count). Triangulation is the
+                            core edge; a triangulated brand is real by
+                            definition and gets scored regardless.
+
+    Returns the reason string, or None when the signal should be triaged.
+    """
+    if (signal_type or "") not in _TRIAGEABLE_SIGNAL_TYPES:
+        return "not_triageable"
+    if conviction:
+        return "conviction_match"
+    if alumni:
+        return "exit_alumni_match"
+
+    # Fail OPEN on a malformed or missing confluence result. If the confluence
+    # stage raised, conf_result is still the default {signal_count: 1,
+    # signal_types: []} — which would read as "solo signal" and let the gate
+    # withhold scoring from a brand that may well be triangulated. When we do
+    # not KNOW it is solo, score it.
+    if not conf_result or conf_result.get("error"):
+        return "confluence_unknown"
+
+    try:
+        signal_count = int(conf_result.get("signal_count") or 1)
+    except (TypeError, ValueError):
+        return "confluence_unknown"
+    distinct_types = len({t for t in (conf_result.get("signal_types") or []) if t})
+
+    if signal_count >= 2 or distinct_types >= 2:
+        return "multi_signal"
+    return None
+
+
 def founder_enrichment_threshold(signal_type: str) -> int:
     """Score floor above which a brand is worth spending founder-discovery budget on."""
     if signal_type == "newswire":
@@ -265,9 +366,17 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
           "enriched", "watch_level", "bullish_score",
           "one_line_thesis", "cultural_theme",
           "conviction_match", "exit_alumni_match",
+          "triage": {...} | None,        # Stage-1 verdict, when the gate ran
+          "triage_skipped": bool,        # True when Stage 2 was skipped
           "confluence": {...}, "confluence_alert_sent", "watchlist_alert_sent",
           "founder_queued", "watchlist_queued", "errors": [str, ...]
         }
+
+    A triaged-out signal returns enriched=False, watch_level=None and
+    bullish_score=None — the same shape as an enrichment failure, which every
+    caller already handles (both scan paths `continue` on `not enriched`). It is
+    unscored, NOT cold: it is deliberately absent from the hot/warm/cold counts
+    rather than being counted as a rejection.
     """
     from ..extensions import db
     from ..models.item import Item
@@ -284,6 +393,8 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
         "cultural_theme":        "",
         "conviction_match":      None,
         "exit_alumni_match":     None,
+        "triage":                None,
+        "triage_skipped":        False,
         "confluence":            {"is_confluence": False, "signal_count": 1, "signal_types": [], "hit_id": None},
         "confluence_alert_sent": False,
         "watchlist_alert_sent":  False,
@@ -459,23 +570,78 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
         result["confluence"] = conf_result
     except Exception as exc:
         _fail("confluence_record", exc)
+        # Flag the failure so the triage bypass can fail OPEN. Without this the
+        # default {signal_count: 1} reads as a confirmed solo signal and the gate
+        # could withhold scoring from a brand that is actually triangulated.
+        conf_result = dict(conf_result or {})
+        conf_result["error"] = str(exc)
+        result["confluence"] = conf_result
+
+    # The payload is built once and handed to BOTH stages, so the gate and the
+    # scorer can never be looking at different text for the same signal.
+    scoring_payload = {
+        "companyName":      meta.get("resolved_owner") or meta.get("company_name", item.title),
+        "category":         meta.get("category", ""),
+        "signal_type":      sig_type,
+        "description":      meta.get("description", ""),
+        "notes":            meta.get("notes", ""),
+        "owner":            meta.get("resolved_owner") or owner,
+        "conviction_match": conviction,
+        "signal_types":     conf_result.get("signal_types") or [sig_type],
+        "signal_count":     conf_result.get("signal_count") or 1,
+    }
+
+    # ── (g2) TRIAGE — the cheap gate in front of the expensive scorer ──────────
+    # Any failure here leaves worth_scoring True. Coverage never shrinks because
+    # a gate broke; the whole point of P2 is that nothing goes unseen.
+    triage = None
+    bypass = triage_bypass_reason(conviction, alumni, conf_result, sig_type)
+    if bypass:
+        # Rare and meaningful — a high-value signal skipping the gate is worth
+        # seeing in the log.
+        logger.info("Triage bypassed for item %s (%s) — full scoring", item_id, bypass)
+    elif not triage_enabled():
+        # Applies to every signal in the batch, so debug rather than a per-signal
+        # INFO line across a thousand-signal nightly scan.
+        bypass = "disabled"
+        logger.debug("Triage disabled (ENABLE_TRIAGE) — full scoring for item %s", item_id)
+    if not bypass:
+        try:
+            from .enrichment import triage_signal
+            triage = triage_signal(scoring_payload) or {}
+        except Exception as exc:
+            # triage_signal is written never to raise; if it somehow does, that
+            # must still not cost coverage.
+            _fail("triage", exc)
+            triage = None
+        if triage is not None:
+            triage["at"] = datetime.now(timezone.utc).isoformat()
+            meta["triage"] = triage
+            result["triage"] = triage
+
+    if triage is not None and not triage.get("worth_scoring", True):
+        # Triaged out. The row STAYS in the database, visible on the dashboard,
+        # with a record of why it was not scored — it is un-enriched, not hidden.
+        # `flask re-enrich` and the /api/enrich batch endpoint both re-score it
+        # on demand, so a wrong gate call is one command away from being undone.
+        result["triage_skipped"] = True
+        try:
+            _save()
+        except Exception as exc:
+            _fail("triage_persist", exc)
+        logger.info(
+            "Triaged out %s (item %s): %s [confidence=%s]",
+            result["company_name"], item_id,
+            triage.get("reason", ""), triage.get("confidence", ""),
+        )
 
     enrichment = {}
-    try:
-        from .enrichment import enrich_signal
-        enrichment = enrich_signal({
-            "companyName":      meta.get("resolved_owner") or meta.get("company_name", item.title),
-            "category":         meta.get("category", ""),
-            "signal_type":      sig_type,
-            "description":      meta.get("description", ""),
-            "notes":            meta.get("notes", ""),
-            "owner":            meta.get("resolved_owner") or owner,
-            "conviction_match": conviction,
-            "signal_types":     conf_result.get("signal_types") or [sig_type],
-            "signal_count":     conf_result.get("signal_count") or 1,
-        }) or {}
-    except Exception as exc:
-        _fail("enrichment", exc)
+    if not result["triage_skipped"]:
+        try:
+            from .enrichment import enrich_signal
+            enrichment = enrich_signal(scoring_payload) or {}
+        except Exception as exc:
+            _fail("enrichment", exc)
 
     # ── (h) Persist the enrichment ────────────────────────────────────────────
     if enrichment.get("enriched"):

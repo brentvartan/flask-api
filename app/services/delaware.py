@@ -14,14 +14,16 @@ Stealth consumer brands caught here are:
 
 EDGAR's search API is completely free with no API key required.
 """
-import json
 import re
 import time
 import logging
+import threading
 import xml.etree.ElementTree as ET
 import requests
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,28 @@ EDGAR_RETRY_STATUSES  = {429, 500, 502, 503, 504}
 # When the count probe itself fails, sweep this many filings blind rather than
 # returning nothing — a probe outage must degrade coverage, never zero it.
 EDGAR_PROBE_FALLBACK_FILINGS = 1500
+
+# ─── Form D officer extraction: coverage + throttle knobs ────────────────────
+# Officers named on a Form D are the most valuable field this product collects:
+# the people who just made a legal promise to an investor, matched against the
+# 193-person conviction/alumni watchlist.  The old serial loop covered only the
+# first 50 signals of a run, so the large majority of every week got NO officer
+# extraction at all — no related_persons, no filer_name, no conviction/alumni
+# check, no offering figures.  Production agreed: 42 of 516 Form D signals
+# carried a filer_name.  Coverage is now the whole run, bounded by a ceiling.
+#
+# Measured 2026-07-26 against live EDGAR for a 7-day window: 1,172 Form D
+# filings, 62/272 sampled across three pages passing the consumer gate (22.8%),
+# i.e. ~270 consumer candidates.  500 leaves real headroom over that while
+# still capping a 30-day manual backfill at ~100s of fetching.
+#
+# SEC publishes a 10 requests/second ceiling for automated clients.  We hold a
+# deliberate 2x margin under it — other collectors in this same process also
+# talk to sec.gov, and getting the fund's User-Agent blocked would cost far
+# more than the handful of seconds a higher rate would save.
+FORMD_MAX_WORKERS      = 5      # bounded pool — never an unbounded fan-out
+FORMD_REQUESTS_PER_SEC = 5.0    # half of SEC's published 10 req/s limit
+FORMD_ENRICH_CEILING   = 500    # hard cap on filings enriched in one run
 
 # Form D "items" codes that indicate investment funds / VC vehicles — not
 # operating companies.  We exclude filings whose ONLY item codes are these.
@@ -313,9 +337,17 @@ def fetch_form_d_related_persons(adsh: str, cik: str) -> list[dict]:
         adsh: EDGAR accession number e.g. "0001234567-24-000123"
         cik:  EDGAR CIK number (digits only)
 
+    Called per-item by signal_pipeline.py after a signal is saved, so it can
+    fire alongside the collection-time sweep. It therefore shares the same
+    process-wide _SEC_PACER: the SEC limit applies to us as one client, and a
+    fan-out of pipeline threads each fetching unpaced is exactly how a client
+    gets blocked. In practice the pacer's slots are long expired by the time
+    the pipeline runs, so this normally costs nothing.
+
     Returns:
         List of {"name": str, "relationships": list[str]}, empty list on failure.
     """
+    _SEC_PACER.acquire()
     content = _fetch_form_d_xml_content(adsh, cik)
     if not content:
         return []
@@ -473,17 +505,213 @@ def _extract_signal(src: dict, seen_names: set, end_dt: datetime) -> dict | None
         "_adsh":       adsh,
         "_cik":        _cik,
         "_name":       name,  # original full legal name for domain slug
+        # Internal-only: orders officer extraction when a run exceeds the
+        # ceiling (_enrich_priority). Stripped before the signals are returned.
+        "_inc_state":  inc_state,
     }
+
+
+# ─── SEC request pacing ───────────────────────────────────────────────────────
+
+class _RateLimiter:
+    """
+    Thread-safe request pacer: hands out at most `rate_per_sec` permits per
+    second across every caller in this process.
+
+    Implemented as a serialised next-slot clock rather than a token bucket, so
+    there is no burst allowance — SEC never sees more than `rate_per_sec`
+    requests inside any one-second window, which is what their published limit
+    actually measures.  A rate of 0 disables pacing entirely.
+    """
+
+    def __init__(self, rate_per_sec: float):
+        self.rate      = float(rate_per_sec)
+        self._interval = (1.0 / self.rate) if self.rate > 0 else 0.0
+        self._lock     = threading.Lock()
+        self._next_at  = 0.0
+
+    def acquire(self) -> None:
+        """Block until this caller is allowed to issue its request."""
+        if self._interval <= 0:
+            return
+        now = time.monotonic()
+        with self._lock:
+            slot          = max(now, self._next_at)
+            self._next_at = slot + self._interval
+        wait = slot - now
+        if wait > 0:
+            time.sleep(wait)
+
+
+# Process-wide: the manual scan path and the nightly scheduler can overlap, and
+# SEC's limit applies to us as one client, not per scan.
+_SEC_PACER = _RateLimiter(FORMD_REQUESTS_PER_SEC)
+
+
+def _fetch_form_d_xml_paced(sig: dict) -> tuple[dict, bytes | None]:
+    """
+    Worker body for the bounded fetch pool: wait for a rate-limit slot, then
+    fetch one filing's XML.
+
+    Returns (signal, content|None).  Every failure is swallowed into a None so
+    one dead filing can never abort the rest of the batch — coverage degrades
+    by one brand, not by the whole run.
+    """
+    try:
+        _SEC_PACER.acquire()
+        return sig, _fetch_form_d_xml_content(sig.get("_adsh", ""), sig.get("_cik", ""))
+    except Exception as exc:
+        logger.warning(
+            "Form D XML fetch failed for %s: %s", sig.get("_adsh", "?"), exc
+        )
+        return sig, None
+
+
+def _enrich_priority(sig: dict) -> tuple:
+    """
+    Sort key for officer extraction — lower sorts first.
+
+    A normal run covers every filing, so this only bites when a run exceeds
+    FORMD_ENRICH_CEILING.  When it does, Delaware-incorporated filings win:
+    DE incorporation is the deliberate VC-track choice `_extract_signal`
+    already rewards (score_boost 12 vs 8), so if we can only have some
+    officers, those are the ones worth having.  Python's sort is stable, so
+    EDGAR's own ordering is preserved inside each tier.
+    """
+    return (0 if (sig.get("_inc_state") or "").upper() == "DE" else 1,)
+
+
+@lru_cache(maxsize=1)
+def _person_name_check():
+    """
+    Resolve founder_discovery.looks_like_person once per process.
+
+    Cached because a FAILED import is not cached by Python — without this, a
+    missing founder_discovery would re-attempt the full import for every
+    officer name on every filing.
+    """
+    try:
+        from .founder_discovery import looks_like_person as _impl
+        return _impl
+    except ImportError:
+        return None
+
+
+def _looks_like_person(name: str) -> bool:
+    """
+    Person-name heuristic, with a local fallback when founder_discovery is
+    unavailable (it pulls optional third-party deps at import time).
+    """
+    _impl = _person_name_check()
+    if _impl is not None:
+        return _impl(name)
+    parts = name.strip().split()
+    return (
+        2 <= len(parts) <= 4
+        and not re.search(r'\d', name)
+        and not re.search(
+            r'\b(LLC|Inc|Corp|Ltd|LLP|PLLC|LP|PC)\b', name, re.IGNORECASE
+        )
+        and name.strip().lower() not in {"n/a", "n/a n/a"}
+    )
+
+
+def _attach_form_d_xml_fields(sig: dict, content: bytes) -> None:
+    """
+    Parse one Form D XML payload and merge everything it yields onto `sig`.
+
+    Always runs on the CALLING thread, never inside a fetch worker, so signal
+    mutation and the conviction-before-alumni precedence rule stay
+    deterministic no matter how the parallel fetches interleave.
+    """
+    from .conviction import check_conviction_match_multi
+    from .exit_watch import check_exit_alumni_match_multi
+
+    # ── Offering data ─────────────────────────────────────────────────────────
+    # total_offering / amount_sold / minimum_investment are RANKING features.
+    # minimum_investment in particular is a real tell ($25k reads very
+    # differently from $1M) and scheduler.py persists it — keep it merged.
+    offering = parse_form_d_offering_data(content)
+    if offering:
+        sig.update({k: v for k, v in offering.items() if v is not None})
+
+    # ── Related persons ───────────────────────────────────────────────────────
+    raw = _parse_related_persons_from_xml(content)
+    if not raw:
+        return
+
+    enriched = []
+    filer_name = None
+    for person in raw:
+        pname = person["name"]
+        if pname.lower().startswith("n/a") or pname.strip().lower() == "n/a":
+            continue
+        p_conv   = check_conviction_match_multi([pname])
+        p_alumni = check_exit_alumni_match_multi([pname]) if not p_conv else None
+        enriched.append({
+            **person,
+            "conviction_match":  p_conv,
+            "exit_alumni_match": p_alumni,
+        })
+        if filer_name is None and _looks_like_person(pname):
+            filer_name = pname
+
+    sig["related_persons"] = enriched
+    if filer_name:
+        sig["filer_name"] = filer_name
+    # Bubble up first conviction match so enrichment.py can use it directly
+    _top_conv = next(
+        (p["conviction_match"] for p in enriched if p.get("conviction_match")), None
+    )
+    if _top_conv:
+        sig["conviction_match"] = _top_conv
+
+    # No conviction founder on this filing — bubble up the first exit alumni
+    # match instead, so scheduler.py can fire the immediate ALUMNI watchlist
+    # alert (it reads exit_alumni_match at the signal TOP level, not inside
+    # related_persons, so per-person values alone left that alert unreachable).
+    #
+    # The two designations are separate and must never be collapsed:
+    # conviction outranks alumni, and the conviction scan runs across the WHOLE
+    # officer list before alumni is even considered — an alumni listed above a
+    # conviction founder must never win. Per-person values stay on
+    # related_persons either way and are unaffected.
+    if not sig.get("conviction_match"):
+        _top_alumni = next(
+            (p["exit_alumni_match"] for p in enriched if p.get("exit_alumni_match")),
+            None,
+        )
+        if _top_alumni:
+            sig["exit_alumni_match"] = _top_alumni
 
 
 def _enrich_related_persons(
     signals: list,
-    limit: int = 50,
+    limit: int = FORMD_ENRICH_CEILING,
 ) -> None:
     """
-    For the first `limit` Form D signals, fetch the EDGAR XML ONCE per filing
-    and attach related_persons, filer_name, and offering data in-place.
-    Throttled at ~3 req/s to stay well under SEC's 10 req/s limit.
+    Fetch the EDGAR XML ONCE per Form D filing and attach related_persons,
+    filer_name, and offering data in-place.
+
+    COVERAGE: `limit` is a safety ceiling, not a sampling budget.  It defaults
+    to FORMD_ENRICH_CEILING so a realistic run (~270 consumer candidates from a
+    7-day window, measured) gets EVERY filing's officers rather than an
+    arbitrary first 50.  A filing skipped here is a founder the product never
+    sees.
+
+    THROTTLE: fetches run on a bounded pool of at most FORMD_MAX_WORKERS
+    threads, paced process-wide by _SEC_PACER at FORMD_REQUESTS_PER_SEC — half
+    of SEC's published 10 req/s ceiling.  Only the HTTP fetch is parallel;
+    parsing and watchlist matching happen on the calling thread, so the
+    conviction-before-alumni precedence rule cannot be raced.
+
+    COST: ~270 filings at 5 req/s is ~55s of wall clock, against a nightly full
+    scan of roughly 75 minutes (~1.2%).  The old 50-filing serial loop cost
+    ~22s, so this buys 5x the coverage for ~33s.
+
+    ORDERING: when a run genuinely exceeds the ceiling, Delaware-incorporated
+    filings are covered first (see _enrich_priority) instead of whatever order
+    EDGAR happened to return.
 
     Sets on each signal (mutates in place):
         related_persons: list[{"name": str, "relationships": list[str],
@@ -497,103 +725,62 @@ def _enrich_related_persons(
         amount_sold: int|None      — USD amount sold so far
         minimum_investment: int|None
     """
-    from .conviction import check_conviction_match_multi
-    from .exit_watch import check_exit_alumni_match_multi
     try:
-        from .founder_discovery import looks_like_person
-    except ImportError:
-        def looks_like_person(name):
-            import re as _re
-            parts = name.strip().split()
-            return (
-                2 <= len(parts) <= 4
-                and not _re.search(r'\d', name)
-                and not _re.search(
-                    r'\b(LLC|Inc|Corp|Ltd|LLP|PLLC|LP|PC)\b', name, _re.IGNORECASE
-                )
-                and name.strip().lower() not in {"n/a", "n/a n/a"}
-            )
+        budget = int(limit)
+    except (TypeError, ValueError):
+        budget = FORMD_ENRICH_CEILING
+    budget = max(0, min(budget, FORMD_ENRICH_CEILING))
+    if budget <= 0:
+        return
 
-    for sig in signals[:limit]:
-        adsh = sig.get("_adsh", "")
-        cik  = sig.get("_cik", "")
-        if not adsh or not cik:
-            continue
+    # Only filings that carry EDGAR IDs are fetchable. Selecting these BEFORE
+    # applying the budget matters: the old signals[:limit] slice spent budget
+    # on signals it then skipped for a missing adsh.
+    targets = [s for s in signals if s.get("_adsh") and s.get("_cik")]
+    eligible = len(targets)
+    if not eligible:
+        return
 
-        # One HTTP request per filing — parse both persons and offering data
-        try:
-            content = _fetch_form_d_xml_content(adsh, cik)
-        except Exception as exc:
-            logger.debug("Form D XML fetch failed %s: %s", adsh, exc)
-            time.sleep(0.3)
-            continue
-
-        if not content:
-            time.sleep(0.3)
-            continue
-
-        # ── Offering data (Task 3) ────────────────────────────────────────────
-        offering = parse_form_d_offering_data(content)
-        if offering:
-            sig.update({k: v for k, v in offering.items() if v is not None})
-
-        # ── Related persons ───────────────────────────────────────────────────
-        raw = _parse_related_persons_from_xml(content)
-        if not raw:
-            time.sleep(0.3)
-            continue
-
-        enriched = []
-        filer_name = None
-        for person in raw:
-            pname = person["name"]
-            if pname.lower().startswith("n/a") or pname.strip().lower() == "n/a":
-                continue
-            p_conv   = check_conviction_match_multi([pname])
-            p_alumni = check_exit_alumni_match_multi([pname]) if not p_conv else None
-            enriched.append({
-                **person,
-                "conviction_match":  p_conv,
-                "exit_alumni_match": p_alumni,
-            })
-            if filer_name is None and looks_like_person(pname):
-                filer_name = pname
-
-        sig["related_persons"] = enriched
-        if filer_name:
-            sig["filer_name"] = filer_name
-        # Bubble up first conviction match so enrichment.py can use it directly
-        _top_conv = next(
-            (p["conviction_match"] for p in enriched if p.get("conviction_match")), None
+    targets.sort(key=_enrich_priority)      # stable — DE first, EDGAR order within tier
+    if eligible > budget:
+        logger.warning(
+            "Form D officer extraction capped at %d of %d eligible filings — "
+            "%d skipped (Delaware-incorporated prioritised)",
+            budget, eligible, eligible - budget,
         )
-        if _top_conv:
-            sig["conviction_match"] = _top_conv
+        targets = targets[:budget]
 
-        # No conviction founder on this filing — bubble up the first exit alumni
-        # match instead, so scheduler.py can fire the immediate ALUMNI watchlist
-        # alert (it reads exit_alumni_match at the signal TOP level, not inside
-        # related_persons, so per-person values alone left that alert unreachable).
-        #
-        # The two designations are separate and must never be collapsed:
-        # conviction outranks alumni, so alumni is promoted ONLY when the signal
-        # carries no conviction match. Per-person values stay on related_persons
-        # either way and are unaffected.
-        if not sig.get("conviction_match"):
-            _top_alumni = next(
-                (p["exit_alumni_match"] for p in enriched if p.get("exit_alumni_match")),
-                None,
-            )
-            if _top_alumni:
-                sig["exit_alumni_match"] = _top_alumni
+    workers = max(1, min(FORMD_MAX_WORKERS, len(targets)))
+    logger.info(
+        "Form D officer extraction: %d filings on %d workers at %.1f req/s "
+        "(~%.0fs)",
+        len(targets), workers, FORMD_REQUESTS_PER_SEC,
+        len(targets) / FORMD_REQUESTS_PER_SEC if FORMD_REQUESTS_PER_SEC else 0,
+    )
 
-        time.sleep(0.3)
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="formd-xml") as pool:
+        futures = [pool.submit(_fetch_form_d_xml_paced, s) for s in targets]
+        # Consumed in submit order, not completion order, so the mutation
+        # sequence is identical to the old serial loop's.
+        for future in futures:
+            sig, content = future.result()
+            if not content:
+                continue
+            try:
+                _attach_form_d_xml_fields(sig, content)
+            except Exception as exc:
+                # One malformed filing must not cost the rest of the batch.
+                logger.warning(
+                    "Form D XML parse failed for %s: %s", sig.get("_adsh", "?"), exc
+                )
 
 
 def search_recent_delaware_entities(
     days_back: int = 7,
     max_results: int = 2000,
     max_filings: int = 6000,
-    related_persons_limit: int = 50,
+    related_persons_limit: int = FORMD_ENRICH_CEILING,
 ) -> dict:
     """
     Fetch recent Form D filings from consumer companies via SEC EDGAR (free,
@@ -601,10 +788,13 @@ def search_recent_delaware_entities(
 
     Strategy:
     BROAD SWEEP — probe for the true Form D count in the window, then page
-    through the FULL universe (up to max_filings). At ~8% consumer candidate
-    rate (after _FUND_ITEMS and blocklist filtering), a 7-day window (~1,400
-    Form Ds) yields ~110 consumer brand candidates. max_results=2000 ensures
-    we never hit the cap and miss brands in any realistic scan window.
+    through the FULL universe (up to max_filings). Measured 2026-07-26 against
+    live EDGAR: a 7-day window held 1,172 Form Ds and 22.8% of a 272-filing
+    sample passed the consumer gate (_FUND_ITEMS + blocklist), i.e. ~270
+    consumer brand candidates — materially more than the ~110 this docstring
+    used to claim, which is part of why the old first-50 officer cap was
+    covering so little. max_results=2000 ensures we never hit the cap and miss
+    brands in any realistic scan window.
     Targeted keyword queries were tried and removed: EDGAR full-text search
     matches officer names and addresses, not just company names, so terms
     like "food" or "beauty" return near-zero results and add no signal.
@@ -712,7 +902,10 @@ def search_recent_delaware_entities(
 
         time.sleep(0.5)
 
-    # ── Related persons: fetch XML + match watchlist for bounded batch ────────
+    # ── Related persons: fetch XML + match watchlist for the WHOLE run ────────
+    # related_persons_limit is a ceiling, not a sample size: at the default it
+    # covers every consumer candidate a realistic window produces. Officers are
+    # the highest-value field here, so an uncovered filing is a missed founder.
     formd_signals = list(signals)
     if related_persons_limit > 0:
         _enrich_related_persons(formd_signals, limit=related_persons_limit)
@@ -720,6 +913,7 @@ def search_recent_delaware_entities(
     # Strip internal-only keys before returning
     for s in signals:
         s.pop("_name", None)
+        s.pop("_inc_state", None)
 
     # Probe outage: report the filings we actually saw as the total floor
     # rather than a bare 0, so the number never reads as "nothing was filed".

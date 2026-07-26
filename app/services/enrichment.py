@@ -1,9 +1,28 @@
 """
 Bullish AI Enrichment Service
 
-Uses Claude to evaluate a trademark filing against Bullish's full investment
-thesis — scoring it on consumer brand fit, repeat potential, cultural alignment,
-remarkability, and overall Bullish conviction.
+Two stages, deliberately separated by cost:
+
+  STAGE 1 — triage_signal()  claude-haiku-4-5, short prompt, ~150 output tokens.
+            A GATE, not an analyst. One question: could this plausibly be an
+            early-stage consumer brand at all? Runs over 100% of candidates.
+
+  STAGE 2 — enrich_signal()  claude-sonnet-4-6, the full ~7,600-token thesis
+            prompt. Scores brand fit, repeat potential, cultural alignment,
+            remarkability and founder model. Runs only on triage survivors.
+
+Why: measured against live USPTO, ~1,047 consumer-class trademark candidates a
+day pass the app's own filters and the nightly scan could only afford to score
+the newest ~200 — everything below that horizon was never revisited, on the
+product's LONGEST-LEAD signal. Separately, ~88% of what did get scored came back
+COLD, so most of the Sonnet spend was being burnt proving the obvious. A cheap
+gate over everything plus expensive scoring on survivors buys ~5x the coverage
+for less money.
+
+Triage FAILS OPEN by construction. Any error — no API key, HTTP failure,
+unparseable JSON, a verdict that is not a boolean — returns worth_scoring=True.
+A triage outage must never silently shrink coverage; that is the exact class of
+bug this whole change exists to fix.
 """
 import json
 import logging
@@ -23,6 +42,169 @@ def _get_client():
             raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set")
         _client = anthropic.Anthropic(api_key=api_key)
     return _client
+
+
+def _goods_services_from_notes(owner: str, raw_notes: str) -> str:
+    """
+    Strip the "Owner: NAME." prefix USPTO trademark notes carry, leaving the
+    goods-and-services text.
+
+    Shared by triage_signal and enrich_signal on purpose. Two copies of this
+    parse is exactly the divergence shape this codebase keeps rediscovering:
+    the gate and the scorer must read the same goods text, or a record can be
+    triaged on one description and scored on another.
+    """
+    if owner and raw_notes.startswith(f"Owner: {owner}"):
+        remaining = raw_notes[len(f"Owner: {owner}"):].lstrip(". ").strip()
+        return remaining if remaining else "Not available"
+    return raw_notes
+
+
+# ── Stage 1: triage ───────────────────────────────────────────────────────────
+
+_TRIAGE_MODEL       = "claude-haiku-4-5"
+_TRIAGE_MAX_TOKENS  = 150
+# Per-field character cap on the triage prompt. A gate does not need the full
+# goods-and-services recital; capping keeps input tokens (and therefore the
+# whole point of this stage) bounded regardless of how verbose a filing is.
+_TRIAGE_FIELD_CHARS = 700
+
+_VALID_CONFIDENCE = ("high", "medium", "low")
+
+TRIAGE_SYSTEM_PROMPT = """You are a fast pre-filter for a seed-stage CONSUMER brand venture fund's signal scanner. You are a GATE, not an analyst.
+
+Answer exactly one question: could this record PLAUSIBLY be an early-stage consumer brand — something an individual person buys, wears, eats, drinks, uses, subscribes to, or pays for directly?
+
+Do NOT assess investment quality, brand strength, founder quality, novelty, or how exciting it is. A dull-but-real consumer product PASSES. A separate, expensive scoring step handles all of that; your only job is to keep obvious non-fits out of it.
+
+Return worth_scoring=false ONLY when the record is clearly one of:
+- B2B, enterprise, or SaaS software; developer tools; APIs; infrastructure; procurement, logistics, HR, ERP or compliance platforms
+- advertising, ad-tech, data brokerage, or any model where the user is the product rather than the payer
+- industrial, chemical, agricultural, mining, construction, or wholesale/OEM/contract-manufacturing supply
+- professional and institutional services sold to businesses: law firms, accountancy, business insurance brokerage, commercial lending, staffing, management consulting
+- real estate, property management, or construction development
+- holding companies, investment funds, IP-licensing or royalty vehicles
+- government, religious, or accredited educational institutions
+- not a product or service at all: a bare personal name with no goods, a placeholder, or gibberish
+
+Everything else returns worth_scoring=true. That explicitly includes: unfamiliar or coined brand names, sparse or vague goods/services text, missing or "Other"/"Unknown" categories, consumer hardware and devices, apps, games, marketplaces, consumer fintech and insurance where the person pays directly, services, media, and anything consumer-adjacent you are unsure about.
+
+BIAS TOWARD INCLUSION. A false positive costs one scoring call. A false negative means a genuinely promising brand is never seen by anyone, ever. When uncertain, pass it through.
+
+Respond ONLY with a valid JSON object — no markdown, no commentary outside it:
+{"worth_scoring": true|false, "reason": "<one short clause>", "confidence": "high|medium|low"}"""
+
+
+def _triage_pass(reason: str, error: str = None) -> dict:
+    """
+    Build a FAIL-OPEN triage verdict.
+
+    triaged=False marks a verdict the model did not actually produce, so a
+    coverage audit can tell "the gate said yes" apart from "the gate was down
+    and we let it through anyway".
+    """
+    verdict = {
+        "worth_scoring": True,
+        "reason":        reason,
+        "confidence":    "low",
+        "triaged":       False,
+        "model":         _TRIAGE_MODEL,
+    }
+    if error:
+        verdict["error"] = error
+    return verdict
+
+
+def triage_signal(signal: dict) -> dict:
+    """
+    STAGE 1 — decide whether a signal is worth the full thesis scoring pass.
+
+    signal dict accepts the same keys as enrich_signal (only a subset is read):
+      - companyName, category, signal_type, description, notes, owner
+
+    Returns:
+        {
+          "worth_scoring": bool,   # False ONLY on an explicit model rejection
+          "reason":        str,
+          "confidence":    "high" | "medium" | "low",
+          "triaged":       bool,   # True when the model actually returned a verdict
+          "model":         str,
+          "error":         str,    # present only on a fail-open
+        }
+
+    NEVER raises. Every failure path returns worth_scoring=True.
+    """
+    try:
+        client = _get_client()
+    except RuntimeError as exc:
+        return _triage_pass("triage unavailable — scoring anyway", error=str(exc))
+
+    owner     = (signal.get("owner") or "").strip()
+    raw_notes = signal.get("notes") or ""
+    goods     = _goods_services_from_notes(owner, raw_notes) or "Not available"
+
+    user_message = (
+        f"Brand Name: {(signal.get('companyName') or 'Unknown')}\n"
+        f"Category: {signal.get('category') or 'Unknown'}\n"
+        f"Signal Type: {signal.get('signal_type') or 'trademark'}\n"
+        f"Filer / Owner: {owner or 'Unknown'}\n"
+        f"Description: {(signal.get('description') or '')[:_TRIAGE_FIELD_CHARS]}\n"
+        f"Goods & Services: {goods[:_TRIAGE_FIELD_CHARS]}\n"
+    )
+
+    try:
+        message = client.messages.create(
+            model=_TRIAGE_MODEL,
+            max_tokens=_TRIAGE_MAX_TOKENS,
+            system=TRIAGE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+            timeout=30,
+        )
+
+        _usage = getattr(message, "usage", None)
+        if _usage is not None:
+            logger.info(
+                "triage usage: in=%s out=%s",
+                getattr(_usage, "input_tokens", None),
+                getattr(_usage, "output_tokens", None),
+            )
+
+        text = message.content[0].text.strip()
+
+        # Same markdown-fence robustness as enrich_signal
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return _triage_pass("triage response unparseable — scoring anyway",
+                            error=f"JSON parse error: {exc}")
+    except Exception as exc:
+        return _triage_pass("triage call failed — scoring anyway", error=str(exc))
+
+    # Only an explicit, well-formed boolean rejection may withhold scoring.
+    raw_verdict = result.get("worth_scoring")
+    if isinstance(raw_verdict, bool):
+        worth = raw_verdict
+    elif isinstance(raw_verdict, str) and raw_verdict.strip().lower() in ("true", "false"):
+        worth = raw_verdict.strip().lower() == "true"
+    else:
+        return _triage_pass("triage verdict not a boolean — scoring anyway",
+                            error=f"unusable worth_scoring: {raw_verdict!r}")
+
+    confidence = str(result.get("confidence") or "").strip().lower()
+    if confidence not in _VALID_CONFIDENCE:
+        confidence = "medium"
+
+    return {
+        "worth_scoring": worth,
+        "reason":        str(result.get("reason") or "")[:300],
+        "confidence":    confidence,
+        "triaged":       True,
+        "model":         _TRIAGE_MODEL,
+    }
 
 
 # WARM starts at 50. A single legal filing that lands within this many points of
@@ -271,12 +453,9 @@ def enrich_signal(signal: dict) -> dict:
     owner = signal.get("owner", "").strip()
     raw_notes = signal.get("notes", "Not available")
 
-    # Strip 'Owner: NAME.' prefix from notes if owner is passed separately
-    if owner and raw_notes.startswith(f"Owner: {owner}"):
-        remaining = raw_notes[len(f"Owner: {owner}"):].lstrip(". ").strip()
-        goods_services = remaining if remaining else "Not available"
-    else:
-        goods_services = raw_notes
+    # Strip 'Owner: NAME.' prefix from notes if owner is passed separately.
+    # Shared with triage_signal so both stages read the same goods text.
+    goods_services = _goods_services_from_notes(owner, raw_notes)
 
     user_message = (
         f"Evaluate this brand signal as a potential Bullish investment:\n\n"
