@@ -231,6 +231,57 @@ def _parse_article_date(date_str: str):
     return None
 
 
+# ─── Scan progress telemetry ──────────────────────────────────────────────────
+
+_SCAN_PROGRESS_TITLE = "__scan_progress__"
+
+
+def _scan_progress(phase: str, **detail) -> None:
+    """
+    Record which phase a running scan is in.
+
+    A full scan is a long-lived background thread with no visible output until it
+    finishes, so when one appeared to stall there was no way to tell collection
+    from saving from scoring without production logs — which need an interactive
+    login this environment cannot do. This is the same lesson as the scheduler
+    heartbeat: a long job that reports nothing until the end is indistinguishable
+    from a dead one.
+
+    Best-effort and never raises: telemetry must not be able to break a scan.
+    """
+    from ..models.item import Item
+    from ..extensions import db
+
+    payload = {"phase": phase, "at": datetime.now(timezone.utc).isoformat(), **detail}
+    try:
+        owner_id = _system_owner_id()
+        if owner_id is None:
+            return
+        row = Item.query.filter_by(title=_SCAN_PROGRESS_TITLE, item_type="system").first()
+        if row:
+            row.description = json.dumps(payload)
+        else:
+            db.session.add(Item(title=_SCAN_PROGRESS_TITLE, item_type="system",
+                                owner_id=owner_id, description=json.dumps(payload)))
+        db.session.commit()
+    except Exception as exc:
+        logger.debug("Scan progress write failed (%s): %s", phase, exc)
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+
+def read_scan_progress() -> dict:
+    """Return the last recorded scan phase (empty dict when never run)."""
+    from ..models.item import Item
+    try:
+        row = Item.query.filter_by(title=_SCAN_PROGRESS_TITLE, item_type="system").first()
+        return json.loads(row.description or "{}") if row else {}
+    except Exception:
+        return {}
+
+
 # ─── Save / enrich budgets ────────────────────────────────────────────────────
 
 # Rows per commit in the save loop. Deep paging returns ~8,500 signals a run;
@@ -339,6 +390,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             logger.warning("%s scan error: %s", label, result["error"])
             errors.append(f"{label}: {result['error']}")
 
+    _scan_progress("collect:trademark")
     if scan_type in ('full', 'trademark'):
         sources_ran.append('trademark')
         tm_result = search_recent_trademarks(
@@ -356,6 +408,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 tm_result["late_arrivals"],
             )
 
+    _scan_progress("collect:delaware")
     if scan_type in ('full', 'delaware'):
         sources_ran.append('delaware')
         de_result = search_recent_delaware_entities(
@@ -443,6 +496,8 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         error_msg = "; ".join(errors) if errors else "All signal sources failed"
         return {"error": "All signal sources failed", "new_saved": 0, "hot_found": 0, "sources_ran": sources_ran_str, "error_message": error_msg}
 
+    _scan_progress("dedup:load-fingerprints", collected=len(signals))
+
     # ── 2. Load existing fingerprints (dedup) ─────────────────────────────────
     rows = (
         Item.query
@@ -458,6 +513,8 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 existing_fps.add(fp)
         except Exception:
             pass
+
+    _scan_progress("save", collected=len(signals), known_fingerprints=len(existing_fps))
 
     # ── 3. Persist new signals ────────────────────────────────────────────────
     new_saved = 0
@@ -527,6 +584,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         # guarantees coverage, so it must land durably and early.
         if new_saved % _SAVE_CHUNK == 0:
             db.session.commit()
+            _scan_progress("save", collected=len(signals), saved=new_saved)
 
     if new_saved > 0:
         db.session.commit()
@@ -586,6 +644,8 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             enrich_budget, len(to_process), deferred,
         )
 
+    _scan_progress("score", saved=new_saved, to_score=len(to_process), deferred=deferred)
+    _scored = 0
     for item_id in to_process:
         try:
             outcome = process_saved_signal(
@@ -596,6 +656,11 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         except Exception as exc:
             logger.warning("Signal pipeline failed for item %s: %s", item_id, exc)
             continue
+
+        _scored += 1
+        if _scored % 50 == 0:
+            _scan_progress("score", saved=new_saved, scored=_scored,
+                           to_score=len(to_process), deferred=deferred)
 
         if outcome.get("errors"):
             logger.warning(
@@ -753,11 +818,13 @@ def get_scheduler_heartbeat(app) -> dict:
         try:
             row = Item.query.filter_by(title="__scheduler_heartbeat__", item_type="system").first()
             if not row:
-                return {"last_run": None, "hours_since": None, "is_healthy": False, **_read_scheduler_liveness()}
+                return {"last_run": None, "hours_since": None, "is_healthy": False,
+                        **_read_scheduler_liveness(), "scan_progress": read_scan_progress()}
             meta = json.loads(row.description or "{}")
             last_run_str = meta.get("last_run")
             if not last_run_str:
-                return {"last_run": None, "hours_since": None, "is_healthy": False, **_read_scheduler_liveness()}
+                return {"last_run": None, "hours_since": None, "is_healthy": False,
+                        **_read_scheduler_liveness(), "scan_progress": read_scan_progress()}
             last_run = datetime.fromisoformat(last_run_str)
             hours_since = (now - last_run).total_seconds() / 3600
             return {
@@ -765,10 +832,12 @@ def get_scheduler_heartbeat(app) -> dict:
                 "hours_since": round(hours_since, 1),
                 "is_healthy": hours_since < 30,  # should run every 24h; 30h = one missed + buffer
                 **_read_scheduler_liveness(),
+                "scan_progress": read_scan_progress(),
             }
         except Exception as exc:
             logger.warning("Heartbeat read failed: %s", exc)
-            return {"last_run": None, "hours_since": None, "is_healthy": False, **_read_scheduler_liveness()}
+            return {"last_run": None, "hours_since": None, "is_healthy": False,
+                        **_read_scheduler_liveness(), "scan_progress": read_scan_progress()}
 
 
 def _run_all_scheduled(app):
