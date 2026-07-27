@@ -519,6 +519,18 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     # ── 3. Persist new signals ────────────────────────────────────────────────
     new_saved = 0
     new_item_ids = []
+    pending = []
+
+    def _flush_batch(batch: list) -> list:
+        """Insert a batch in one round-trip and return the new ids."""
+        if not batch:
+            return []
+        db.session.add_all(batch)
+        db.session.flush()      # assigns every id in the batch
+        ids = [i.id for i in batch]
+        db.session.commit()
+        batch.clear()
+        return ids
 
     for sig in signals:
         signal_type = sig.get("signal_type", "trademark")
@@ -571,23 +583,28 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 "_cik":             sig.get("_cik", ""),
             }, separators=(",", ":")),
         )
-        db.session.add(item)
-        db.session.flush()          # get item.id before commit
-        new_item_ids.append(item.id)
+        pending.append(item)
         existing_fps.add(fp)
         new_saved += 1
 
-        # Commit in chunks. The sweep now returns ~8,500 signals a run rather
-        # than the ~200 this path was written for, and holding one transaction
-        # open across all of them kept every row invisible — and losable — until
-        # the very end. Saving is the cheap half of the job and the half that
-        # guarantees coverage, so it must land durably and early.
-        if new_saved % _SAVE_CHUNK == 0:
-            db.session.commit()
+        # Flush and commit in CHUNKS, not per item. The sweep now returns ~8,500
+        # signals a run against the ~200 this path was written for, and the old
+        # add()+flush() per signal meant one network round-trip to Postgres per
+        # row: a measured production run spent over six minutes without saving
+        # even 500 of ~3,000 new rows. One flush per chunk lets SQLAlchemy batch
+        # the INSERTs and assigns every id in the batch, cutting thousands of
+        # round-trips to a handful.
+        #
+        # Committing per chunk also matters on its own: one transaction around
+        # the whole loop left every row invisible, and losable on a restart,
+        # until the very end. Saving is the cheap half of the job and the half
+        # that guarantees coverage, so it lands durably as it goes.
+        if len(pending) >= _SAVE_CHUNK:
+            new_item_ids.extend(_flush_batch(pending))
             _scan_progress("save", collected=len(signals), saved=new_saved)
 
+    new_item_ids.extend(_flush_batch(pending))   # tail of the last chunk
     if new_saved > 0:
-        db.session.commit()
         logger.info("Saved %d new signals (%d collected)", new_saved, len(signals))
 
     # ── 3b. Background domain checks for newly saved domain signals ───────────
