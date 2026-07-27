@@ -520,6 +520,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     new_saved = 0
     new_item_ids = []
     pending = []
+    domain_pending = []
 
     def _flush_batch(batch: list) -> list:
         """Insert a batch in one round-trip and return the new ids."""
@@ -584,6 +585,8 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             }, separators=(",", ":")),
         )
         pending.append(item)
+        if signal_type == "domain" and sig.get("url"):
+            domain_pending.append((item, sig["url"]))
         existing_fps.add(fp)
         new_saved += 1
 
@@ -608,20 +611,22 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         logger.info("Saved %d new signals (%d collected)", new_saved, len(signals))
 
     # ── 3b. Background domain checks for newly saved domain signals ───────────
-    for item_id in new_item_ids:
-        item = db.session.get(Item, item_id)
-        if not item:
-            continue
+    # Uses the handful of domain signals recognised during the save loop. It used
+    # to re-read EVERY newly saved item back out of the database one at a time,
+    # just to look at its signal_type — and because the session is expired after
+    # each commit, every one of those was a real query. At ~200 signals a run
+    # that was invisible; at ~3,000 new rows it was thousands of round-trips and
+    # became the single slowest phase of the scan, all to find domain signals
+    # that no collector currently emits.
+    for _dom_item, _dom_url in domain_pending:
         try:
-            _meta = json.loads(item.description or '{}')
-            if _meta.get('signal_type') == 'domain' and _meta.get('url'):
-                threading.Thread(
-                    target=_check_domain_bg,
-                    args=(current_app._get_current_object(), item_id, _meta['url']),
-                    daemon=True,
-                ).start()
+            threading.Thread(
+                target=_check_domain_bg,
+                args=(current_app._get_current_object(), _dom_item.id, _dom_url),
+                daemon=True,
+            ).start()
         except Exception as exc:
-            logger.debug("Domain check launch failed for item %s: %s", item_id, exc)
+            logger.debug("Domain check launch failed: %s", exc)
 
     # ── 4. Shared post-save pipeline ─────────────────────────────────────────
     # Enrichment, confluence, watchlist-match alerts and HOT handling all live in
