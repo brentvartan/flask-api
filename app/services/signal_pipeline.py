@@ -418,7 +418,20 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
     }
 
     def _fail(stage: str, exc) -> None:
-        """Record a stage failure without aborting the pipeline."""
+        """
+        Record a stage failure without aborting the pipeline.
+
+        Rolls the session back first. A stage that raised AFTER a flush leaves
+        the session in PendingRollbackError, and every later stage touches that
+        session — on the manual path every later SIGNAL does too, since the whole
+        batch shares one app context. Without this, one bad row silently takes
+        out enrichment, confluence, people matching and alerts for everything
+        behind it in the batch.
+        """
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
         result["errors"].append(f"{stage}: {exc}")
         logger.warning("Pipeline stage '%s' failed for item %s: %s", stage, item_id, exc)
 

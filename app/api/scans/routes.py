@@ -61,6 +61,12 @@ def _process_items_in_background(app, item_ids: list):
                     )
             except Exception as exc:
                 logger.warning("Signal pipeline failed for item %s: %s", item_id, exc)
+            finally:
+                # Blast radius of ONE signal, matching the scheduled path. This
+                # loop shares a single app context — and therefore one session —
+                # across the whole batch, so a signal that poisoned the session
+                # would otherwise fail every signal behind it.
+                db.session.remove()
 
 
 def _make_fingerprint(signal_type: str, company_name: str, timestamp: str) -> str:

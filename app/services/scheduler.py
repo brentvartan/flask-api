@@ -343,7 +343,14 @@ def _backlog_item_ids(limit: int, exclude: set) -> list:
         rows = (
             Item.query
             .filter(Item.item_type == "signal")
+            # "Never ASSESSED", not "never enriched". A signal the triage gate
+            # rejected carries a "triage" key and NEVER acquires an "enrichment"
+            # one — so filtering on enrichment alone re-selected every rejected
+            # signal on every run, oldest-first, which is the front of the
+            # queue. The backlog could never drain past them and each night paid
+            # to re-triage the same rows forever.
             .filter(~Item.description.contains('"enrichment"'))
+            .filter(~Item.description.contains('"triage"'))
             .order_by(Item.created_at.asc())
             .limit(limit + len(exclude))
             .with_entities(Item.id)
@@ -353,6 +360,38 @@ def _backlog_item_ids(limit: int, exclude: set) -> list:
         logger.warning("Backlog lookup failed: %s — scoring new signals only", exc)
         return []
     return [r.id for r in rows if r.id not in exclude][:limit]
+
+
+def _fair_share(item_ids: list, types_by_id: dict, budget: int) -> list:
+    """
+    Spread the scoring budget ACROSS collectors instead of down one list.
+
+    new_item_ids is in collection order and the trademark sweep runs first, so a
+    plain [:budget] slice handed the whole budget to trademarks: on a run saving
+    ~3,000 trademarks against a 2,000 budget, every Form D signal collected that
+    night got scored zero times. Form D is Job 1 — the one source that is
+    supposed to be airtight — and an unscored signal is invisible to conviction
+    matching, confluence, the watchlist and every alert, not just to the score.
+
+    Round-robins by signal type, preserving each type's own newest-first order,
+    so a low-volume source can never be starved by a high-volume one. Any budget
+    a small source does not use falls through to the larger ones.
+    """
+    if budget <= 0 or not item_ids:
+        return []
+    buckets: dict = {}
+    for iid in item_ids:
+        buckets.setdefault(types_by_id.get(iid, "unknown"), []).append(iid)
+
+    out, order = [], list(buckets)
+    while len(out) < budget and any(buckets[t] for t in order):
+        for t in order:
+            if not buckets[t]:
+                continue
+            out.append(buckets[t].pop(0))
+            if len(out) >= budget:
+                break
+    return out
 
 
 # ─── Core: run a single scan now ──────────────────────────────────────────────
@@ -543,7 +582,9 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     # ── 3. Persist new signals ────────────────────────────────────────────────
     new_saved = 0
     new_item_ids = []
+    item_signal_types: dict = {}     # item id -> signal_type, for fair budget sharing
     pending = []
+    pending_types = []
     domain_pending = []
 
     def _flush_batch(batch: list) -> list:
@@ -553,6 +594,9 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         db.session.add_all(batch)
         db.session.flush()      # assigns every id in the batch
         ids = [i.id for i in batch]
+        for iid, stype in zip(ids, pending_types):
+            item_signal_types[iid] = stype
+        pending_types.clear()
         db.session.commit()
         batch.clear()
         return ids
@@ -612,6 +656,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             }, separators=(",", ":")),
         )
         pending.append(item)
+        pending_types.append(signal_type)
         if signal_type == "domain" and sig.get("url"):
             domain_pending.append((item, sig["url"]))
         existing_fps.add(fp)
@@ -684,7 +729,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     # there forever. Tune with SCAN_ENRICH_BUDGET.
     _scan_progress("budget", saved=new_saved)
     enrich_budget = _enrich_budget()
-    to_process = list(new_item_ids[:enrich_budget])
+    to_process = _fair_share(new_item_ids, item_signal_types, enrich_budget)
     if len(to_process) < enrich_budget:
         to_process += _backlog_item_ids(enrich_budget - len(to_process),
                                         exclude=set(new_item_ids))

@@ -478,7 +478,15 @@ def record_signal_and_check_confluence(
     from ..models.signal_event import SignalEvent
     from ..models.confluence_hit import ConfluenceHit
 
-    brand_key = normalize_brand(brand_name)
+    # SignalEvent.brand_key and .brand_name are String(255). A USPTO wordmark can
+    # be far longer — USPTO sometimes puts the DESIGN DESCRIPTION in that field
+    # (572 chars observed). Truncating Item.title alone was a HALF fix: the
+    # over-long value simply moved here, where the flush raises DataError, no
+    # SignalEvent is written (so the brand is invisible to triangulation for
+    # good), and the poisoned session takes the rest of the batch with it.
+    # Clamp at the boundary that owns the columns so every caller is safe.
+    brand_name = (brand_name or "")[:255]
+    brand_key = normalize_brand(brand_name)[:255]
     if not brand_key:
         return {"is_confluence": False, "signal_count": 1, "signal_types": [signal_type], "hit_id": None}
 
