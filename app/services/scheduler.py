@@ -584,6 +584,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
                 "description":      sig["description"],
                 "url":              sig["url"],
                 "notes":            sig.get("notes", ""),
+                "brand_uncertain":  sig.get("brand_uncertain", False),
                 "timestamp":        sig["timestamp"],
                 # Trademark/press owner — feeds person-key confluence, the conviction
                 # and alumni matchers, and the enrichment prompt's FOUNDER RESEARCH
@@ -996,6 +997,15 @@ def _send_weekly_digest(app):
                     continue
                 watch_level = enrichment.get("watch_level")
                 if watch_level not in ("hot", "warm"):
+                    continue
+                # The digest presents a NAME as a brand. A press signal whose
+                # name is really the article headline is a genuine signal but
+                # not a brand, and listing it beside real names and scores reads
+                # as noise — two of the ten entries in the 2026-07-27 digest
+                # were headlines ("SNACK BARS WERE NEVER REFRESHING. UNTIL
+                # NOW."). It stays fully visible on the dashboard; it just does
+                # not get presented here as something it is not.
+                if meta.get("brand_uncertain"):
                     continue
                 entry = {
                     "name":     meta.get("company_name", item.title),

@@ -182,10 +182,15 @@ def _parse_date(date_str: str) -> datetime | None:
         return None
 
 
-def _extract_brand_hint(title: str, description: str) -> str:
+def _extract_brand_hint(title: str, description: str) -> tuple:
     """
     Try to extract a brand name hint from the article.
-    Falls back to the article title (truncated) if no brand found.
+
+    Returns (name, confident). `confident` is False when no brand could be
+    identified and the article title was used instead — the caller must not
+    present such a name as a brand. This is reported, not inferred: guessing
+    from the string cannot tell "Rivalz nets $5M" (the brand leads the
+    headline — a genuine extraction) from a headline used verbatim.
     """
     # Look for quoted brand names or capitalized proper nouns following "called", "named", "dubbed"
     for pattern in [
@@ -194,14 +199,26 @@ def _extract_brand_hint(title: str, description: str) -> str:
     ]:
         m = re.search(pattern, title + " " + description)
         if m:
-            return m.group(1).strip()
+            return m.group(1).strip(), True
 
-    # Fall back to truncated title (strip common article prefixes)
+    # No brand could be identified. Return the truncated headline so the signal
+    # is still surfaced, but the CALLER must mark it uncertain — see the note on
+    # brand_uncertain below.
     clean = re.sub(r'^(Exclusive:|Scoop:|Breaking:|Report:)\s*', '', title, flags=re.IGNORECASE)
-    return clean[:60].strip()
+    return clean[:60].strip(), False
 
 
-def _extract_funding_brand(title: str, description: str) -> str:
+# A press signal whose "brand name" is really the article headline is still a
+# real signal — a funding story is a funding story — but it is NOT a brand, and
+# presenting it as one put entries like
+#   "SNACK BARS WERE NEVER REFRESHING. UNTIL NOW."
+#   "DISTRIBUTION: GYMKHANA, KREATURES OF HABIT HEAD TO SPROUTS;"
+# into the weekly digest beside real brand names and scores — two of the ten
+# entries on 2026-07-27. Such signals are MARKED, never dropped: the dashboard
+# still shows everything, the digest just stops presenting a headline as a name.
+
+
+def _extract_funding_brand(title: str, description: str) -> tuple:
     """
     Extract the brand from a funding headline. These typically lead with the
     brand, then a funding verb: 'Rivalz nets $5M...', 'Fascent raised funding'.
@@ -225,7 +242,7 @@ def _extract_funding_brand(title: str, description: str) -> str:
             candidate = " ".join(cap_tail) if cap_tail else words[-1]
             candidate = candidate.strip(" -–—:,\"'")
             if 1 < len(candidate) <= 40:
-                return candidate
+                return candidate, True
 
     # Fall back to the quoted/named-entity extractor, then truncated title.
     return _extract_brand_hint(title, description)
@@ -298,7 +315,7 @@ def _fetch_feed(source: str, url: str, cutoff: datetime) -> list[dict]:
         # otherwise treat it as journalist-written funding coverage.
         if stealth_hit:
             detector = "stealth"
-            brand_hint = _extract_brand_hint(title, description)
+            brand_hint, brand_confident = _extract_brand_hint(title, description)
             notes = (
                 f"Journalist-written article with stealth-founder language in {source}. "
                 f"Title: {title}. "
@@ -307,7 +324,7 @@ def _fetch_feed(source: str, url: str, cutoff: datetime) -> list[dict]:
             )
         else:
             detector = "funding"
-            brand_hint = _extract_funding_brand(title, description)
+            brand_hint, brand_confident = _extract_funding_brand(title, description)
             notes = (
                 f"Journalist-written funding coverage in {source} (not a brand wire release). "
                 f"Title: {title}. "
@@ -317,6 +334,9 @@ def _fetch_feed(source: str, url: str, cutoff: datetime) -> list[dict]:
 
         results.append({
             "companyName":  brand_hint,
+            # True when brand_hint is really the headline — the digest uses this
+            # to avoid presenting an article title as a brand name.
+            "brand_uncertain": not brand_confident,
             "signal_type":  "press_stealth",
             "category":     "Unknown",
             "score_boost":  10,

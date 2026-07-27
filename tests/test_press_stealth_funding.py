@@ -40,11 +40,37 @@ def test_missed_funding_headlines_now_match():
 
 
 def test_funding_brand_extraction():
+    """The extractor now reports (name, confident) — see _extract_brand_hint."""
     for brand, headline in MISSED_HEADLINES:
-        got = ps._extract_funding_brand(headline, "")
+        got, confident = ps._extract_funding_brand(headline, "")
         assert brand.lower().split()[0] in got.lower(), (
             f"expected brand containing {brand!r}, got {got!r} from {headline!r}"
         )
+        assert confident, f"a real brand extraction must be confident: {headline!r}"
+
+
+def test_a_headline_with_no_identifiable_brand_is_not_confident():
+    """
+    The fallback returns the article title. Those reached the weekly digest
+    presented as brand names — two of ten entries on 2026-07-27. They must be
+    marked so the digest can leave them out; they stay on the dashboard.
+    """
+    for headline in (
+        "Snack Bars Were Never Refreshing. Until Now.",
+        "Distribution: Gymkhana, Kreatures of Habit head to Sprouts; more news",
+    ):
+        _, confident = ps._extract_funding_brand(headline, "")
+        assert not confident, f"headline should not read as a brand: {headline!r}"
+
+
+def test_a_brand_leading_the_headline_is_still_confident():
+    """
+    Guards against the heuristic I tried first: inferring uncertainty from
+    "the name is a prefix of the title" wrongly flagged 'Rivalz nets $5M',
+    which is the COMMON shape of a funding headline.
+    """
+    name, confident = ps._extract_funding_brand("Rivalz nets $5M seed round", "")
+    assert name == "Rivalz" and confident
 
 
 # ── Precision guards: don't fire on non-funding or B2B ────────────────────────

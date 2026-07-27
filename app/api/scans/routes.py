@@ -178,6 +178,7 @@ def run_trademark_scan():
                 "description":      sig["description"],
                 "url":              sig["url"],
                 "notes":            sig.get("notes", ""),
+                "brand_uncertain":  sig.get("brand_uncertain", False),
                 # Owner is first-class on trademark signals (see trademarks.py) and
                 # feeds person-key confluence, people matching and the enrichment
                 # prompt. The scheduled path persists it too — keep them in step.
@@ -273,6 +274,7 @@ def run_delaware_scan():
                 "description":  sig["description"],
                 "url":          sig["url"],
                 "notes":        sig.get("notes", ""),
+                "brand_uncertain":  sig.get("brand_uncertain", False),
                 "timestamp":    sig["timestamp"],
                 "_adsh":        sig.get("_adsh", ""),
                 "_cik":         sig.get("_cik", ""),
@@ -369,6 +371,7 @@ def run_producthunt_scan():
                 "description":  sig["description"],
                 "url":          sig["url"],
                 "notes":        sig.get("notes", ""),
+                "brand_uncertain":  sig.get("brand_uncertain", False),
                 "timestamp":    sig["timestamp"],
             }, separators=(",", ":")),
         )
@@ -448,6 +451,7 @@ def run_app_store_scan():
                 "description":  sig["description"],
                 "url":          sig["url"],
                 "notes":        sig.get("notes", ""),
+                "brand_uncertain":  sig.get("brand_uncertain", False),
                 "timestamp":    sig["timestamp"],
                 "app_id":       sig.get("app_id"),
                 "developer":    sig.get("developer", ""),
@@ -534,6 +538,7 @@ def run_newswire_scan():
                 "description":  sig["description"],
                 "url":          sig["url"],
                 "notes":        sig.get("notes", ""),
+                "brand_uncertain":  sig.get("brand_uncertain", False),
                 "timestamp":    sig["timestamp"],
             }, separators=(",", ":")),
         )
@@ -613,6 +618,7 @@ def run_ctlogs_scan():
                 "description":  sig["description"],
                 "url":          sig["url"],
                 "notes":        sig.get("notes", ""),
+                "brand_uncertain":  sig.get("brand_uncertain", False),
                 "timestamp":    sig["timestamp"],
             }, separators=(",", ":")),
         )
@@ -696,6 +702,7 @@ def run_press_stealth_scan():
                 "description":  sig["description"],
                 "url":          sig["url"],
                 "notes":        sig.get("notes", ""),
+                "brand_uncertain":  sig.get("brand_uncertain", False),
                 "timestamp":    sig["timestamp"],
                 "source":       sig.get("source", ""),
             }, separators=(",", ":")),
