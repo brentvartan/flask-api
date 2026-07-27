@@ -907,6 +907,11 @@ def _run_all_scheduled(app):
                 run_scan_now(scan, scan.owner_id, days_back_override=days_back_override)
             except Exception as exc:
                 logger.error("Scheduled scan %s failed: %s", scan.id, exc)
+                try:
+                    _scan_progress("failed", error=f"{type(exc).__name__}: {exc}")
+                except Exception:
+                    pass
+
 
     _write_scheduler_heartbeat(app)
 

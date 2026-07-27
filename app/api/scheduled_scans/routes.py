@@ -135,6 +135,15 @@ def run_scan(scan_id):
                 logger.info("Manual scan %s finished: %s", scan_id_val, result)
             except Exception as exc:
                 logger.error("Manual scan %s failed: %s", scan_id_val, exc, exc_info=True)
+                # Also record it where it can be SEEN. A background scan that
+                # dies leaves the progress row frozen on its last phase, which
+                # is indistinguishable from one still working — and production
+                # logs need an interactive login this environment cannot do.
+                try:
+                    from ...services.scheduler import _scan_progress
+                    _scan_progress("failed", error=f"{type(exc).__name__}: {exc}")
+                except Exception:
+                    pass
 
     threading.Thread(target=_run_bg, daemon=True).start()
 
