@@ -310,6 +310,11 @@ _SAVE_CHUNK = 500
 # deep sweep.
 _DEFAULT_ENRICH_BUDGET = 2000
 
+# Concurrent scoring workers. Each signal is dominated by blocking Anthropic
+# calls, so this is IO-bound. Kept small on purpose: the SQLAlchemy pool is
+# 5 + 10 overflow per process and every worker holds a connection.
+_SCORE_WORKERS = max(1, int(os.environ.get("SCAN_SCORE_WORKERS", "4")))
+
 
 def _enrich_budget() -> int:
     """Per-run scoring budget, overridable with SCAN_ENRICH_BUDGET."""
@@ -690,47 +695,69 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         )
 
     _scan_progress("score", saved=new_saved, to_score=len(to_process), deferred=deferred)
+
+    # Score CONCURRENTLY. Each signal is dominated by two blocking network calls
+    # (the Haiku gate, then Sonnet for survivors), so a serial loop ran at well
+    # under 50 signals in 11 minutes measured in production — hours for a single
+    # run's budget. The work is IO-bound and independent per signal, so a small
+    # pool collapses that without touching the logic.
+    #
+    # Bounded deliberately: the SQLAlchemy pool is 5 + 10 overflow per process,
+    # and each worker needs its own app context (Flask-SQLAlchemy 3.x scopes the
+    # session to the app context, so threads must not share one). Results are
+    # aggregated in THIS thread as futures land, so the counters and hot_brands
+    # need no locking.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _app_obj = current_app._get_current_object()
+
+    def _score_one(iid):
+        with _app_obj.app_context():
+            try:
+                return process_saved_signal(
+                    iid, owner_id=user_id, alert_emails=pipeline_alert_emails,
+                )
+            except Exception as exc:
+                logger.warning("Signal pipeline failed for item %s: %s", iid, exc)
+                return None
+            finally:
+                db.session.remove()
+
     _scored = 0
-    for item_id in to_process:
-        try:
-            outcome = process_saved_signal(
-                item_id,
-                owner_id=user_id,
-                alert_emails=pipeline_alert_emails,
-            )
-        except Exception as exc:
-            logger.warning("Signal pipeline failed for item %s: %s", item_id, exc)
-            continue
+    with ThreadPoolExecutor(max_workers=_SCORE_WORKERS) as _pool:
+        _futures = [_pool.submit(_score_one, iid) for iid in to_process]
+        for _fut in as_completed(_futures):
+            outcome = _fut.result()
+            if outcome is None:
+                continue
 
-        _scored += 1
-        if _scored % 50 == 0:
-            _scan_progress("score", saved=new_saved, scored=_scored,
-                           to_score=len(to_process), deferred=deferred)
+            _scored += 1
+            if _scored % 50 == 0:
+                _scan_progress("score", saved=new_saved, scored=_scored,
+                               to_score=len(to_process), deferred=deferred)
 
-        if outcome.get("errors"):
-            logger.warning(
-                "Signal pipeline degraded for item %s: %s", item_id, "; ".join(outcome["errors"]),
-            )
-        if outcome.get("founder_queued"):
-            founders_queued += 1
-        if not outcome.get("enriched"):
-            continue
+            if outcome.get("errors"):
+                logger.warning("Signal pipeline degraded: %s", "; ".join(outcome["errors"]))
+            if outcome.get("founder_queued"):
+                founders_queued += 1
+            if not outcome.get("enriched"):
+                continue
 
-        level = outcome.get("watch_level")
-        if level == "hot":
-            hot_count += 1
-            hot_brands.append({
-                "name":     outcome.get("company_name"),
-                "category": outcome.get("category", ""),
-                "score":    outcome.get("bullish_score"),
-                "thesis":   outcome.get("one_line_thesis", ""),
-                "theme":    outcome.get("cultural_theme", ""),
-                "item_id":  item_id,
-            })
-        elif level == "warm":
-            warm_count += 1
-        else:
-            cold_count += 1
+            level = outcome.get("watch_level")
+            if level == "hot":
+                hot_count += 1
+                hot_brands.append({
+                    "name":     outcome.get("company_name"),
+                    "category": outcome.get("category", ""),
+                    "score":    outcome.get("bullish_score"),
+                    "thesis":   outcome.get("one_line_thesis", ""),
+                    "theme":    outcome.get("cultural_theme", ""),
+                    "item_id":  outcome.get("item_id"),
+                })
+            elif level == "warm":
+                warm_count += 1
+            else:
+                cold_count += 1
 
     if new_item_ids:
         db.session.commit()
