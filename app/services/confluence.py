@@ -26,12 +26,13 @@ Guardrail: a wrong merge is worse than a missed link.
   - Person keys require BOTH first AND last name.
   - Coined terms must be ≥5 chars, purely alphabetic, and NOT in the common-word blocklist.
 """
+import hashlib
 import json
 import logging
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 
 logger = logging.getLogger(__name__)
 
@@ -492,6 +493,32 @@ def record_signal_and_check_confluence(
 
     person_keys      = list(person_keys or [])
     coined_term_keys = list(coined_term_keys or [])
+
+    # ── 0. Serialise confluence for this owner ────────────────────────────────
+    # Read-modify-write with no lock and no uniqueness constraint: we insert a
+    # SignalEvent, then read the cluster back to decide whether a NEW signal type
+    # just appeared. That was safe while scoring was serial. It is not safe now
+    # that scoring runs in a 4-thread pool, because each worker has its own
+    # session and therefore its own transaction — under READ COMMITTED a peer's
+    # flushed-but-uncommitted event is invisible.
+    #
+    # Two signals of the same brand landing together therefore each saw only
+    # themselves: existing_types stayed empty, is_confluence stayed False, and
+    # NO ConfluenceHit was ever created. The brand is triangulated in the data
+    # and invisible to the engine, permanently, because confluence runs once per
+    # signal. The mirror case creates duplicate hits and duplicate alert emails.
+    #
+    # A transaction-scoped advisory lock per owner is enough: this section is
+    # milliseconds against multi-second Anthropic calls, so contention is
+    # irrelevant, and locking per owner (rather than per brand_key) also covers
+    # cross-key clustering, where two DIFFERENT brand_keys join via a shared
+    # person or coined term.
+    _lock_key = int(hashlib.md5(f"confluence:{owner_id}".encode()).hexdigest()[:15], 16) % (2 ** 62)
+    try:
+        if db.session.bind.dialect.name == "postgresql":
+            db.session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _lock_key})
+    except Exception as exc:                      # never block a signal on the lock
+        logger.warning("Confluence lock unavailable (%s) — proceeding unserialised", exc)
 
     # ── 1. Record this signal event ───────────────────────────────────────────
     event = SignalEvent(
