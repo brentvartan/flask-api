@@ -31,6 +31,8 @@ import logging
 import re
 from datetime import datetime, timezone
 
+from sqlalchemy import or_
+
 logger = logging.getLogger(__name__)
 
 # ── Alert policy ──────────────────────────────────────────────────────────────
@@ -277,6 +279,11 @@ def extract_coined_term_keys(brand_name: str) -> list[str]:
 
 # ── Cluster resolution ────────────────────────────────────────────────────────
 
+def _json_member(key: str) -> str:
+    """The exact quoted form a key takes inside the stored JSON array."""
+    return json.dumps(key)          # '"john smith"' — quotes on both sides
+
+
 def _find_cluster(
     owner_id: int,
     brand_key: str,
@@ -302,11 +309,34 @@ def _find_cluster(
     if person_keys or coined_term_keys:
         pkey_set = set(person_keys or [])
         ckey_set = set(coined_term_keys or [])
-        # Load events with different brand_keys (direct already covers same key)
+
+        # PREFILTER IN SQL, then decide in Python exactly as before.
+        #
+        # This used to load EVERY SignalEvent for the owner and json.loads() two
+        # columns on each, for every new signal. Coined-term keys come from the
+        # brand name, so nearly every signal took that path: at ~16k events and a
+        # 2,000-signal run that is tens of millions of row-loads and JSON parses,
+        # and it grows with the corpus. It was the dominant cost of scoring.
+        #
+        # The keys are stored as a JSON array, so '"john smith"' — quoted on both
+        # sides — cannot partially match '"john smithson"'. The LIKE is therefore
+        # a strict SUPERSET filter, and the Python check below still makes the
+        # final call on exact set intersection. Linking power is unchanged by
+        # construction: no row that used to match can be excluded here, because a
+        # matching row necessarily contains the quoted key.
+        # contains(..., autoescape=True) lets SQLAlchemy build and escape the LIKE
+        # itself. Hand-rolling the escape looked right and passed the % case, but
+        # an underscore in a key hung the query outright — the driver blocked
+        # somewhere a Python signal could not even interrupt.
+        conds = [SignalEvent.person_keys.contains(_json_member(k), autoescape=True)
+                 for k in pkey_set]
+        conds += [SignalEvent.coined_term_keys.contains(_json_member(k), autoescape=True)
+                  for k in ckey_set]
         candidates = (
             SignalEvent.query
             .filter_by(owner_id=owner_id)
             .filter(SignalEvent.brand_key != brand_key)
+            .filter(or_(*conds))
             .all()
         )
         for ev in candidates:
