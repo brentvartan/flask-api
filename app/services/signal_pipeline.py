@@ -70,6 +70,20 @@ FOUNDER_ENRICHMENT_MIN_SCORE_NEWSWIRE = 50
 _TRIAGE_OFF_VALUES = frozenset({"0", "false", "no", "off"})
 
 
+# Item.title is String(255). A trademark wordmark can be far longer — USPTO
+# sometimes puts the DESIGN DESCRIPTION in that field ("THE MARK CONSISTS OF A
+# STYLIZED CIRCULAR DESIGN...", 572 chars observed) — and a single over-long
+# value raises DataError, which fails the entire batch insert and ends the run.
+# Invisible at the ~200 signals a run this path once handled; certain at ~8,500.
+# The untruncated name is still kept in the JSON description, which is Text.
+TITLE_MAX = 255
+
+
+def _safe_title(name: str) -> str:
+    """Fit a brand name to the title column without ever failing an insert."""
+    return (name or "")[:TITLE_MAX]
+
+
 # ─── Alert recipients ─────────────────────────────────────────────────────────
 
 def resolve_alert_emails() -> list:

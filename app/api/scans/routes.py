@@ -16,7 +16,7 @@ from ...services.app_store import search_recent_app_store
 from ...services.newswire import search_recent_newswire
 from ...services.ctlogs import search_recent_ct_domains
 from ...services.press_stealth import search_recent_press_stealth
-from ...services.signal_pipeline import process_saved_signal, resolve_alert_emails
+from ...services.signal_pipeline import process_saved_signal, resolve_alert_emails, _safe_title
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ def run_trademark_scan():
             continue
 
         item = Item(
-            title=sig["companyName"],
+            title=_safe_title(sig["companyName"]),
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({
@@ -260,7 +260,7 @@ def run_delaware_scan():
             continue
 
         item = Item(
-            title=sig["companyName"],
+            title=_safe_title(sig["companyName"]),
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({
@@ -356,7 +356,7 @@ def run_producthunt_scan():
             continue
 
         item = Item(
-            title=sig["companyName"],
+            title=_safe_title(sig["companyName"]),
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({
@@ -435,7 +435,7 @@ def run_app_store_scan():
             continue
 
         item = Item(
-            title=sig["companyName"],
+            title=_safe_title(sig["companyName"]),
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({
@@ -521,7 +521,7 @@ def run_newswire_scan():
             continue
 
         item = Item(
-            title=sig["companyName"],
+            title=_safe_title(sig["companyName"]),
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({
@@ -600,7 +600,7 @@ def run_ctlogs_scan():
             continue
 
         item = Item(
-            title=sig["companyName"],
+            title=_safe_title(sig["companyName"]),
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({
@@ -683,7 +683,7 @@ def run_press_stealth_scan():
             continue
 
         item = Item(
-            title=sig["companyName"],
+            title=_safe_title(sig["companyName"]),
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({

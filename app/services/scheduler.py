@@ -370,6 +370,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     """
     from ..models.item import Item
     from ..services.trademarks import search_recent_trademarks
+    from ..services.signal_pipeline import _safe_title
     from ..extensions import db
 
     # Effective window — widened by the scheduler on catch-up runs
@@ -564,7 +565,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             continue
 
         item = Item(
-            title=sig["companyName"],
+            title=_safe_title(sig["companyName"]),
             owner_id=user_id,
             item_type="signal",
             description=json.dumps({
