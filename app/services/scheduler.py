@@ -6,6 +6,7 @@ and fires HOT-signal email alerts to the team.
 """
 import os
 import json
+import re
 import hashlib
 import logging
 import threading
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 # Module-level flag so only ONE scheduler starts per process
 _scheduler = None
+
+
+# Fingerprints are written by json.dumps with compact separators, but tolerate
+# whitespace in case a row was ever written by a different writer.
+_FP_RE = re.compile(r'"fp"\s*:\s*"([0-9a-fA-F]{8,64})"')
 
 
 def _job_lock_key(job_id: str) -> str:
@@ -499,20 +505,28 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     _scan_progress("dedup:load-fingerprints", collected=len(signals))
 
     # ── 2. Load existing fingerprints (dedup) ─────────────────────────────────
-    rows = (
+    # STREAM the descriptions and pull the fingerprint out with a regex rather
+    # than materialising every row and json.loads()-ing it.
+    #
+    # Measured on production: 8,853 signal rows averaging 4.3 KB each — ~36 MB of
+    # raw text, and parsing each one into a nested dict (they carry the full
+    # enrichment blob) costs several hundred MB of Python objects, transiently,
+    # inside a container also running four gunicorn workers. The save loop that
+    # takes 0.34s locally was taking over four minutes in production, examining
+    # under 1,000 signals a minute, because the box was thrashing rather than
+    # working. We need 16 characters per row; we were paying for all 4.3 KB.
+    existing_fps = set()
+    _fp_rows = (
         Item.query
+        .filter(Item.item_type == "signal")
         .filter(Item.description.contains('"fp"'))
         .with_entities(Item.description)
-        .all()
+        .yield_per(500)
     )
-    existing_fps = set()
-    for (desc,) in rows:
-        try:
-            fp = json.loads(desc or "{}").get("fp")
-            if fp:
-                existing_fps.add(fp)
-        except Exception:
-            pass
+    for (desc,) in _fp_rows:
+        m = _FP_RE.search(desc or "")
+        if m:
+            existing_fps.add(m.group(1))
 
     _scan_progress("save", collected=len(signals), known_fingerprints=len(existing_fps))
 
