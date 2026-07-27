@@ -533,7 +533,9 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         batch.clear()
         return ids
 
-    for sig in signals:
+    for _seen, sig in enumerate(signals, 1):
+        if _seen % 1000 == 0:
+            _scan_progress("save", collected=len(signals), examined=_seen, saved=new_saved)
         signal_type = sig.get("signal_type", "trademark")
         import re as _re
         _norm = _re.sub(r'\s+', ' ', sig['companyName'].upper().strip())
@@ -607,6 +609,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
             _scan_progress("save", collected=len(signals), saved=new_saved)
 
     new_item_ids.extend(_flush_batch(pending))   # tail of the last chunk
+    _scan_progress("save:done", collected=len(signals), saved=new_saved)
     if new_saved > 0:
         logger.info("Saved %d new signals (%d collected)", new_saved, len(signals))
 
@@ -654,6 +657,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     # later. Newest first (a fresh filing is the point of the product), then any
     # remaining budget drains the oldest un-scored rows so a backlog cannot sit
     # there forever. Tune with SCAN_ENRICH_BUDGET.
+    _scan_progress("budget", saved=new_saved)
     enrich_budget = _enrich_budget()
     to_process = list(new_item_ids[:enrich_budget])
     if len(to_process) < enrich_budget:
