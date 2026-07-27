@@ -244,38 +244,42 @@ _SCAN_PROGRESS_TITLE = "__scan_progress__"
 
 def _scan_progress(phase: str, **detail) -> None:
     """
-    Record which phase a running scan is in.
+    Record which phase a running scan is in, on its OWN connection.
 
-    A full scan is a long-lived background thread with no visible output until it
-    finishes, so when one appeared to stall there was no way to tell collection
-    from saving from scoring without production logs — which need an interactive
-    login this environment cannot do. This is the same lesson as the scheduler
-    heartbeat: a long job that reports nothing until the end is indistinguishable
-    from a dead one.
+    Deliberately does not touch db.session. Sharing the scan's session made the
+    telemetry both a liar and a hazard: the ORM query autoflushes whatever
+    inserts are pending, and the except-and-rollback here would then discard
+    them — so a progress write could silently undo a chunk of the scan it was
+    meant to be reporting on. A short-lived connection with a plain UPSERT can
+    do neither.
 
     Best-effort and never raises: telemetry must not be able to break a scan.
     """
-    from ..models.item import Item
     from ..extensions import db
+    from sqlalchemy import text
 
-    payload = {"phase": phase, "at": datetime.now(timezone.utc).isoformat(), **detail}
+    payload = json.dumps({"phase": phase,
+                          "at": datetime.now(timezone.utc).isoformat(), **detail})
     try:
-        owner_id = _system_owner_id()
-        if owner_id is None:
-            return
-        row = Item.query.filter_by(title=_SCAN_PROGRESS_TITLE, item_type="system").first()
-        if row:
-            row.description = json.dumps(payload)
-        else:
-            db.session.add(Item(title=_SCAN_PROGRESS_TITLE, item_type="system",
-                                owner_id=owner_id, description=json.dumps(payload)))
-        db.session.commit()
+        with db.engine.begin() as conn:
+            updated = conn.execute(
+                text("UPDATE items SET description = :d, updated_at = now() "
+                     "WHERE title = :t AND item_type = 'system'"),
+                {"d": payload, "t": _SCAN_PROGRESS_TITLE},
+            ).rowcount
+            if not updated:
+                owner = conn.execute(
+                    text("SELECT id FROM users ORDER BY (role <> 'admin'), id LIMIT 1")
+                ).scalar()
+                if owner is None:
+                    return
+                conn.execute(
+                    text("INSERT INTO items (title, description, item_type, owner_id, "
+                         "created_at, updated_at) VALUES (:t, :d, 'system', :o, now(), now())"),
+                    {"t": _SCAN_PROGRESS_TITLE, "d": payload, "o": owner},
+                )
     except Exception as exc:
         logger.debug("Scan progress write failed (%s): %s", phase, exc)
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
 
 
 def read_scan_progress() -> dict:
@@ -548,7 +552,7 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         return ids
 
     for _seen, sig in enumerate(signals, 1):
-        if _seen % 1000 == 0:
+        if _seen % 200 == 0:
             _scan_progress("save", collected=len(signals), examined=_seen, saved=new_saved)
         signal_type = sig.get("signal_type", "trademark")
         import re as _re
