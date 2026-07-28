@@ -531,7 +531,13 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
                 # a conviction founder win, which silently downgrades the
                 # strongest signal this product has. Mirrors the same rule in
                 # delaware.py::_enrich_related_persons — keep them in step.
-                if not conviction and not alumni:
+                #
+                # Gated on `not conviction` ALONE, not `not conviction and not
+                # alumni`. Conviction outranks alumni, so an alumni match found
+                # by stage (d)'s text scan must NOT block a genuine conviction
+                # founder named among the officers — that inverted the ranking
+                # and buried the strongest signal behind the weaker one.
+                if not conviction:
                     _top_conv = next(
                         (rp["conviction_match"] for rp in related if rp.get("conviction_match")),
                         None,
@@ -539,12 +545,18 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
                     if _top_conv:
                         conviction = _top_conv
                         meta["conviction_match"] = conviction
+                        # Conviction displaces a weaker alumni match so the two
+                        # designations never co-exist on one signal with the
+                        # lesser one presented first.
+                        if alumni:
+                            alumni = None
+                            meta.pop("exit_alumni_match", None)
                         _save()
                         logger.info(
                             "Related person conviction: '%s' promoted for item %s",
                             conviction["name"], item_id,
                         )
-                    else:
+                    elif not alumni:
                         _top_alumni = next(
                             (rp["exit_alumni_match"] for rp in related if rp.get("exit_alumni_match")),
                             None,

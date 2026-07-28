@@ -313,6 +313,16 @@ def bulk_create_items():
             _parsed_type = _json.loads(raw_desc).get("_type") if raw_desc else None
         except Exception:
             _parsed_type = None
+        # Same reserved-type rule as create_item. Bulk import received the
+        # reserved-TITLE guard but not this one, so a caller could still mint
+        # rows with item_type system/settings — which _is_internal_item then
+        # makes invisible to list/get and undeletable through this API by
+        # anyone, including admins.
+        if _parsed_type in _INTERNAL_ITEM_TYPES:
+            logger.warning(
+                "Skipped reserved _type %r in bulk import by user %s", _parsed_type, user_id
+            )
+            continue
         item = Item(title=title, description=raw_desc, item_type=_parsed_type, owner_id=user_id)
         db.session.add(item)
         created_count += 1

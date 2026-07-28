@@ -281,7 +281,14 @@ def _save_manual_spend_entries(entries: list) -> None:
     """Persist manual spend entries back to __bullish_settings__."""
     settings_item = Item.query.filter_by(title="__bullish_settings__").first()
     if not settings_item:
-        settings_item = Item(title="__bullish_settings__", owner_id=1, item_type="settings")
+        # owner_id=1 does not exist in production (users are 2, 5, 6) — the FK
+        # violation was swallowed, so this row was never created. The P0 fix
+        # replaced every such hardcode in scheduler.py and missed this one.
+        from ...services.scheduler import _system_owner_id
+        _owner = _system_owner_id()
+        if _owner is None:
+            return jsonify({"error": "No user available to own the settings row"}), 500
+        settings_item = Item(title="__bullish_settings__", owner_id=_owner, item_type="settings")
         db.session.add(settings_item)
     settings = json.loads(settings_item.description or "{}")
     settings["manual_spend"] = entries

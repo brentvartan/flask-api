@@ -977,10 +977,21 @@ def _run_all_scheduled(app):
 
     with app.app_context():
         scans = ScheduledScan.query.filter_by(enabled=True).all()
+        ran_any = False
         for scan in scans:
             # Skip if already run within the cooldown window
             if scan.last_run_at:
-                cooldown_hours = 20 if scan.frequency == "daily" else 140
+                # The cooldown exists to stop a double-fire (two workers, a
+                # restart, a manual trigger minutes before the cron), NOT to
+                # ration daily runs. It is measured from when the last run
+                # ENDED, so at 20h against a 24h cron any run whose wall-clock
+                # exceeds 4 hours pushes the next night inside the window and
+                # that night is skipped entirely. Runs now routinely exceed 4h
+                # (a 2,000-signal scoring budget), so a "daily" scan was
+                # quietly becoming every-other-day. Half the cron interval is
+                # the honest bound: it still absorbs a double-fire and cannot
+                # eat a scheduled night.
+                cooldown_hours = 11 if scan.frequency == "daily" else 84
                 age = datetime.now(timezone.utc) - scan.last_run_at
                 if age < timedelta(hours=cooldown_hours):
                     logger.info("Skipping scan %s — ran %s ago", scan.id, age)
@@ -1001,6 +1012,7 @@ def _run_all_scheduled(app):
             try:
                 logger.info("Running scheduled scan %s for user %s", scan.id, scan.owner_id)
                 run_scan_now(scan, scan.owner_id, days_back_override=days_back_override)
+                ran_any = True
             except Exception as exc:
                 logger.error("Scheduled scan %s failed: %s", scan.id, exc)
                 try:
@@ -1009,7 +1021,14 @@ def _run_all_scheduled(app):
                     pass
 
 
-    _write_scheduler_heartbeat(app)
+    # Only claim a run when one actually happened. This used to fire even when
+    # every scan was skipped by the cooldown `continue` above, so the status
+    # endpoint reported a fresh, healthy run for a job that did no work — the
+    # exact class of lying instrument this whole audit was about.
+    if ran_any:
+        _write_scheduler_heartbeat(app)
+    else:
+        logger.info("Scheduler tick: every scan skipped — heartbeat NOT advanced")
 
 
 def _send_weekly_digest(app):
