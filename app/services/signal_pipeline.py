@@ -84,6 +84,39 @@ def _safe_title(name: str) -> str:
     return (name or "")[:TITLE_MAX]
 
 
+class _DeferAlert(Exception):
+    """Control-flow sentinel: alert intentionally deferred to the weekly digest."""
+
+
+# ─── Alert delivery mode ──────────────────────────────────────────────────────
+
+# Brent, 2026-07-30: "I would rather get one big one on Monday and work from
+# there — especially if it makes it easier and more stable." So WEEKLY is the
+# default: per-event confluence and watchlist emails are deferred into the
+# Monday digest instead of being sent the moment they fire. This is also the
+# more stable shape — no Resend calls inside scan runs, fewer failure modes.
+#
+# "realtime" restores the old per-event behaviour (set alert_delivery in the
+# __bullish_settings__ row). A ConfluenceHit deferred this way simply keeps
+# alert_sent=False, which the digest uses as its queue.
+_REALTIME_VALUES = frozenset({"realtime", "instant", "immediate", "per-event"})
+
+
+def alert_delivery_mode() -> str:
+    """'weekly' (default) or 'realtime', from __bullish_settings__."""
+    from ..models.item import Item
+
+    try:
+        row = Item.query.filter_by(title="__bullish_settings__").first()
+        if row:
+            raw = (json.loads(row.description or "{}").get("alert_delivery") or "").strip().lower()
+            if raw in _REALTIME_VALUES:
+                return "realtime"
+    except Exception as exc:
+        logger.warning("alert_delivery lookup failed (%s) — defaulting to weekly", exc)
+    return "weekly"
+
+
 # ─── Alert recipients ─────────────────────────────────────────────────────────
 
 def resolve_alert_emails() -> list:
@@ -706,7 +739,16 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
             from .confluence import send_confluence_alert_for_hit, should_send_confluence_alert
             _backfill_hit_score(conf_result["hit_id"], enrichment)
             _conf_score = result["bullish_score"]
-            if should_send_confluence_alert(_conf_score):
+            if alert_delivery_mode() != "realtime":
+                # Weekly mode (the default — Brent, 2026-07-30: one big Monday
+                # email): do not send now. The hit keeps alert_sent=False, which
+                # is exactly the queue the Monday digest drains. Nothing is
+                # dropped — only deferred and batched.
+                logger.info(
+                    "Confluence hit for %s deferred to the Monday digest",
+                    result["company_name"],
+                )
+            elif should_send_confluence_alert(_conf_score):
                 if alert_emails:
                     send_confluence_alert_for_hit(conf_result["hit_id"], alert_emails)
                     result["confluence_alert_sent"] = True
@@ -728,6 +770,15 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
     if conviction or alumni:
         try:
             from .email import send_watchlist_match_alert
+            if alert_delivery_mode() != "realtime":
+                # Weekly mode: the match is already persisted on the signal
+                # (conviction_match / exit_alumni_match), which is what the
+                # digest's People section reads. Defer, don't drop.
+                logger.info(
+                    "Watchlist match (%s) for %s deferred to the Monday digest",
+                    match_type, result["company_name"],
+                )
+                raise _DeferAlert()
             match      = conviction or alumni
             match_type = "CONVICTION" if conviction else "ALUMNI"
             for addr in alert_emails:
@@ -750,6 +801,8 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
                     )
                 except Exception as exc:
                     logger.warning("Watchlist match alert failed to %s: %s", addr, exc)
+        except _DeferAlert:
+            pass
         except Exception as exc:
             _fail("watchlist_match_alert", exc)
 

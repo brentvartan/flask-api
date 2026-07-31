@@ -275,7 +275,9 @@ Bullish Brand Fund III · Stealth Startup Finder
     })
 
 
-def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: list, week_label: str) -> None:
+def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: list,
+                             week_label: str, confluence_hits: list = None,
+                             people_matches: list = None) -> None:
     """Send a weekly top-signals digest email via Resend."""
     if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
         return
@@ -335,6 +337,55 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
           {warm_html}
         </div>"""
 
+    # ── Deferred per-event alerts, folded in (weekly delivery mode) ──────────
+    # These sections replace the individual confluence and watchlist emails —
+    # the digest is now the one email that carries everything.
+    confluence_hits = confluence_hits or []
+    people_matches  = people_matches or []
+
+    if people_matches:
+        rows = ""
+        for m in people_matches[:12]:
+            badge_bg = "#7C3AED" if m.get("match_type") == "conviction" else "#B45309"
+            badge    = "⚡ CONVICTION" if m.get("match_type") == "conviction" else "🏆 ALUMNI"
+            score    = f" · score {m['score']}" if m.get("score") is not None else ""
+            rows += f"""
+            <div style="border:2px solid {badge_bg};border-radius:8px;padding:12px 16px;margin:10px 0;background:#fff;">
+              <span style="background:{badge_bg};color:#fff;border-radius:4px;padding:3px 8px;font-family:monospace;font-size:10px;font-weight:bold;letter-spacing:1px;">{badge}</span>
+              <div style="font-family:monospace;font-weight:bold;font-size:15px;color:#000;margin-top:8px;">{_esc(m.get('person', 'Unknown'))}</div>
+              <div style="font-size:12px;color:#444;margin-top:4px;">
+                appears on <b>{_esc(m.get('brand', ''))}</b> ({_esc(m.get('signal_type', ''))}{_esc(score)})
+              </div>
+            </div>"""
+        sections += f"""
+        <div style="margin-top:22px;">
+          <div style="font-family:monospace;font-size:11px;color:#000;letter-spacing:2px;font-weight:bold;text-transform:uppercase;margin-bottom:4px;">
+            ◼ WATCHLIST PEOPLE ({len(people_matches)})
+          </div>
+          {rows}
+        </div>"""
+
+    if confluence_hits:
+        rows = ""
+        for h in confluence_hits[:12]:
+            types = " + ".join(_esc(t) for t in (h.get("signal_types") or []))
+            score = f" · score {h['score']}" if h.get("score") is not None else " · unscored"
+            rows += f"""
+            <div style="border:2px solid #052EF0;border-radius:8px;padding:12px 16px;margin:10px 0;background:#fff;">
+              <span style="background:#052EF0;color:#fff;border-radius:4px;padding:3px 8px;font-family:monospace;font-size:10px;font-weight:bold;letter-spacing:1px;">⚡ CONFLUENCE</span>
+              <div style="font-family:monospace;font-weight:bold;font-size:15px;color:#000;margin-top:8px;">{_esc(h.get('brand', ''))}</div>
+              <div style="font-size:12px;color:#444;margin-top:4px;">
+                {h.get('signal_count', 0)} distinct signals: {types}{_esc(score)}
+              </div>
+            </div>"""
+        sections += f"""
+        <div style="margin-top:22px;">
+          <div style="font-family:monospace;font-size:11px;color:#000;letter-spacing:2px;font-weight:bold;text-transform:uppercase;margin-bottom:4px;">
+            ◼ SIGNAL CONFLUENCE ({len(confluence_hits)})
+          </div>
+          {rows}
+        </div>"""
+
     total = len(hot_signals) + len(warm_signals)
     html = f"""
     <!DOCTYPE html>
@@ -347,7 +398,8 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
             WEEK OF {_esc(week_label.upper())}
           </h1>
           <p style="margin:6px 0 0;color:#888;font-size:13px;">
-            {total} HOT/WARM signal{'' if total == 1 else 's'} this week
+            {total} HOT/WARM signal{'' if total == 1 else 's'}
+            · {len(confluence_hits)} confluence · {len(people_matches)} watchlist people
           </p>
         </div>
         <div style="padding:20px 36px;">

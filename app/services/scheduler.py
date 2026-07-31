@@ -1038,6 +1038,7 @@ def _send_weekly_digest(app):
         return
     from ..models.item import Item
     from ..services.email import send_weekly_digest_email
+    from ..extensions import db
     from datetime import timedelta
     import json
 
@@ -1085,9 +1086,11 @@ def _send_weekly_digest(app):
             except Exception:
                 pass
 
-        if not hot_signals and not warm_signals:
-            logger.info("Weekly digest: no HOT/WARM signals this week — skipping send")
-            return
+        # NOTE: no early return here even when hot/warm are empty. The digest is
+        # now the ONLY channel for deferred confluence hits and watchlist people
+        # matches (weekly alert delivery, 2026-07-30) — those are collected
+        # below, and the combined skip check after them decides whether there is
+        # genuinely nothing to send.
 
         # Deduplicate by brand name: keep the highest-score entry per name
         def _dedup(signals):
@@ -1130,8 +1133,61 @@ def _send_weekly_digest(app):
         hot_new  = [s for s in hot_signals  if _is_new(s)]
         warm_new = [s for s in warm_signals if _is_new(s)]
 
-        if not hot_new and not warm_new:
-            logger.info("Weekly digest: all HOT/WARM brands already sent last week — skipping")
+        # ── Deferred per-event alerts (weekly delivery mode) ─────────────────
+        # Confluence hits queue as alert_sent=False rows; conviction/alumni
+        # matches live on the signals themselves. The digest is now the ONE
+        # place these reach the inbox (Brent, 2026-07-30), so it must carry
+        # everything the per-event emails used to.
+        from ..models.confluence_hit import ConfluenceHit
+
+        confluence_hits = []
+        try:
+            _pending = (
+                ConfluenceHit.query
+                .filter_by(alert_sent=False)
+                .filter(ConfluenceHit.created_at >= datetime.now(timezone.utc) - timedelta(days=14))
+                .order_by(ConfluenceHit.created_at.desc())
+                .limit(20)
+                .all()
+            )
+            confluence_hits = [{
+                "hit":          h,                       # kept so we can mark it sent
+                "brand":        h.brand_name,
+                "signal_types": h.get_signal_types(),
+                "signal_count": h.signal_count,
+                "score":        h.bullish_score,
+                "level":        h.watch_level,
+            } for h in _pending]
+        except Exception as exc:
+            logger.warning("Weekly digest: confluence queue read failed: %s", exc)
+
+        people_matches = []
+        try:
+            _prows = Item.query.filter(
+                Item.item_type == 'signal',
+                Item.created_at >= week_ago,
+                Item.description.contains('_match'),
+            ).all()
+            for _pi in _prows:
+                try:
+                    _pm = json.loads(_pi.description or "{}")
+                except Exception:
+                    continue
+                _match = _pm.get("conviction_match") or _pm.get("exit_alumni_match")
+                if not _match:
+                    continue
+                people_matches.append({
+                    "person":      _match.get("name", "Unknown"),
+                    "match_type":  "conviction" if _pm.get("conviction_match") else "alumni",
+                    "brand":       _pm.get("company_name", _pi.title),
+                    "signal_type": _pm.get("signal_type", ""),
+                    "score":       (_pm.get("enrichment") or {}).get("bullish_score"),
+                })
+        except Exception as exc:
+            logger.warning("Weekly digest: people-match read failed: %s", exc)
+
+        if not hot_new and not warm_new and not confluence_hits and not people_matches:
+            logger.info("Weekly digest: nothing new this week — skipping")
             return
 
         hot_signals  = hot_new
@@ -1156,11 +1212,30 @@ def _send_weekly_digest(app):
         sent_ok = False
         for addr in [e.strip() for e in alert_emails.split(",") if e.strip()]:
             try:
-                send_weekly_digest_email(addr, hot_signals[:5], warm_signals[:5], week_label)
+                send_weekly_digest_email(
+                    addr, hot_signals[:5], warm_signals[:5], week_label,
+                    confluence_hits=[
+                        {k: v for k, v in h.items() if k != "hit"} for h in confluence_hits
+                    ],
+                    people_matches=people_matches,
+                )
                 logger.info("Weekly digest sent to %s", addr)
                 sent_ok = True
             except Exception as exc:
                 logger.warning("Weekly digest email failed to %s: %s", addr, exc)
+
+        # Drain the confluence queue — but only what was actually delivered.
+        if sent_ok and confluence_hits:
+            try:
+                _now = datetime.now(timezone.utc)
+                for h in confluence_hits:
+                    h["hit"].alert_sent    = True
+                    h["hit"].alert_sent_at = _now
+                db.session.commit()
+                logger.info("Weekly digest: marked %d confluence hits sent", len(confluence_hits))
+            except Exception as exc:
+                db.session.rollback()
+                logger.warning("Weekly digest: could not mark confluence hits sent: %s", exc)
 
         # Persist the brands we just sent so next Monday's digest skips them if unchanged.
         if sent_ok:

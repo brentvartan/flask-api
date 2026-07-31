@@ -457,7 +457,29 @@ def test_conviction_wins_and_alumni_is_not_also_set(db, regular_user, enrich_cal
     assert meta.get("exit_alumni_match") is None
 
 
+def _enable_realtime_alerts(db, owner_id):
+    """
+    Per-event alert sends are now OPT-IN (weekly digest is the default —
+    Brent, 2026-07-30). Tests that exercise the send machinery itself flip the
+    switch; the weekly-deferral behaviour is covered in
+    test_p3_weekly_alert_delivery.py.
+    """
+    import json as _json
+    from app.models.item import Item as _Item
+    row = _Item.query.filter_by(title="__bullish_settings__").first()
+    payload = {"_type": "settings", "alert_delivery": "realtime"}
+    if row:
+        merged = _json.loads(row.description or "{}")
+        merged.update(payload)
+        row.description = _json.dumps(merged)
+    else:
+        db.session.add(_Item(title="__bullish_settings__", item_type="settings",
+                             owner_id=owner_id, description=_json.dumps(payload)))
+    db.session.commit()
+
+
 def test_watchlist_match_alert_fires_for_alumni(db, regular_user, enrich_calls, no_network):
+    _enable_realtime_alerts(db, regular_user.id)
     """The ALUMNI branch of the immediate watchlist alert must be reachable."""
     raw = dict(RAW_TRADEMARK, owner=ALUMNI_NAME,
                notes=f"Owner: {ALUMNI_NAME}. Nutritional supplements.")
@@ -559,6 +581,7 @@ def _run_confluence_pair(db, owner_id, monkeypatch, score, watch_level):
 def test_confluence_alert_sent_after_enrichment_when_scored_above_gate(
     db, regular_user, no_network, monkeypatch,
 ):
+    _enable_realtime_alerts(db, regular_user.id)
     order, alerts, outcome = _run_confluence_pair(db, regular_user.id, monkeypatch, 80, "hot")
 
     assert outcome["confluence"]["is_confluence"] is True
