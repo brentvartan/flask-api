@@ -368,6 +368,55 @@ def triage_bypass_reason(conviction, alumni, conf_result: dict,
     return None
 
 
+def build_scoring_payload(meta: dict, fallback_title: str, owner: str = "",
+                         conviction: dict = None, signal_types: list = None,
+                         signal_count: int = None) -> dict:
+    """
+    THE payload handed to enrich_signal. Every caller must use this.
+
+    enrichment.py reads `signal_types` for its tier floors ("never bury a
+    trademark or Form D as cold") and `signal_count` for the multi-signal prompt
+    boost. A caller that omits them silently disables both — which is what the
+    two /api/enrich routes were doing, the third recurrence of the dual-path
+    divergence this codebase keeps producing. Building the payload in one place
+    is the control; tests/test_p3_enrich_payload_parity.py is the drift alarm.
+    """
+    sig_type = meta.get("signal_type", "trademark")
+    return {
+        "companyName":      meta.get("resolved_owner") or meta.get("company_name", fallback_title),
+        "category":         meta.get("category", ""),
+        "signal_type":      sig_type,
+        "description":      meta.get("description", ""),
+        "notes":            meta.get("notes", ""),
+        "owner":            meta.get("resolved_owner") or owner or "",
+        "conviction_match": conviction if conviction is not None else meta.get("conviction_match"),
+        "signal_types":     signal_types or [sig_type],
+        "signal_count":     signal_count or 1,
+    }
+
+
+def signal_types_for_brand(owner_id: int, brand_name: str) -> tuple:
+    """
+    (signal_types, count) already recorded for a brand — so an on-demand
+    re-enrich gets the same tier floors a scan-time enrich would.
+    """
+    from .confluence import normalize_brand
+    from ..models.signal_event import SignalEvent
+
+    try:
+        key = normalize_brand(brand_name)
+        if not key:
+            return [], 1
+        rows = (SignalEvent.query
+                .filter_by(owner_id=owner_id, brand_key=key)
+                .with_entities(SignalEvent.signal_type).all())
+        types = sorted({r.signal_type for r in rows if r.signal_type})
+        return types, max(1, len(types))
+    except Exception as exc:
+        logger.warning("signal_types lookup failed for %r: %s", brand_name, exc)
+        return [], 1
+
+
 def founder_enrichment_threshold(signal_type: str) -> int:
     """Score floor above which a brand is worth spending founder-discovery budget on."""
     if signal_type == "newswire":
@@ -651,17 +700,11 @@ def process_saved_signal(item_id: int, owner_id: int = None, alert_emails: list 
 
     # The payload is built once and handed to BOTH stages, so the gate and the
     # scorer can never be looking at different text for the same signal.
-    scoring_payload = {
-        "companyName":      meta.get("resolved_owner") or meta.get("company_name", item.title),
-        "category":         meta.get("category", ""),
-        "signal_type":      sig_type,
-        "description":      meta.get("description", ""),
-        "notes":            meta.get("notes", ""),
-        "owner":            meta.get("resolved_owner") or owner,
-        "conviction_match": conviction,
-        "signal_types":     conf_result.get("signal_types") or [sig_type],
-        "signal_count":     conf_result.get("signal_count") or 1,
-    }
+    scoring_payload = build_scoring_payload(
+        meta, item.title, owner=owner, conviction=conviction,
+        signal_types=conf_result.get("signal_types"),
+        signal_count=conf_result.get("signal_count"),
+    )
 
     # ── (g2) TRIAGE — the cheap gate in front of the expensive scorer ──────────
     # Any failure here leaves worth_scoring True. Coverage never shrinks because

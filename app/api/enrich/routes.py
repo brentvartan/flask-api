@@ -8,6 +8,7 @@ from . import bp
 from ...extensions import db, limiter
 from ...models.item import Item
 from ...services.enrichment import enrich_signal, rescore_founder_with_linkedin
+from ...services.signal_pipeline import build_scoring_payload, signal_types_for_brand
 from ...services.proxycurl import should_enrich_founder, enrich_founder
 
 logger = logging.getLogger(__name__)
@@ -53,14 +54,15 @@ def enrich_single(item_id):
     if meta is None:
         return jsonify({"error": "Item is not a signal"}), 422
 
-    enrichment = enrich_signal({
-        "companyName":  meta.get("company_name", item.title),
-        "category":     meta.get("category", ""),
-        "signal_type":  meta.get("signal_type", "trademark"),
-        "description":  meta.get("description", ""),
-        "notes":        meta.get("notes", ""),
-        "owner":        _extract_owner(meta.get("notes", "")),
-    })
+    # Shared builder — see signal_pipeline.build_scoring_payload. Hand-rolling
+    # this payload here is what silently disabled the tier floors and the
+    # multi-signal prompt boost on this route.
+    _types, _count = signal_types_for_brand(user_id, meta.get("company_name", item.title))
+    enrichment = enrich_signal(build_scoring_payload(
+        meta, item.title,
+        owner=_extract_owner(meta.get("notes", "")),
+        signal_types=_types, signal_count=_count,
+    ))
 
     meta["enrichment"] = enrichment
     item.description = json.dumps(meta, separators=(",", ":"))
@@ -132,14 +134,16 @@ def enrich_batch():
         if meta is None:
             continue
 
-        result = enrich_signal({
-            "companyName":  meta.get("company_name", item.title),
-            "category":     meta.get("category", ""),
-            "signal_type":  meta.get("signal_type", "trademark"),
-            "description":  meta.get("description", ""),
-            "notes":        meta.get("notes", ""),
-            "owner":        _extract_owner(meta.get("notes", "")),
-        })
+        # Same shared builder as the scan pipeline — the tier floors and the
+        # multi-signal boost only exist if signal_types/signal_count are passed.
+        _b_types, _b_count = signal_types_for_brand(
+            user_id, meta.get("company_name", item.title)
+        )
+        result = enrich_signal(build_scoring_payload(
+            meta, item.title,
+            owner=_extract_owner(meta.get("notes", "")),
+            signal_types=_b_types, signal_count=_b_count,
+        ))
 
         if result.get("enriched"):
             meta["enrichment"] = result
