@@ -54,7 +54,8 @@ def test_clearly_uninteresting_single_signal_stays_cold():
 
 
 def test_near_miss_single_signal_is_floored_to_warm():
-    r = _enrich(47, ["trademark"])
+    """WARM starts at 55; a near miss is just under it, not seventeen below."""
+    r = _enrich(52, ["trademark"])
     assert r["watch_level"] == "warm"
     assert r["tier_floor_reason"] == "trademark_near_miss"
 
@@ -63,11 +64,26 @@ def test_near_miss_boundary_is_inclusive():
     assert _enrich(en._TIER_FLOOR_NEAR_MISS, ["trademark"])["watch_level"] == "warm"
 
 
-def test_triangulation_is_floored_at_any_score():
-    """Trademark AND Form D is the core edge — it outranks a sparse-record read."""
-    r = _enrich(8, ["trademark", "delaware"])
+def test_triangulation_is_floored_when_the_premise_is_plausible():
+    """
+    Trademark AND Form D is the core edge — it outranks a sparse-record read.
+
+    NOT "at any score" any more (2026-08-03). Triangulation says a company is
+    REAL; it does not say it is a consumer brand for Bullish. Measured against
+    the live corpus, the unconditional version had promoted 117 rejected signals
+    to WARM — a copper mining explorer, a healthcare consultancy, an L'Oreal
+    corporate filing — each with a thesis beginning "Hard pass".
+    """
+    r = _enrich(42, ["trademark", "delaware"])
     assert r["watch_level"] == "warm"
     assert r["tier_floor_reason"] == "tm_plus_form_d"
+
+
+def test_triangulation_cannot_launder_a_rejected_premise():
+    """A score this low means the consumer gate failed, not that it ranked low."""
+    r = _enrich(8, ["trademark", "delaware"])
+    assert r["watch_level"] == "cold"
+    assert r["tier_floor_reason"] == "gate_failed_no_floor"
 
 
 def test_conviction_match_still_forces_hot():

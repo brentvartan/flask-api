@@ -212,7 +212,20 @@ def triage_signal(signal: dict) -> dict:
 # model is reading a sparse trademark record, so the boundary is genuinely fuzzy.
 # Set from the live score distribution: this band is ~14% of scored signals,
 # against ~88% if any legal signal were floored unconditionally.
-_TIER_FLOOR_NEAR_MISS = 35
+# WARM starts at 55. A "near miss" is a signal the model placed just below that
+# line — not one it rejected. Set to 35 this promoted 1,611 brands scoring as low
+# as 38, seventeen points under WARM, including many whose own thesis text begins
+# "Pass —". 48 keeps the genuine borderline (the 52s and 54s) and drops the rest.
+_TIER_FLOOR_NEAR_MISS = 48
+
+# No floor may lift a signal the model REJECTED outright. A score at or below
+# this means the consumer gate failed — B2B, ad-supported, a corporate trademark
+# extension, an already-established brand. Measured 2026-08-03, the triangulation
+# floor was promoting 117 such signals to WARM, among them a Vancouver copper and
+# gold mining explorer, a healthcare management consultancy, and an L'Oreal
+# corporate filing. Two legal signals do not make a mining company a consumer
+# brand; triangulation says a company is REAL, not that it is for us.
+_TIER_FLOOR_GATE_FAIL_AT = 10
 
 SYSTEM_PROMPT = """You are a senior investment analyst at Bullish, a New York-based seed-stage consumer brand venture fund. Your job is to evaluate whether a newly filed trademark represents a potential Bullish investment opportunity — recognizing that at this stage, we're reading early signals, not evaluating a pitch deck.
 
@@ -608,7 +621,17 @@ def enrich_signal(signal: dict) -> dict:
             # on the dashboard. This only governs the badge the team triages on,
             # so it ranks rather than gates — consistent with the consumer gate
             # staying default-include.
-            if _has_tm and _has_form_d:
+            _gate_failed = (
+                _score <= _TIER_FLOOR_GATE_FAIL_AT
+                or result.get("consumer_brand") is False
+                or (result.get("founder_score") or {}).get("gate_passed") is False
+            )
+            if _gate_failed:
+                # Leave it COLD. The model did not merely rank this low, it
+                # rejected the premise — and no amount of corroborating paperwork
+                # changes what the company is.
+                result["tier_floor_reason"] = "gate_failed_no_floor"
+            elif _has_tm and _has_form_d:
                 result["watch_level"]       = "warm"
                 result["tier_floor_reason"] = "tm_plus_form_d"
             elif _score >= _TIER_FLOOR_NEAR_MISS:

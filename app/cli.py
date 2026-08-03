@@ -409,3 +409,86 @@ def register_commands(app):
         db.session.add(user)
         db.session.commit()
         click.echo(f"✓ Admin user {email} created (id={user.id}).")
+
+    # ─── Re-derive watch levels from stored scores (FREE — no API calls) ──────
+
+    @app.cli.command("rederive-tiers")
+    @click.option("--dry-run", is_flag=True, default=False, help="Report without writing")
+    def rederive_tiers(dry_run):
+        """
+        Recompute watch_level for already-scored signals using the CURRENT floor
+        rules and the score the model already gave.
+
+        Needed because a tier-floor change only affects signals scored AFTER it
+        ships, while the corpus keeps the old verdict. On 2026-08-03 the floor
+        was promoting 2,367 rejected signals to WARM — including a copper mining
+        explorer and an L'Oreal corporate filing — and those stay mislabelled on
+        the dashboard until re-derived.
+
+        Costs nothing: it reads bullish_score from the stored enrichment and
+        re-applies the rules. No Anthropic calls.
+        """
+        import json as _json
+        from .models.item import Item
+        from .models.signal_event import SignalEvent
+        from .services.confluence import normalize_brand
+        from .services.enrichment import _TIER_FLOOR_NEAR_MISS, _TIER_FLOOR_GATE_FAIL_AT
+
+        rows = (Item.query
+                .filter(Item.item_type == "signal")
+                .filter(Item.description.contains('"enrichment"'))
+                .all())
+        click.echo(f"Examining {len(rows):,} scored signals...")
+
+        # Which brands carry two legal signal types (the triangulation floor)?
+        pairs = {}
+        for bk, st in (SignalEvent.query
+                       .with_entities(SignalEvent.brand_key, SignalEvent.signal_type).all()):
+            pairs.setdefault(bk, set()).add(st)
+
+        changed, counts = 0, {"to_cold": 0, "to_warm": 0, "unchanged": 0}
+        for item in rows:
+            try:
+                meta = _json.loads(item.description or "{}")
+            except Exception:
+                continue
+            enr = meta.get("enrichment") or {}
+            if not enr.get("enriched"):
+                continue
+            score = enr.get("bullish_score")
+            if score is None:
+                continue
+
+            base = "hot" if score >= 70 else "warm" if score >= 55 else "cold"
+            level, reason = base, None
+            if base == "cold":
+                types = pairs.get(normalize_brand(meta.get("company_name") or item.title), set())
+                gate_failed = (
+                    score <= _TIER_FLOOR_GATE_FAIL_AT
+                    or enr.get("consumer_brand") is False
+                    or (enr.get("founder_score") or {}).get("gate_passed") is False
+                )
+                if gate_failed:
+                    reason = "gate_failed_no_floor"
+                elif "trademark" in types and "delaware" in types:
+                    level, reason = "warm", "tm_plus_form_d"
+                elif score >= _TIER_FLOOR_NEAR_MISS:
+                    level = "warm"
+                    reason = "trademark_near_miss" if "trademark" in types else "form_d_near_miss"
+
+            if level != enr.get("watch_level"):
+                counts["to_cold" if level == "cold" else "to_warm"] += 1
+                changed += 1
+                if not dry_run:
+                    enr["watch_level"] = level
+                    enr["tier_floor_reason"] = reason
+                    meta["enrichment"] = enr
+                    item.description = _json.dumps(meta, separators=(",", ":"))
+            else:
+                counts["unchanged"] += 1
+
+        if dry_run:
+            click.echo(f"DRY RUN — would change {changed:,}: {counts}")
+            return
+        db.session.commit()
+        click.echo(f"✓ Re-derived {changed:,} watch levels: {counts}")
