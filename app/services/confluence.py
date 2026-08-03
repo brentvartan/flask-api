@@ -213,6 +213,18 @@ _COMMON_WORDS: frozenset[str] = frozenset({
     'snack', 'soapy', 'spicy', 'stony', 'straw', 'syrup', 'tangy', 'tasty',
     'thyme', 'tonic', 'tummy', 'vegan', 'vigor', 'vital', 'wheat', 'whole',
     'wispy', 'woody', 'yummy', 'zesty', 'zingy', 'zippy',
+    # Category words a CONSUMER-brand tool sees constantly. Measured across 5,924
+    # live signals (2026-08-03): beauty appeared in 30 distinct brands, wellness
+    # 16, coffee 16, solutions 14, energy 13. Their absence from this list is
+    # what let the coined-term join merge unrelated brands wholesale.
+    'beauty', 'wellness', 'coffee', 'solutions', 'services', 'energy',
+    'association', 'leadership', 'stylized', 'performance', 'framework',
+    'academy', 'culture', 'collective', 'community', 'security', 'network',
+    'luxury', 'lounge', 'experience', 'therapy', 'blueprint', 'essentials',
+    'creations', 'inspired', 'confidence', 'beverage', 'startup', 'trading',
+    'research', 'international', 'healthcare', 'healthy', 'nutrition',
+    'skincare', 'organic', 'natural', 'premium', 'artisan', 'boutique',
+
     # Additional suffixes / generic words that appear in brand-name entity filings
     'beverages', 'brands', 'bureau', 'center', 'circle', 'clouds', 'coding', 'colony',
     'coming', 'common', 'corner', 'create', 'design', 'direct', 'driven',
@@ -276,6 +288,41 @@ def extract_coined_term_keys(brand_name: str) -> list[str]:
             continue
         keys.append(lower)
     return keys
+
+
+# ── Coined-term merges must be legal-entity VARIANTS, not word neighbours ─────
+#
+# The coined-term join exists for exactly one shape: the same brand filed under
+# slightly different legal names — "OLIPOP" and "OLIPOP BEVERAGES LLC". It was
+# implemented as "share any distinctive-looking token", policed by a
+# hand-maintained blocklist of common words.
+#
+# That cannot work: the space of English words is unbounded and the blocklist is
+# finite. Audited against 5,924 live production signals on 2026-08-03, the
+# mechanism produced 288 cross-brand merges and essentially none were real:
+#   'solutions'  ADVANCED DETOX SOLUTIONS  +  H BOISCH SOLUTIONS
+#   'security'   EMPIRICAL SECURITY        +  SECURITY PLUS SYSTEMS
+#   'simply'     SIMPLY CLEAN              +  SIMPLY SALAD RESTAURANTS
+# The blocklist was missing 'beauty' (30 brands), 'wellness' (16), 'coffee'
+# (16) — in a CONSUMER BRAND tool, which is where those words live.
+#
+# The real discriminator is structural, not lexical: in the legitimate case one
+# name is the other plus qualifiers ("olipop" ⊂ "olipop beverages"). Word
+# neighbours never satisfy that. Requiring it takes 288 merges to 4 while
+# preserving the case the feature was built for.
+#
+# This REDUCES raw linking power, which the invariant normally forbids — but the
+# invariant's own rationale is "a wrong merge is worse than a missed link", and
+# these merges were wrong. A false cluster does real damage: it inflates
+# signal_count, fabricates confluence hits, and emails them as triangulated
+# brands.
+
+def _is_entity_variant(key_a: str, key_b: str) -> bool:
+    """True when one normalised brand key is the other plus qualifiers."""
+    ta, tb = set((key_a or "").split()), set((key_b or "").split())
+    if not ta or not tb:
+        return False
+    return ta < tb or tb < ta
 
 
 # ── Cluster resolution ────────────────────────────────────────────────────────
@@ -348,7 +395,7 @@ def _find_cluster(
                     matched = True
             if not matched and ckey_set:
                 ev_ckeys = set(json.loads(ev.coined_term_keys or '[]'))
-                if ckey_set & ev_ckeys:
+                if ckey_set & ev_ckeys and _is_entity_variant(brand_key, ev.brand_key):
                     matched = True
             if matched:
                 cross.append(ev)

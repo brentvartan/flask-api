@@ -7,7 +7,11 @@ changes may only ADD linking power, never remove it. The optimisation replaced
 prefilter plus the same Python decision — so the safety property is exact
 equivalence, not merely "still finds some matches".
 
-The reference implementation below is the ORIGINAL algorithm verbatim.
+The reference implementation below mirrors the CURRENT merge policy — including
+the entity-variant rule added 2026-08-03 after an audit found the coined-term
+join was producing 288 false cross-brand merges. This test guards the SQL
+PREFILTER (does pushing the filter into SQL change which rows match?), not the
+policy; the policy has its own tests in test_p3_coined_term_precision.py.
 """
 import json
 from datetime import datetime, timezone, timedelta
@@ -16,7 +20,7 @@ import pytest
 
 from app.models.item import Item
 from app.models.signal_event import SignalEvent
-from app.services.confluence import _find_cluster
+from app.services.confluence import _find_cluster, _is_entity_variant
 
 PEOPLE = ["john smith", "john smithson", "mary o'neil"]
 COINED = ["olipop", "sun_beam", "fifty%off", "filament"]
@@ -32,7 +36,8 @@ def _reference(db, owner_id, brand_key, pks, cks):
                    .filter(SignalEvent.brand_key != brand_key).all()):
             if ps and ps & set(json.loads(ev.person_keys or "[]")):
                 cross.append(ev); continue
-            if cs and cs & set(json.loads(ev.coined_term_keys or "[]")):
+            if (cs and cs & set(json.loads(ev.coined_term_keys or "[]"))
+                    and _is_entity_variant(brand_key, ev.brand_key)):
                 cross.append(ev)
     allm = direct + cross
     if not allm:
