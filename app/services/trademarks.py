@@ -79,6 +79,35 @@ def _is_brand_candidate(owner: str, wordmark: str) -> bool:
     return not any(term in o for term in _NON_BRAND_OWNER)
 
 
+# ── Design descriptions masquerading as wordmarks ─────────────────────────────
+# USPTO sometimes fills the wordmark field with the DESIGN DESCRIPTION rather
+# than the mark itself:
+#   THE MARK CONSISTS OF THE WORDING "SHELL SHOK" ABOVE A CRACKED EGG...
+# The brand is right there in quotes, but the record reaches the team looking
+# like clerical noise.
+#
+# Found in calibration 2026-08-03: Brent rejected a brand the model scored 72 —
+# thesis "the founder-voiced Southern-identity seasoning brand that McCormick
+# can never be, a Fly by Jing moment for the American South" — because the NAME
+# on the card was sixty characters of trademark-office boilerplate. A
+# presentation failure read as a judgement, and a real HOT lead was lost to it.
+_DESIGN_DESC_RE = re.compile(r"^\s*THE MARK CONSISTS OF\b", re.I)
+_QUOTED_MARK_RE = re.compile(u"[\"'\u201c\u2018]([^\"'\u201d\u2019]{2,60})[\"'\u201d\u2019]")
+
+
+def _clean_wordmark(raw):
+    """Recover the actual mark when USPTO gave us a design description."""
+    if not raw or not _DESIGN_DESC_RE.match(raw):
+        return raw
+    for m in _QUOTED_MARK_RE.finditer(raw):
+        candidate = m.group(1).strip(" ,.;:-")
+        # Skip single letters and stray punctuation captured from phrases like
+        # 'THE LARGE STYLIZED SERIF LETTERS "E", "B"'.
+        if len(candidate) >= 2 and any(c.isalpha() for c in candidate):
+            return candidate
+    return raw
+
+
 def _owner_is_individual(raw: str) -> bool:
     """
     True when USPTO annotates this owner as a natural person.
@@ -343,7 +372,7 @@ def _harvest(raw_hits: list, state: dict, max_results: int) -> bool:
     for hit in raw_hits:
         state["inspected"] += 1
         src = hit.get("source", {})
-        wordmark = src.get("wordmark")
+        wordmark = _clean_wordmark(src.get("wordmark"))
 
         # Skip design-only marks (no text wordmark)
         if not wordmark:
