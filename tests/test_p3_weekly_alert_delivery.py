@@ -137,7 +137,8 @@ class TestDigestCarriesTheQueue:
 
         captured = {}
         import app.services.email as email_mod
-        def _capture(addr, hot, warm, label, confluence_hits=None, people_matches=None):
+        def _capture(addr, hot, warm, label, confluence_hits=None, people_matches=None,
+                     backlog_unassessed=None, budget_notice=None):
             captured.update(confluence=confluence_hits, people=people_matches)
             # The real sender returns how many confluence hits it RENDERED; the
             # caller retires exactly that many.
@@ -169,7 +170,7 @@ class TestDigestCarriesTheQueue:
 
         sent = {"n": 0}
         import app.services.email as email_mod
-        def _count(*a, **kw):
+        def _count(*a, **kw):   # tolerant of new kwargs by design
             sent["n"] += 1
             return len(kw.get("confluence_hits") or [])
         monkeypatch.setattr(email_mod, "send_weekly_digest_email", _count)

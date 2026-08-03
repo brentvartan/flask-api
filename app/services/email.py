@@ -282,7 +282,9 @@ def _count_label(shown: list, total: list) -> str:
 
 def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: list,
                              week_label: str, confluence_hits: list = None,
-                             people_matches: list = None) -> int:
+                             people_matches: list = None,
+                             backlog_unassessed: int = None,
+                             budget_notice: str = None) -> int:
     """Send a weekly top-signals digest email via Resend."""
     if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
         return 0
@@ -400,6 +402,24 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
           {rows}
         </div>"""
 
+    # A decision prompt that surfaces itself in the channel Brent already reads.
+    notice_html = ""
+    if budget_notice:
+        notice_html = f"""
+        <div style="border:2px solid #B45309;border-radius:8px;padding:14px 18px;margin:0 0 18px;background:#FFFBEB;">
+          <div style="font-family:monospace;font-size:10px;font-weight:bold;letter-spacing:1px;color:#B45309;margin-bottom:6px;">
+            ◼ DECISION DUE
+          </div>
+          <div style="font-size:13px;color:#333;line-height:1.5;">{_esc(budget_notice)}</div>
+        </div>"""
+
+    backlog_html = ""
+    if backlog_unassessed is not None:
+        backlog_html = f"""
+          <p style="margin:4px 0 0;color:#666;font-size:11px;">
+            {backlog_unassessed:,} signals still unassessed
+          </p>"""
+
     total = len(hot_signals) + len(warm_signals)
     html = f"""
     <!DOCTYPE html>
@@ -414,9 +434,10 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
           <p style="margin:6px 0 0;color:#888;font-size:13px;">
             {total} HOT/WARM signal{'' if total == 1 else 's'}
             · {len(shown_confluence)} confluence · {len(shown_people)} watchlist people
-          </p>
+          </p>{backlog_html}
         </div>
         <div style="padding:20px 36px;">
+          {notice_html}
           {sections}
         </div>
         <div style="padding:0 36px 28px;">

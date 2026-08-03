@@ -305,10 +305,19 @@ _SAVE_CHUNK = 500
 # signal is never lost — it sits in the corpus and a later run picks it up — so
 # capping this trades latency for predictable cost and runtime, not coverage.
 #
-# Sized above one day of new signals (~1,050 measured) so steady state clears
-# everything and still drains ~1,000/day of the one-off backlog from the first
-# deep sweep.
-_DEFAULT_ENRICH_BUDGET = 2000
+# RAISED 2026-08-03 (Brent) from 2,000 to 3,000, for one month, to DRAIN a
+# backlog that could not otherwise clear. The arithmetic: a run was saving
+# ~2,230 new signals a night against a 2,000 budget, so new arrivals consumed
+# the entire budget every day and the 5,814 never-assessed signals — 29% of the
+# corpus — were unreachable and growing. An unassessed signal is invisible to
+# conviction matching, confluence and every alert, not merely unscored, so that
+# was 29% of the corpus unable to produce a result at all.
+#
+# At 3,000 the surplus is ~770/day, clearing the backlog in roughly 8 days.
+# Review at _BUDGET_REVIEW_ON — the Monday digest raises it (see
+# scheduler._budget_review_due) so the decision surfaces itself rather than
+# depending on anyone remembering.
+_DEFAULT_ENRICH_BUDGET = 3000
 
 # Concurrent scoring workers. Each signal is dominated by blocking Anthropic
 # calls, so this is IO-bound. Kept small on purpose: the SQLAlchemy pool is
@@ -325,6 +334,27 @@ def _enrich_budget() -> int:
         except ValueError:
             logger.warning("SCAN_ENRICH_BUDGET=%r is not an integer — using default", raw)
     return _DEFAULT_ENRICH_BUDGET
+
+
+# ─── Elevated-budget review ───────────────────────────────────────────────────
+
+from datetime import date as _date
+
+_BUDGET_RAISED_ON  = _date(2026, 8, 3)     # 2,000 -> 3,000, one-month trial
+_BUDGET_REVIEW_ON  = _date(2026, 9, 3)
+_BUDGET_TRIAL_FROM = 2000
+_BUDGET_TRIAL_TO   = 3000
+
+
+def _budget_review_due() -> bool:
+    """
+    True once the one-month elevated-budget trial is up.
+
+    Surfaced in the Monday digest rather than left as a note somewhere, because
+    a reminder nobody reads is not a reminder. Harmless after the decision is
+    made — change the constants (or drop this block) when the budget settles.
+    """
+    return _date.today() >= _BUDGET_REVIEW_ON and _enrich_budget() > _BUDGET_TRIAL_FROM
 
 
 def _backlog_item_ids(limit: int, exclude: set) -> list:
@@ -1208,6 +1238,34 @@ def _send_weekly_digest(app):
             logger.info("Weekly digest: ALERT_EMAILS not set — skipping send")
             return
 
+        # Backlog health, so the elevated-budget decision can be made on numbers
+        # rather than vibes. "Unassessed" = saved but never scored OR triaged —
+        # invisible to conviction matching, confluence and alerts, not merely
+        # missing a score.
+        try:
+            unassessed = (Item.query
+                          .filter(Item.item_type == "signal")
+                          .filter(~Item.description.contains('"enrichment"'))
+                          .filter(~Item.description.contains('"triage"'))
+                          .count())
+        except Exception as exc:
+            logger.warning("Weekly digest: backlog count failed: %s", exc)
+            unassessed = None
+
+        budget_notice = None
+        if _budget_review_due():
+            budget_notice = (
+                f"The scoring budget was raised from {_BUDGET_TRIAL_FROM:,} to "
+                f"{_BUDGET_TRIAL_TO:,} on {_BUDGET_RAISED_ON:%b %d} for a one-month "
+                f"trial, to drain a backlog of never-assessed signals. That month is "
+                f"up. Backlog now: "
+                f"{'unknown' if unassessed is None else format(unassessed, ',')} "
+                f"unassessed signals. Decide whether to keep it at "
+                f"{_BUDGET_TRIAL_TO:,} or drop back to {_BUDGET_TRIAL_FROM:,} "
+                f"(SCAN_ENRICH_BUDGET)."
+            )
+            logger.info("Weekly digest: elevated-budget review is due")
+
         week_label = datetime.now(timezone.utc).strftime("%b %d, %Y")
         sent_ok = False
         shown_confluence_n = None
@@ -1219,6 +1277,8 @@ def _send_weekly_digest(app):
                         {k: v for k, v in h.items() if k != "hit"} for h in confluence_hits
                     ],
                     people_matches=people_matches,
+                    backlog_unassessed=unassessed,
+                    budget_notice=budget_notice,
                 )
                 # Retire only what was actually rendered (see _count_label).
                 shown_confluence_n = min(shown_confluence_n, _shown) if shown_confluence_n is not None else _shown
