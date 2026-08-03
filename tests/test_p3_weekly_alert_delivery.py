@@ -139,6 +139,9 @@ class TestDigestCarriesTheQueue:
         import app.services.email as email_mod
         def _capture(addr, hot, warm, label, confluence_hits=None, people_matches=None):
             captured.update(confluence=confluence_hits, people=people_matches)
+            # The real sender returns how many confluence hits it RENDERED; the
+            # caller retires exactly that many.
+            return len(confluence_hits or [])
         monkeypatch.setattr(email_mod, "send_weekly_digest_email", _capture)
 
         from flask import current_app
@@ -166,10 +169,53 @@ class TestDigestCarriesTheQueue:
 
         sent = {"n": 0}
         import app.services.email as email_mod
-        monkeypatch.setattr(email_mod, "send_weekly_digest_email",
-                            lambda *a, **kw: sent.update(n=sent["n"] + 1))
+        def _count(*a, **kw):
+            sent["n"] += 1
+            return len(kw.get("confluence_hits") or [])
+        monkeypatch.setattr(email_mod, "send_weekly_digest_email", _count)
 
         from flask import current_app
         from app.services.scheduler import _send_weekly_digest
         _send_weekly_digest(current_app._get_current_object())
         assert sent["n"] > 0
+
+
+class TestDigestNeverOverstatesOrSilentlyDrops:
+    """
+    The 2026-08-03 digest header said "20 confluence" and the body listed 12,
+    then the caller retired all 20 — eight triangulated brands were counted,
+    never shown, and permanently dequeued. Silent truncation is the exact
+    failure class this whole audit was about.
+    """
+
+    def test_header_says_shown_of_total_when_truncated(self):
+        from app.services.email import _count_label
+        assert _count_label(list(range(12)), list(range(20))) == "12 of 20"
+        assert _count_label(list(range(7)), list(range(7))) == "7"
+
+    def test_only_rendered_hits_are_retired(self, db, admin_user, monkeypatch):
+        """Anything the email did not show stays queued for next week."""
+        _settings_row(db, admin_user)
+        monkeypatch.setenv("ALERT_EMAILS", "team@bullish.co")
+
+        for i in range(30):
+            db.session.add(ConfluenceHit(
+                owner_id=admin_user.id, brand_key=f"b{i}", brand_name=f"BRAND{i}",
+                signal_count=2, signal_types=json.dumps(["trademark", "delaware"]),
+                bullish_score=70, watch_level="hot", alert_sent=False))
+        db.session.commit()
+
+        import app.services.email as email_mod
+        # Mimic the real cap: render at most 25, report that back.
+        monkeypatch.setattr(email_mod, "send_weekly_digest_email",
+                            lambda addr, hot, warm, label, confluence_hits=None,
+                                   people_matches=None: min(len(confluence_hits or []), 25))
+
+        from flask import current_app
+        from app.services.scheduler import _send_weekly_digest
+        _send_weekly_digest(current_app._get_current_object())
+
+        db.session.expire_all()
+        still_queued = ConfluenceHit.query.filter_by(alert_sent=False).count()
+        assert still_queued > 0, "truncated hits must remain queued, not vanish"
+        assert ConfluenceHit.query.filter_by(alert_sent=True).count() <= 25

@@ -1210,15 +1210,18 @@ def _send_weekly_digest(app):
 
         week_label = datetime.now(timezone.utc).strftime("%b %d, %Y")
         sent_ok = False
+        shown_confluence_n = None
         for addr in [e.strip() for e in alert_emails.split(",") if e.strip()]:
             try:
-                send_weekly_digest_email(
+                _shown = send_weekly_digest_email(
                     addr, hot_signals[:5], warm_signals[:5], week_label,
                     confluence_hits=[
                         {k: v for k, v in h.items() if k != "hit"} for h in confluence_hits
                     ],
                     people_matches=people_matches,
                 )
+                # Retire only what was actually rendered (see _count_label).
+                shown_confluence_n = min(shown_confluence_n, _shown) if shown_confluence_n is not None else _shown
                 logger.info("Weekly digest sent to %s", addr)
                 sent_ok = True
             except Exception as exc:
@@ -1228,11 +1231,20 @@ def _send_weekly_digest(app):
         if sent_ok and confluence_hits:
             try:
                 _now = datetime.now(timezone.utc)
-                for h in confluence_hits:
+                # Only the hits the email actually listed. The 2026-08-03 digest
+                # counted 20 and showed 12, then retired all 20 — eight
+                # triangulated brands were dequeued without ever being seen.
+                _retire = confluence_hits[:shown_confluence_n or 0]
+                if len(_retire) < len(confluence_hits):
+                    logger.info(
+                        "Weekly digest: %d confluence hits held back for next week",
+                        len(confluence_hits) - len(_retire),
+                    )
+                for h in _retire:
                     h["hit"].alert_sent    = True
                     h["hit"].alert_sent_at = _now
                 db.session.commit()
-                logger.info("Weekly digest: marked %d confluence hits sent", len(confluence_hits))
+                logger.info("Weekly digest: marked %d confluence hits sent", len(_retire))
             except Exception as exc:
                 db.session.rollback()
                 logger.warning("Weekly digest: could not mark confluence hits sent: %s", exc)

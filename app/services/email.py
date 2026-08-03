@@ -275,12 +275,17 @@ Bullish Brand Fund III · Stealth Startup Finder
     })
 
 
+def _count_label(shown: list, total: list) -> str:
+    """'12 of 20' when truncated, plain count otherwise — never overstate."""
+    return f"{len(shown)} of {len(total)}" if len(shown) < len(total) else str(len(total))
+
+
 def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: list,
                              week_label: str, confluence_hits: list = None,
-                             people_matches: list = None) -> None:
+                             people_matches: list = None) -> int:
     """Send a weekly top-signals digest email via Resend."""
     if os.environ.get("MAIL_SUPPRESS_SEND", "false").lower() == "true":
-        return
+        return 0
 
     from_address = _resend_client()
     from_with_name = f"Bullish <{from_address}>"
@@ -343,9 +348,18 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
     confluence_hits = confluence_hits or []
     people_matches  = people_matches or []
 
-    if people_matches:
+    # Render caps. The header used to print the FULL count while the body showed
+    # only the first 12 — the 2026-08-03 digest said "20 confluence" and listed
+    # 12. Worse, the caller then marked all 20 delivered, so 8 triangulated
+    # brands were counted, never shown, and permanently dequeued. If we truncate
+    # we say so, and the caller only retires what was actually rendered.
+    _CONF_CAP, _PEOPLE_CAP = 25, 25
+    shown_confluence = confluence_hits[:_CONF_CAP]
+    shown_people     = people_matches[:_PEOPLE_CAP]
+
+    if shown_people:
         rows = ""
-        for m in people_matches[:12]:
+        for m in shown_people:
             badge_bg = "#7C3AED" if m.get("match_type") == "conviction" else "#B45309"
             badge    = "⚡ CONVICTION" if m.get("match_type") == "conviction" else "🏆 ALUMNI"
             score    = f" · score {m['score']}" if m.get("score") is not None else ""
@@ -360,14 +374,14 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
         sections += f"""
         <div style="margin-top:22px;">
           <div style="font-family:monospace;font-size:11px;color:#000;letter-spacing:2px;font-weight:bold;text-transform:uppercase;margin-bottom:4px;">
-            ◼ WATCHLIST PEOPLE ({len(people_matches)})
+            ◼ WATCHLIST PEOPLE ({_count_label(shown_people, people_matches)})
           </div>
           {rows}
         </div>"""
 
-    if confluence_hits:
+    if shown_confluence:
         rows = ""
-        for h in confluence_hits[:12]:
+        for h in shown_confluence:
             types = " + ".join(_esc(t) for t in (h.get("signal_types") or []))
             score = f" · score {h['score']}" if h.get("score") is not None else " · unscored"
             rows += f"""
@@ -381,7 +395,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
         sections += f"""
         <div style="margin-top:22px;">
           <div style="font-family:monospace;font-size:11px;color:#000;letter-spacing:2px;font-weight:bold;text-transform:uppercase;margin-bottom:4px;">
-            ◼ SIGNAL CONFLUENCE ({len(confluence_hits)})
+            ◼ SIGNAL CONFLUENCE ({_count_label(shown_confluence, confluence_hits)})
           </div>
           {rows}
         </div>"""
@@ -399,7 +413,7 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
           </h1>
           <p style="margin:6px 0 0;color:#888;font-size:13px;">
             {total} HOT/WARM signal{'' if total == 1 else 's'}
-            · {len(confluence_hits)} confluence · {len(people_matches)} watchlist people
+            · {len(shown_confluence)} confluence · {len(shown_people)} watchlist people
           </p>
         </div>
         <div style="padding:20px 36px;">
@@ -441,6 +455,10 @@ def send_weekly_digest_email(to_email: str, hot_signals: list, warm_signals: lis
         "html":    html,
         "text":    digest_plain,
     })
+    # How many confluence hits this email actually SHOWED. The caller retires
+    # exactly these from the queue — anything truncated stays queued for next
+    # week instead of being silently dropped.
+    return len(shown_confluence)
 
 
 def send_confluence_alert(
