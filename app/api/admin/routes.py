@@ -1318,3 +1318,82 @@ def press_confirm():
     if "error" in result:
         return jsonify(result), 400
     return jsonify(result), 200
+
+
+# ─── Theme weights — the weekly list's ordering, as a stated preference ───────
+
+@bp.route("/theme-weights", methods=["GET"])
+@admin_required()
+def get_theme_weights():
+    """
+    Current ordering weights for the weekly digest, with the evidence behind
+    them. Deliberately readable: this decides what Brent sees first, so it is a
+    number a human can inspect and change — not a model that quietly learned
+    something nobody intended.
+    """
+    from ...services.ranking import (
+        DEFAULT_THEME_WEIGHTS, MAX_WEIGHT, MIN_WEIGHT, load_theme_weights,
+    )
+    current = load_theme_weights()
+    return jsonify({
+        "weights":  dict(sorted(current.items(), key=lambda kv: -kv[1])),
+        "defaults": DEFAULT_THEME_WEIGHTS,
+        "bounds":   {"min": MIN_WEIGHT, "max": MAX_WEIGHT},
+        "basis": (
+            "Derived from Brent's 2026-08-03 triage: 8 rounds of 'pick 3 of 10', "
+            "24 picks. Score predicted membership well but ordering not at all "
+            "(7/24 overlap with the model's top 3; random is 30%). Theme did. "
+            "Weights are shrunk toward 1.0 — 24 picks is thin evidence — and are "
+            "floored above zero so a down-weighted theme still surfaces, lower."
+        ),
+        "note": "1.0 is neutral. These RANK the list; they never remove anything from it.",
+    }), 200
+
+
+@bp.route("/theme-weights", methods=["PUT"])
+@admin_required()
+def set_theme_weights():
+    """Update ordering weights. Partial updates are fine; unknown keys are kept."""
+    from ...services.ranking import MAX_WEIGHT, MIN_WEIGHT, load_theme_weights
+    from ...models.item import Item
+    from ...services.scheduler import _system_owner_id
+
+    data = request.get_json(silent=True) or {}
+    incoming = data.get("weights")
+    if not isinstance(incoming, dict) or not incoming:
+        return jsonify({"error": "Provide a non-empty 'weights' object"}), 422
+
+    clean = {}
+    for k, v in incoming.items():
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return jsonify({"error": f"Weight for {k!r} must be a number"}), 422
+        if not (MIN_WEIGHT <= f <= MAX_WEIGHT):
+            return jsonify({
+                "error": f"Weight for {k!r} must be between {MIN_WEIGHT} and "
+                         f"{MAX_WEIGHT}. A weight of zero would make this a filter "
+                         f"rather than a ranking, which hides signals."
+            }), 422
+        clean[k] = round(f, 3)
+
+    row = Item.query.filter_by(title="__bullish_settings__").first()
+    if row is None:
+        owner = _system_owner_id()
+        if owner is None:
+            return jsonify({"error": "No user available to own the settings row"}), 500
+        row = Item(title="__bullish_settings__", item_type="settings",
+                   owner_id=owner, description=json.dumps({"_type": "settings"}))
+        db.session.add(row)
+    try:
+        meta = json.loads(row.description or "{}")
+    except Exception:
+        meta = {}
+    stored = meta.get("theme_weights") or {}
+    stored.update(clean)
+    meta["theme_weights"] = stored
+    row.description = json.dumps(meta)
+    db.session.commit()
+
+    logger.info("Theme weights updated: %s", clean)
+    return jsonify({"updated": clean, "weights": load_theme_weights()}), 200

@@ -1160,6 +1160,20 @@ def _send_weekly_digest(app):
                     break
             return True
 
+        # Order by learned theme affinity, not by score. Brent's 2026-08-03
+        # triage showed score predicts MEMBERSHIP well and ORDER not at all —
+        # his top-3 picks overlapped the model's top 3 on 7 of 24, where random
+        # is 30%. Theme did predict them. rank_signals never drops an entry; it
+        # only reorders, so the digest still shows what it always would.
+        from ..services.ranking import rank_signals
+        try:
+            hot_signals  = rank_signals(hot_signals)
+            warm_signals = rank_signals(warm_signals)
+        except Exception as exc:
+            logger.warning("Digest ranking failed (%s) — falling back to score order", exc)
+            hot_signals  = sorted(hot_signals,  key=lambda e: -(e.get("score") or 0))
+            warm_signals = sorted(warm_signals, key=lambda e: -(e.get("score") or 0))
+
         hot_new  = [s for s in hot_signals  if _is_new(s)]
         warm_new = [s for s in warm_signals if _is_new(s)]
 
