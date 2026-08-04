@@ -1423,3 +1423,45 @@ def rederive_tiers():
         current_app.logger.exception("rederive-tiers failed")
         db.session.rollback()
         return jsonify({"error": "rederive_failed", "detail": str(exc)}), 500
+
+
+@bp.route("/corpus-stats", methods=["GET"])
+@admin_required()
+def corpus_stats():
+    """
+    One honest read of the whole signal corpus: how big it is, how much has
+    actually been assessed, and how the assessed part splits across tiers.
+
+    Added because there was no way to answer "how many WARM are there really?"
+    without estimating from whatever job last ran. The 2026-09-03 budget review
+    turns on the unassessed count specifically — a number nobody should have to
+    reconstruct by hand.
+
+    Counted in the database rather than in Python: the corpus is ~20k rows and
+    pulling it into memory to tally is how a read-only stats call turns into an
+    outage.
+    """
+    from sqlalchemy import func, case
+
+    desc = Item.description
+    scored = desc.contains('"enriched":true') | desc.contains('"enriched": true')
+    tier = lambda name: func.count(case(  # noqa: E731
+        (desc.contains('"watch_level":"%s"' % name)
+         | desc.contains('"watch_level": "%s"' % name), 1)))
+
+    total, assessed, hot, warm, cold, triaged = db.session.query(
+        func.count(Item.id),
+        func.count(case((scored, 1))),
+        tier("hot"), tier("warm"), tier("cold"),
+        func.count(case((desc.contains('"triage"'), 1))),
+    ).filter(Item.item_type == "signal").one()
+
+    return jsonify({
+        "total_signals": total,
+        "assessed": assessed,
+        "unassessed": total - assessed,
+        "unassessed_pct": round(100.0 * (total - assessed) / total, 1) if total else 0,
+        "triaged_out": triaged,
+        "tiers": {"hot": hot, "warm": warm, "cold": cold},
+        "warm_pct_of_assessed": round(100.0 * warm / assessed, 1) if assessed else 0,
+    }), 200
