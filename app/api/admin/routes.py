@@ -1397,3 +1397,29 @@ def set_theme_weights():
 
     logger.info("Theme weights updated: %s", clean)
     return jsonify({"updated": clean, "weights": load_theme_weights()}), 200
+
+
+@bp.route("/rederive-tiers", methods=["POST"])
+@admin_required()
+def rederive_tiers():
+    """
+    Re-apply the current tier floor to signals scored under an older one.
+
+    Shipping a floor change only affects signals scored afterwards — the corpus
+    keeps its old verdicts until something rewrites them. This is that
+    something, and it exists as an endpoint because the CLI equivalent needs a
+    shell on the production host, which is exactly the friction that let stale
+    verdicts sit on the dashboard for weeks.
+
+    Free — no Anthropic calls, only arithmetic on scores already paid for.
+    POST {"dry_run": true} to see the counts without writing.
+    """
+    from ...services.enrichment import rederive_watch_levels
+
+    dry_run = bool((request.get_json(silent=True) or {}).get("dry_run"))
+    try:
+        return jsonify(rederive_watch_levels(dry_run=dry_run)), 200
+    except Exception as exc:
+        current_app.logger.exception("rederive-tiers failed")
+        db.session.rollback()
+        return jsonify({"error": "rederive_failed", "detail": str(exc)}), 500

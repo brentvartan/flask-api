@@ -823,3 +823,135 @@ Education:
         return {"error": f"JSON parse error: {e}", "linkedin_enriched": False}
     except Exception as e:
         return {"error": str(e), "linkedin_enriched": False}
+
+
+
+# ─── Re-deriving stored verdicts after a floor change ─────────────────────────
+
+# Every value tier_floor_reason has ever held for a signal the floor PROMOTED or
+# explicitly declined to promote. Their common property: the model's own verdict
+# underneath was "cold". "trademark"/"form_d" are from the pre-2aa951a floor that
+# promoted 88% of the corpus.
+_FLOOR_APPLIED_TO_COLD = {
+    "trademark", "form_d", "tm_plus_form_d",
+    "trademark_near_miss", "form_d_near_miss", "gate_failed_no_floor",
+}
+
+
+def rederive_watch_levels(dry_run: bool = False) -> dict:
+    """
+    Re-apply the CURRENT tier floor to signals that were scored under an older one.
+
+    A floor change only affects signals scored AFTER it ships; the corpus keeps
+    whatever verdict it was given. So on 2026-08-03 the dashboard still showed
+    thousands of rejected signals as WARM — a copper mining explorer and a
+    L'Oreal corporate filing among them — long after the rule that promoted them
+    was narrowed. Shipping the fix and fixing the data are two different jobs.
+
+    Costs nothing: no Anthropic calls. It re-applies arithmetic to scores that
+    were already paid for.
+
+    HOW IT RECOVERS THE MODEL'S OWN VERDICT. The stored watch_level is
+    post-floor, so it cannot be read back directly — but tier_floor_reason
+    records whether a floor touched it, and every floor only ever fires on a
+    COLD base. So reason ∈ _FLOOR_APPLIED_TO_COLD ⟹ the model said cold. Absent
+    reason ⟹ nothing was floored and the stored level IS the model's verdict.
+    That is exact, and strictly better than recomputing the level from the score:
+    the hot/warm cutoffs live in the prompt, so recomputing here would silently
+    re-adjudicate signals the floor never touched.
+
+    Two things it will not do:
+      • Never touches a conviction_match signal. Conviction outranks everything
+        including alumni (invariant 2); its HOT is not the floor's to revisit.
+      • Never demotes on a guess. A WARM with no recorded reason is left alone
+        and counted as ambiguous, because there is no evidence a floor put it
+        there.
+
+    Lives here, beside the rules it mirrors, and is called by BOTH `flask
+    rederive-tiers` and POST /api/admin/rederive-tiers — one implementation, so
+    the two entry points cannot drift the way this codebase's scan paths
+    repeatedly have (see CLAUDE.md, "the dual-path divergence").
+    """
+    import json as _json
+    from ..extensions import db
+    from ..models.item import Item
+    from ..models.signal_event import SignalEvent
+    from .confluence import normalize_brand
+
+    # brand_key -> {signal_type}, so the floor can see triangulation.
+    pairs = {}
+    for bk, st in SignalEvent.query.with_entities(
+            SignalEvent.brand_key, SignalEvent.signal_type):
+        pairs.setdefault(bk, set()).add(st)
+
+    counts = {"examined": 0, "changed": 0, "unchanged": 0, "ambiguous": 0,
+              "conviction_skipped": 0, "to_warm": 0, "to_cold": 0,
+              "dry_run": dry_run}
+
+    rows = (Item.query
+            .filter(Item.item_type == "signal")
+            .filter(Item.description.contains('"enrichment"'))
+            .yield_per(500))
+
+    for item in rows:
+        try:
+            meta = _json.loads(item.description or "{}")
+        except (ValueError, TypeError):
+            continue
+        enr = (meta or {}).get("enrichment") or {}
+        if not enr.get("enriched") or enr.get("bullish_score") is None:
+            continue
+
+        counts["examined"] += 1
+        reason = enr.get("tier_floor_reason")
+        stored = enr.get("watch_level")
+
+        if reason == "conviction_match":
+            counts["conviction_skipped"] += 1
+            continue
+        if reason in _FLOOR_APPLIED_TO_COLD:
+            base = "cold"
+        elif stored == "warm":
+            counts["ambiguous"] += 1      # no evidence a floor put it here
+            continue
+        else:
+            base = stored
+
+        try:
+            score = float(enr.get("bullish_score") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+
+        types = pairs.get(normalize_brand(meta.get("company_name") or item.title or ""), set())
+        has_tm, has_form_d = "trademark" in types, "delaware" in types
+
+        level, new_reason = base, None
+        if base == "cold" and (has_tm or has_form_d):
+            if (score <= _TIER_FLOOR_GATE_FAIL_AT
+                    or enr.get("consumer_brand") is False
+                    or (enr.get("founder_score") or {}).get("gate_passed") is False):
+                new_reason = "gate_failed_no_floor"
+            elif has_tm and has_form_d:
+                level, new_reason = "warm", "tm_plus_form_d"
+            elif score >= _TIER_FLOOR_NEAR_MISS:
+                level = "warm"
+                new_reason = "trademark_near_miss" if has_tm else "form_d_near_miss"
+
+        if level == stored and new_reason == reason:
+            counts["unchanged"] += 1
+            continue
+
+        if level != stored:
+            counts["changed"] += 1
+            counts["to_" + level] = counts.get("to_" + level, 0) + 1
+        if not dry_run:
+            enr["watch_level"] = level
+            enr["tier_floor_reason"] = new_reason
+            meta["enrichment"] = enr
+            item.description = _json.dumps(meta, separators=(",", ":"))
+
+    if dry_run:
+        db.session.rollback()
+    else:
+        db.session.commit()
+    return counts

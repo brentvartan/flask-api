@@ -362,3 +362,34 @@ pytest tests/test_delaware_related_persons.py -v  # Task 1 fixture test
 - **People are rankers, not gatekeepers:** conviction/alumni matches boost score and badge; they never hide an unknown founder
 - **Form D scope:** covers all 50 US states (federal SEC filing); `06b` Reg D exemption is the standard consumer-brand filing — do not exclude it
 - **SerpAPI is opt-in:** expensive per-brand; skipped when `filer_name` is known from Form D (Task 1 wires this)
+---
+
+## Autonomy (standing grant from Brent)
+
+Default to **acting, not asking**. Batch the work, keep it reversible, verify it,
+and report at the end. You do **not** need to ask before:
+
+- reading anything, running builds/tests/linters, driving the browser or the CLI,
+- editing code, committing, pushing, and deploying (a push to `main` ships),
+- applying migrations and inspecting the database,
+- verifying in production through an authenticated session,
+- fanning out subagents/workflows to audit or implement within the current plan.
+
+**Stop and ask** only for this narrow list:
+- typing a password / entering credentials into a field (never do this),
+- spending money or moving funds,
+- sending anything externally visible (email, Slack, customer-facing messages),
+- destructive, cross-account, or not-undoable-in-one-click operations,
+- persisting plaintext production secrets.
+
+If something is ambiguous *and* consequential, make the reversible choice and say
+so in the summary rather than blocking. Surface judgment calls as findings, not as
+questions that stall the work.
+
+## Session hygiene
+
+Memory is scoped to the session's **working directory** — a session started from
+the home dir, this repo, and a worktree each get a *different* memory scope. Start
+sessions from this repo root so context accumulates in one place. Prefer
+**in-session fan-out** (subagents/workflows in one thread) over spawning separate
+sessions, which fragment context and multiply approvals.
