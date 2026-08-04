@@ -1429,39 +1429,42 @@ def rederive_tiers():
 @admin_required()
 def corpus_stats():
     """
-    One honest read of the whole signal corpus: how big it is, how much has
-    actually been assessed, and how the assessed part splits across tiers.
+    One honest read of the whole signal corpus.
 
-    Added because there was no way to answer "how many WARM are there really?"
-    without estimating from whatever job last ran. The 2026-09-03 budget review
-    turns on the unassessed count specifically — a number nobody should have to
-    reconstruct by hand.
+    THE DISTINCTION THAT MATTERS. "Not enriched" is not the same as "waiting".
+    Most unenriched signals were deliberately rejected by the cheap Haiku triage
+    pass — that IS an assessment, just a $0.001 one. Only signals that neither
+    pass touched are genuine backlog, and conflating the two overstates the
+    queue by roughly 3x. The 2026-09-03 budget review turns on exactly this
+    number, so it is computed here rather than reconstructed by hand.
 
-    Counted in the database rather than in Python: the corpus is ~20k rows and
-    pulling it into memory to tally is how a read-only stats call turns into an
-    outage.
+    Counted in the database, not in Python: the corpus is 25k rows and pulling
+    it into memory to tally is how a read-only stats call becomes an outage.
     """
     from sqlalchemy import func, case
 
     desc = Item.description
-    scored = desc.contains('"enriched":true') | desc.contains('"enriched": true')
+    enriched = desc.contains('"enriched":true') | desc.contains('"enriched": true')
+    triaged = desc.contains('"triage"')
     tier = lambda name: func.count(case(  # noqa: E731
-        (desc.contains('"watch_level":"%s"' % name)
-         | desc.contains('"watch_level": "%s"' % name), 1)))
+        (enriched & (desc.contains('"watch_level":"%s"' % name)
+                     | desc.contains('"watch_level": "%s"' % name)), 1)))
 
-    total, assessed, hot, warm, cold, triaged = db.session.query(
+    total, scored, triaged_only, untouched, hot, warm, cold = db.session.query(
         func.count(Item.id),
-        func.count(case((scored, 1))),
+        func.count(case((enriched, 1))),
+        func.count(case((triaged & ~enriched, 1))),
+        func.count(case((~triaged & ~enriched, 1))),
         tier("hot"), tier("warm"), tier("cold"),
-        func.count(case((desc.contains('"triage"'), 1))),
     ).filter(Item.item_type == "signal").one()
 
+    pct = lambda n, d: round(100.0 * n / d, 1) if d else 0.0  # noqa: E731
     return jsonify({
         "total_signals": total,
-        "assessed": assessed,
-        "unassessed": total - assessed,
-        "unassessed_pct": round(100.0 * (total - assessed) / total, 1) if total else 0,
-        "triaged_out": triaged,
+        "scored": scored,
+        "triaged_out": triaged_only,      # assessed cheaply and rejected
+        "backlog": untouched,             # genuinely never looked at
+        "backlog_pct": pct(untouched, total),
         "tiers": {"hot": hot, "warm": warm, "cold": cold},
-        "warm_pct_of_assessed": round(100.0 * warm / assessed, 1) if assessed else 0,
+        "warm_pct_of_scored": pct(warm, scored),
     }), 200
