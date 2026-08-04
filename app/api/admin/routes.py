@@ -1468,3 +1468,95 @@ def corpus_stats():
         "tiers": {"hot": hot, "warm": warm, "cold": cold},
         "warm_pct_of_scored": pct(warm, scored),
     }), 200
+
+
+@bp.route("/recall-check", methods=["POST"])
+@admin_required()
+def recall_check():
+    """
+    Given brand names, report whether the Finder ever saw them and when FIRST.
+
+    This is the recall half of the measurement. Everything else in this codebase
+    answers "of what we surfaced, how much was good?" — precision. This answers
+    "of the deals that mattered, how many did we have, and how early?", which is
+    the question a human's memory alone can settle and which no metric here
+    could previously touch.
+
+    Matching is done in the database against SignalEvent.brand_key, the same
+    normalised key confluence clusters on — so "Singing Pastures, LLC" and
+    "SINGING PASTURES" resolve to one brand, exactly as they do everywhere else.
+    A title fallback catches brands that were saved before a SignalEvent existed.
+
+    POST {"brands": ["Singing Pastures", ...], "heard_at": {"Singing Pastures": "2026-01"}}
+    heard_at is optional; when given, the response reports lead_days — how far
+    ahead of a human the signal was sitting there. Negative means we were late.
+    """
+    from datetime import datetime, timezone
+    from ...models.signal_event import SignalEvent
+    from ...services.confluence import normalize_brand
+
+    body = request.get_json(silent=True) or {}
+    brands = [b for b in (body.get("brands") or []) if isinstance(b, str) and b.strip()]
+    if not brands:
+        return jsonify({"error": "brands must be a non-empty list of names"}), 400
+    if len(brands) > 1000:
+        return jsonify({"error": "at most 1000 brands per call"}), 400
+    heard = {normalize_brand(k): v for k, v in (body.get("heard_at") or {}).items()}
+
+    keys = {}
+    for b in brands:
+        k = normalize_brand(b)
+        if k:
+            keys.setdefault(k, b)
+
+    # One pass over the matching events, earliest-first, keyed by brand.
+    found = {}
+    if keys:
+        rows = (db.session.query(SignalEvent.brand_key, SignalEvent.signal_type,
+                                 SignalEvent.detected_at, SignalEvent.item_id)
+                .filter(SignalEvent.brand_key.in_(list(keys)))
+                .order_by(SignalEvent.detected_at.asc())
+                .all())
+        for bk, st, detected, item_id in rows:
+            e = found.setdefault(bk, {"first_seen": detected, "first_type": st,
+                                      "types": set(), "item_id": item_id, "n": 0})
+            e["types"].add(st)
+            e["n"] += 1
+
+    def _as_utc(dt):
+        if dt is None:
+            return None
+        return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    out, hits = [], 0
+    for k, original in keys.items():
+        e = found.get(k)
+        rec = {"brand": original, "brand_key": k, "found": bool(e)}
+        if e:
+            hits += 1
+            first = _as_utc(e["first_seen"])
+            rec.update({
+                "first_seen": first.isoformat(),
+                "first_signal_type": e["first_type"],
+                "signal_types": sorted(e["types"]),
+                "signal_count": e["n"],
+                "item_id": e["item_id"],
+            })
+            when = heard.get(k)
+            if when:
+                try:
+                    h = datetime.strptime(when[:7], "%Y-%m").replace(tzinfo=timezone.utc)
+                    rec["heard_at"] = when
+                    rec["lead_days"] = (h - first).days   # positive = we were early
+                except ValueError:
+                    rec["heard_at_error"] = when
+        out.append(rec)
+
+    out.sort(key=lambda r: (not r["found"], r["brand"].lower()))
+    return jsonify({
+        "checked": len(out),
+        "found": hits,
+        "missed": len(out) - hits,
+        "recall_pct": round(100.0 * hits / len(out), 1) if out else 0.0,
+        "results": out,
+    }), 200
