@@ -1478,20 +1478,32 @@ def recall_check():
 
     This is the recall half of the measurement. Everything else in this codebase
     answers "of what we surfaced, how much was good?" — precision. This answers
-    "of the deals that mattered, how many did we have, and how early?", which is
-    the question a human's memory alone can settle and which no metric here
-    could previously touch.
+    "of the deals that mattered, how many did we have, and how early?", which no
+    metric here could previously touch: a brand the Finder never surfaced does
+    not read as a miss, it does not read at all.
 
-    Matching is done in the database against SignalEvent.brand_key, the same
-    normalised key confluence clusters on — so "Singing Pastures, LLC" and
-    "SINGING PASTURES" resolve to one brand, exactly as they do everywhere else.
-    A title fallback catches brands that were saved before a SignalEvent existed.
+    MATCHED TWO WAYS, because one way silently under-reports:
+      1. SignalEvent.brand_key — the normalised key confluence clusters on, so
+         "Singing Pastures, LLC" and "SINGING PASTURES" are one brand here
+         exactly as they are everywhere else.
+      2. The normalised Item.title of every stored signal. Not every signal has
+         a SignalEvent row (they are written by confluence, which post-dates a
+         chunk of the corpus and can fail independently), so brand_key alone
+         reports a miss for signals that are demonstrably sitting in the table.
+         An unverified recall number that is too LOW is as misleading as one
+         that is too high.
 
-    POST {"brands": ["Singing Pastures", ...], "heard_at": {"Singing Pastures": "2026-01"}}
-    heard_at is optional; when given, the response reports lead_days — how far
-    ahead of a human the signal was sitting there. Negative means we were late.
+    Always returns corpus_window. A recall figure is uninterpretable without it:
+    if the committee reviewed a deal in January and the corpus only reaches back
+    to June, that is a coverage gap in what we collected, not a failure to spot
+    what was there.
+
+    POST {"brands": [...], "heard_at": {"Brand": "2026-01"}}
+    heard_at is optional; with it, lead_days reports how far ahead of a human
+    the signal was already sitting there. Negative means the human won.
     """
     from datetime import datetime, timezone
+    from sqlalchemy import func
     from ...models.signal_event import SignalEvent
     from ...services.confluence import normalize_brand
 
@@ -1509,24 +1521,54 @@ def recall_check():
         if k:
             keys.setdefault(k, b)
 
-    # One pass over the matching events, earliest-first, keyed by brand.
-    found = {}
-    if keys:
-        rows = (db.session.query(SignalEvent.brand_key, SignalEvent.signal_type,
-                                 SignalEvent.detected_at, SignalEvent.item_id)
-                .filter(SignalEvent.brand_key.in_(list(keys)))
-                .order_by(SignalEvent.detected_at.asc())
-                .all())
-        for bk, st, detected, item_id in rows:
-            e = found.setdefault(bk, {"first_seen": detected, "first_type": st,
-                                      "types": set(), "item_id": item_id, "n": 0})
-            e["types"].add(st)
-            e["n"] += 1
-
     def _as_utc(dt):
         if dt is None:
             return None
         return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    found = {}
+
+    def _note(bk, when, kind, item_id, how):
+        """Fold one sighting into a brand's record.
+
+        Counts DISTINCT items: the same signal is reached by both the brand_key
+        pass and the title pass, so a naive increment reports every dual-matched
+        brand as having twice the signals it has.
+        """
+        when = _as_utc(when)
+        e = found.get(bk)
+        if e is None:
+            found[bk] = {"first_seen": when, "first_type": kind, "types": set(),
+                         "item_id": item_id, "items": set(), "matched_by": how}
+            e = found[bk]
+        elif when and (e["first_seen"] is None or when < e["first_seen"]):
+            e.update({"first_seen": when, "first_type": kind, "item_id": item_id})
+        if kind:
+            e["types"].add(kind)
+        if item_id is not None:
+            e["items"].add(item_id)
+
+    if keys:
+        for bk, st, detected, item_id in (
+                db.session.query(SignalEvent.brand_key, SignalEvent.signal_type,
+                                 SignalEvent.detected_at, SignalEvent.item_id)
+                .filter(SignalEvent.brand_key.in_(list(keys)))
+                .order_by(SignalEvent.detected_at.asc())):
+            _note(bk, detected, st, item_id, "brand_key")
+
+        # Title pass. Normalising in SQL is not portable, so titles come back and
+        # are normalised here — two columns over the signal rows, not the whole
+        # description payload.
+        for item_id, title, created in (
+                db.session.query(Item.id, Item.title, Item.created_at)
+                .filter(Item.item_type == "signal")
+                .yield_per(2000)):
+            k = normalize_brand(title or "")
+            if k in keys:
+                _note(k, created, None, item_id, "title")
+
+    window = db.session.query(func.min(Item.created_at), func.max(Item.created_at)) \
+        .filter(Item.item_type == "signal").one()
 
     out, hits = [], 0
     for k, original in keys.items():
@@ -1534,16 +1576,17 @@ def recall_check():
         rec = {"brand": original, "brand_key": k, "found": bool(e)}
         if e:
             hits += 1
-            first = _as_utc(e["first_seen"])
+            first = e["first_seen"]
             rec.update({
-                "first_seen": first.isoformat(),
+                "first_seen": first.isoformat() if first else None,
                 "first_signal_type": e["first_type"],
-                "signal_types": sorted(e["types"]),
-                "signal_count": e["n"],
+                "signal_types": sorted(t for t in e["types"] if t),
+                "signal_count": len(e["items"]),
                 "item_id": e["item_id"],
+                "matched_by": e["matched_by"],
             })
             when = heard.get(k)
-            if when:
+            if when and first:
                 try:
                     h = datetime.strptime(when[:7], "%Y-%m").replace(tzinfo=timezone.utc)
                     rec["heard_at"] = when
@@ -1558,5 +1601,9 @@ def recall_check():
         "found": hits,
         "missed": len(out) - hits,
         "recall_pct": round(100.0 * hits / len(out), 1) if out else 0.0,
+        "corpus_window": {
+            "earliest_signal": _as_utc(window[0]).isoformat() if window[0] else None,
+            "latest_signal": _as_utc(window[1]).isoformat() if window[1] else None,
+        },
         "results": out,
     }), 200

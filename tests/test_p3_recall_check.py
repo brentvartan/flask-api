@@ -110,3 +110,48 @@ class TestRecallCheck:
 
     def test_requires_admin(self, client, db, user_token):
         assert _post(client, user_token, {"brands": ["x"]}).status_code in (401, 403)
+
+
+class TestTitleFallback:
+    """Not every signal has a SignalEvent — confluence writes those, it post-dates
+    part of the corpus and can fail on its own. Matching only on brand_key
+    reports a MISS for signals demonstrably sitting in the table, and a recall
+    number that is too low misleads exactly as much as one that is too high."""
+
+    def test_finds_a_signal_that_has_no_signal_event(self, client, db, admin_user, admin_token):
+        item = Item(title="ORPHAN BRAND", item_type="signal",
+                    owner_id=admin_user.id, description="{}")
+        db.session.add(item)
+        db.session.commit()
+        d = _post(client, admin_token, {"brands": ["Orphan Brand"]}).get_json()
+        assert d["found"] == 1, "brand_key-only matching would call this a miss"
+        assert d["results"][0]["matched_by"] == "title"
+
+    def test_event_and_title_do_not_double_count_as_two_brands(self, client, db, admin_user, admin_token):
+        _seen(admin_user.id, "Both Ways", "trademark",
+              datetime(2026, 3, 1, tzinfo=timezone.utc))
+        db.session.commit()
+        d = _post(client, admin_token, {"brands": ["Both Ways"]}).get_json()
+        assert d["checked"] == 1 and d["found"] == 1
+
+    def test_earliest_wins_across_both_match_paths(self, client, db, admin_user, admin_token):
+        """A title-matched row older than any SignalEvent must move first_seen
+        earlier — otherwise lead time is understated."""
+        _seen(admin_user.id, "Time Test", "trademark",
+              datetime(2026, 6, 1, tzinfo=timezone.utc))
+        old = Item(title="TIME TEST", item_type="signal", owner_id=admin_user.id,
+                   description="{}", created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        db.session.add(old)
+        db.session.commit()
+        d = _post(client, admin_token, {"brands": ["Time Test"]}).get_json()
+        assert d["results"][0]["first_seen"].startswith("2026-01-01")
+
+    def test_corpus_window_is_always_returned(self, client, db, admin_user, admin_token):
+        """A recall figure is uninterpretable without knowing how far back the
+        corpus actually reaches."""
+        _seen(admin_user.id, "Window Brand", "trademark",
+              datetime(2026, 5, 1, tzinfo=timezone.utc))
+        db.session.commit()
+        d = _post(client, admin_token, {"brands": ["Window Brand"]}).get_json()
+        assert d["corpus_window"]["earliest_signal"] is not None
+        assert d["corpus_window"]["latest_signal"] is not None
