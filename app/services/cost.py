@@ -236,6 +236,60 @@ def check_budget(estimated_usd: float = 0.0) -> bool:
     return (spent + max(0.0, estimated_usd)) <= cap
 
 
+# As the month's budget depletes, raise the bar for what is worth paying for
+# rather than simply running out mid-month on whatever arrived first.
+_CONSERVE_AT = 0.80
+
+
+def spend_mode() -> str:
+    """
+    "normal" | "conserve" | "exhausted".
+
+    At $250 the month affords roughly 420 scored signals a night, so WHICH ones
+    get scored matters far more than it did at 3,000. Below 80% used, order is
+    unchanged. Past 80%, the remaining money goes to the two jobs first — Form D
+    (Job 1, the source that is supposed to be airtight) and brands already
+    carrying a second signal type (confluence, the core edge) — before the
+    high-volume trademark stream that would otherwise absorb it all.
+    """
+    cap = monthly_cap_usd()
+    if cap <= 0:
+        return "exhausted"
+    try:
+        spent = month_to_date_usd()
+    except Exception:
+        return "exhausted"          # unknown spend is treated as spent
+    if spent >= cap:
+        return "exhausted"
+    return "conserve" if spent / cap >= _CONSERVE_AT else "normal"
+
+
+class BudgetExhausted(RuntimeError):
+    """Raised instead of making a paid call once the monthly cap is reached."""
+
+
+def metered_call(client, *, model: str, est_usd: float, purpose: str, **kwargs):
+    """
+    The ONLY way this codebase should call Anthropic.
+
+    Checks the cap, makes the call, meters what it actually cost. Every paid
+    call site goes through here so the cap cannot be bypassed by adding a new
+    one — the failure this repo keeps repeating is a second code path that
+    forgot a rule the first one follows (see CLAUDE.md, dual-path divergence).
+    A guard applied per-call-site is exactly that shape.
+
+    Raises BudgetExhausted rather than returning a sentinel, because callers
+    have genuinely different fallbacks: triage fails open, scoring returns a
+    not-enriched dict, chat surfaces a message. Swallowing the distinction here
+    would force one of those to be wrong.
+    """
+    if not check_budget(est_usd):
+        raise BudgetExhausted(purpose)
+    message = client.messages.create(model=model, **kwargs)
+    record(model, getattr(message, "usage", None))
+    return message
+
+
 def summary() -> dict:
     """Spend snapshot for the digest and the admin API."""
     cap = monthly_cap_usd()

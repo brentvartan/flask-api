@@ -6,6 +6,7 @@ import json
 import re
 import anthropic
 from datetime import datetime, timezone
+from .cost import BudgetExhausted, metered_call
 
 _client = None
 
@@ -177,10 +178,21 @@ def ask_bullish(messages: list) -> str:
     manifest = _load_signal_manifest()
     system = SYSTEM_PROMPT.replace("{manifest}", manifest)
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        system=system,
-        messages=messages,
-    )
+    # Chat is interactive and cheap per call, but it draws on the same monthly
+    # pot as scoring — an unmetered path is a hole in the cap, not an exception
+    # to it.
+    try:
+        response = metered_call(
+            client,
+            model="claude-sonnet-4-6",
+            est_usd=0.01,
+            purpose="chat",
+            max_tokens=1000,
+            system=system,
+            messages=messages,
+        )
+    except BudgetExhausted:
+        return ("This month's AI budget is spent, so I can't answer right now. "
+                "It resets on the 1st. Scanning and collection are unaffected — "
+                "only the paid steps pause.")
     return response.content[0].text.strip()

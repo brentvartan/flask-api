@@ -185,3 +185,76 @@ class TestSpendEndpoint:
         assert "error" not in metered, metered
         assert metered["cap_usd"] > 0
         assert "spent_usd" in metered and "remaining_usd" in metered
+
+
+class TestNoUnmeteredCallPath:
+    """The control for this repo's most-repeated defect: a second code path that
+    forgot a rule the first one follows. A per-call-site guard is exactly that
+    shape, so instead the rule is 'there is only one call site'."""
+
+    def test_no_raw_messages_create_outside_cost_module(self):
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent / "app"
+        offenders = [
+            f"{p.relative_to(root.parent)}:{n}"
+            for p in root.rglob("*.py") if p.name != "cost.py"
+            for n, line in enumerate(p.read_text().splitlines(), 1)
+            if "messages.create(" in line
+        ]
+        assert not offenders, (
+            "Anthropic calls must go through cost.metered_call so the monthly "
+            f"cap cannot be bypassed. Unmetered call sites: {offenders}")
+
+
+class TestSpendMode:
+    def test_normal_below_the_conserve_line(self, db, app, admin_user, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_MONTHLY_CAP_USD", "100")
+        cost.record("claude-sonnet-4-6", _Usage(inp=10_000_000), flush=True)  # $30
+        assert cost.spend_mode() == "normal"
+
+    def test_conserve_past_80_percent(self, db, app, admin_user, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_MONTHLY_CAP_USD", "100")
+        cost.record("claude-sonnet-4-6", _Usage(inp=28_000_000), flush=True)  # $84
+        assert cost.spend_mode() == "conserve"
+
+    def test_exhausted_at_the_cap(self, db, app, admin_user, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_MONTHLY_CAP_USD", "100")
+        cost.record("claude-sonnet-4-6", _Usage(inp=40_000_000), flush=True)  # $120
+        assert cost.spend_mode() == "exhausted"
+
+    def test_unknown_spend_is_treated_as_exhausted(self, db, app, monkeypatch):
+        monkeypatch.setattr(cost, "month_to_date_usd",
+                            lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+        assert cost.spend_mode() == "exhausted"
+
+
+class TestMeteredCall:
+    def test_refuses_and_does_not_call_when_exhausted(self, db, app, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_MONTHLY_CAP_USD", "0")
+
+        class _Client:
+            class messages:
+                @staticmethod
+                def create(**kw):
+                    pytest.fail("must not reach the API when the cap is spent")
+
+        with pytest.raises(cost.BudgetExhausted):
+            cost.metered_call(_Client(), model="claude-haiku-4-5",
+                              est_usd=0.001, purpose="test", max_tokens=10,
+                              messages=[{"role": "user", "content": "hi"}])
+
+    def test_meters_what_the_call_actually_cost(self, db, app, admin_user, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_MONTHLY_CAP_USD", "100")
+
+        class _Resp:
+            usage = _Usage(inp=1_000_000)
+        class _Client:
+            class messages:
+                @staticmethod
+                def create(**kw):
+                    return _Resp()
+
+        cost.metered_call(_Client(), model="claude-sonnet-4-6",
+                          est_usd=0.01, purpose="test", max_tokens=10,
+                          messages=[{"role": "user", "content": "hi"}])
+        assert cost.month_to_date_usd() == pytest.approx(3.00)

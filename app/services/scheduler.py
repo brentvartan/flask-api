@@ -804,6 +804,27 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
         # them up from the backlog.
         logger.error("Cost ledger unavailable (%s) — skipping scoring this run", exc)
         enrich_budget = 0
+    # Past 80% of the monthly budget, spend what is left on the two jobs first.
+    # _fair_share round-robins by signal type to stop one collector starving the
+    # others; conserving reorders which types it serves first, so the tail of the
+    # month goes to Form D and confluence candidates rather than to whatever the
+    # trademark sweep happened to collect that night.
+    try:
+        from .cost import spend_mode as _spend_mode
+        _mode = _spend_mode()
+    except Exception:
+        _mode = "exhausted"
+    if _mode == "conserve":
+        _priority = {"delaware": 0}
+        new_item_ids = sorted(
+            new_item_ids,
+            key=lambda i: (
+                _priority.get(next(iter(item_signal_types.get(i, ["zz"])), "zz"), 1),
+                0 if len(item_signal_types.get(i, [])) > 1 else 1,   # confluence first
+            ),
+        )
+        logger.warning("Conserving budget — Form D and confluence candidates scored first")
+
     to_process = _fair_share(new_item_ids, item_signal_types, enrich_budget)
     if len(to_process) < enrich_budget:
         to_process += _backlog_item_ids(enrich_budget - len(to_process),

@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import anthropic
+from .cost import BudgetExhausted, metered_call
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +154,11 @@ def triage_signal(signal: dict) -> dict:
     )
 
     try:
-        message = client.messages.create(
+        message = metered_call(
+            client,
             model=_TRIAGE_MODEL,
+            est_usd=_EST_TRIAGE_USD,
+            purpose="triage",
             max_tokens=_TRIAGE_MAX_TOKENS,
             system=TRIAGE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
@@ -163,8 +167,6 @@ def triage_signal(signal: dict) -> dict:
 
         _usage = getattr(message, "usage", None)
         if _usage is not None:
-            from .cost import record as _record_cost
-            _record_cost(_TRIAGE_MODEL, _usage)
             logger.info(
                 "triage usage: in=%s out=%s",
                 getattr(_usage, "input_tokens", None),
@@ -567,8 +569,11 @@ def enrich_signal(signal: dict) -> dict:
     )
 
     try:
-        message = _get_client().messages.create(
+        message = metered_call(
+            _get_client(),
             model="claude-sonnet-4-6",
+            est_usd=_EST_SCORE_USD,
+            purpose="scoring",
             max_tokens=1600,
             # SYSTEM_PROMPT is ~7,600 tokens (the full thesis, scorecard, ~40 calibration
             # anchors) and is byte-identical on every call, so it is a textbook cache
@@ -590,8 +595,7 @@ def enrich_signal(signal: dict) -> dict:
         if _usage is not None:
             # Meter it. This used to log the usage and drop it, which is how the
             # app ran for months with no idea what it cost.
-            from .cost import record as _record_cost
-            _cost = _record_cost("claude-sonnet-4-6", _usage)
+            _cost = 0.0  # metered_call already recorded this
             logger.info(
                 "enrich cache: read=%s created=%s uncached_in=%s out=%s cost=$%.5f",
                 getattr(_usage, "cache_read_input_tokens", None),
@@ -830,8 +834,11 @@ Education:
     user_message = profile_text
 
     try:
-        message = client.messages.create(
+        message = metered_call(
+            client,
             model="claude-haiku-4-5",   # cheaper model — founder scoring only
+            est_usd=_EST_FOUNDER_USD,
+            purpose="founder-rescore",
             max_tokens=800,
             system=_FOUNDER_RESCORE_PROMPT,
             messages=[{"role": "user", "content": user_message}],

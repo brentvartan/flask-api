@@ -17,6 +17,12 @@ import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
+from .cost import BudgetExhausted, metered_call
+
+# Rough per-call cost, for the pre-flight headroom check only; actual spend
+# is metered from the response.
+_EST_HAIKU_USD = 0.0015
+
 
 import requests
 from urllib.parse import urljoin, urlparse
@@ -147,8 +153,11 @@ def _extract_founder_from_snippets(brand_name: str, snippets: list) -> dict:
     )
 
     try:
-        message = client.messages.create(
+        message = metered_call(
+            client,
             model=_HAIKU_MODEL,
+            est_usd=_EST_HAIKU_USD,
+            purpose="founder-extraction",
             max_tokens=200,
             system=_EXTRACTION_SYSTEM,
             messages=[{"role": "user", "content": user_message}],
@@ -264,8 +273,11 @@ def extract_founders_from_page(page_text: str, brand_name: str, claude_client) -
     )
 
     try:
-        message = claude_client.messages.create(
+        message = metered_call(
+            claude_client,
             model=_HAIKU_MODEL,
+            est_usd=_EST_HAIKU_USD,
+            purpose="founder-page-parse",
             max_tokens=400,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
@@ -356,8 +368,11 @@ def search_exit_background(
     )
 
     try:
-        message = claude_client.messages.create(
+        message = metered_call(
+            claude_client,
             model=_HAIKU_MODEL,
+            est_usd=_EST_HAIKU_USD,
+            purpose="exit-background",
             max_tokens=200,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
