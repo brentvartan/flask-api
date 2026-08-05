@@ -225,6 +225,8 @@ def check_budget(estimated_usd: float = 0.0) -> bool:
     unbounded bill is not. Collection and triage-free work continue either way —
     only the paid step stops.
     """
+    if is_frozen():
+        return False
     cap = monthly_cap_usd()
     if cap <= 0:
         return False
@@ -241,6 +243,57 @@ def check_budget(estimated_usd: float = 0.0) -> bool:
 _CONSERVE_AT = 0.80
 
 
+# ─── Freeze ───────────────────────────────────────────────────────────────────
+# A freeze keeps every byte of the system in place and stops it doing anything
+# that costs money. Stored in the ledger row rather than an env var for two
+# reasons: it survives deploys and restarts without anyone remembering to re-set
+# it, and check_budget already reads that row on the exact code path that must
+# honour it, so honouring the freeze costs no extra query.
+
+def is_frozen() -> bool:
+    """
+    True when the app is frozen. FAILS CLOSED on a read error: if we cannot tell
+    whether we are frozen, behave as though we are. The cost of a wrong 'yes' is
+    a quiet night; the cost of a wrong 'no' is spending money the owner
+    explicitly stopped.
+    """
+    from ..extensions import db
+    try:
+        with db.engine.begin() as conn:
+            return bool(_read_ledger_raw(conn).get("frozen"))
+    except Exception as exc:
+        logger.error("Freeze state unreadable (%s) — assuming FROZEN", exc)
+        return True
+
+
+def set_frozen(frozen: bool, *, reason: str = "") -> dict:
+    """Freeze or unfreeze. Returns the new state."""
+    from sqlalchemy import text
+    from ..extensions import db
+    from datetime import datetime, timezone
+
+    with db.engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": LEDGER_TITLE})
+        data = _read_ledger_raw(conn)
+        data["frozen"] = bool(frozen)
+        data["frozen_reason"] = reason or None
+        data["frozen_at"] = datetime.now(timezone.utc).isoformat() if frozen else None
+        payload = json.dumps(data, separators=(",", ":"))
+        if not conn.execute(text("UPDATE items SET description = :d, updated_at = now() "
+                                 "WHERE title = :t"), {"d": payload, "t": LEDGER_TITLE}).rowcount:
+            owner = conn.execute(text(
+                "SELECT id FROM users ORDER BY (role = 'admin') DESC, id LIMIT 1")).fetchone()
+            if owner is None:
+                raise RuntimeError("no users.id available to own the cost ledger")
+            conn.execute(text(
+                "INSERT INTO items (title, item_type, owner_id, description, created_at, "
+                "updated_at) VALUES (:t, 'system', :o, :d, now(), now())"),
+                {"t": LEDGER_TITLE, "o": owner[0], "d": payload})
+    logger.warning("App %s%s", "FROZEN" if frozen else "UNFROZEN",
+                   f" — {reason}" if reason else "")
+    return {"frozen": bool(frozen), "reason": reason or None}
+
+
 def spend_mode() -> str:
     """
     "normal" | "conserve" | "exhausted".
@@ -252,6 +305,8 @@ def spend_mode() -> str:
     carrying a second signal type (confluence, the core edge) — before the
     high-volume trademark stream that would otherwise absorb it all.
     """
+    if is_frozen():
+        return "frozen"
     cap = monthly_cap_usd()
     if cap <= 0:
         return "exhausted"
@@ -299,6 +354,7 @@ def summary() -> dict:
         return {"month": _month_key(), "cap_usd": cap, "error": "ledger_unreadable"}
     return {
         "month": _month_key(),
+        "frozen": is_frozen(),
         "cap_usd": round(cap, 2),
         "spent_usd": round(spent, 2),
         "remaining_usd": round(max(0.0, cap - spent), 2),

@@ -1649,3 +1649,35 @@ def recall_check():
         "results": out,
     }), 200
 
+
+
+@bp.route("/freeze", methods=["GET", "POST"])
+@admin_required()
+def freeze():
+    """
+    Freeze or unfreeze the whole application.
+
+    A freeze leaves every row, every signal and every setting exactly where it is
+    and stops the system doing anything that costs money:
+
+      * all seven scheduled jobs skip (gated in _acquire_job_lock)
+      * every manual scan route returns 409 (gated on the scans blueprint)
+      * every paid API call is refused before it is made (gated in check_budget,
+        which is the single path all Anthropic calls go through)
+
+    Hosting and the database keep running — the data has to live somewhere — so
+    this removes usage-based spend, not the subscription floor.
+
+    GET returns the current state. POST {"frozen": true|false, "reason": "..."}.
+    """
+    from ...services.cost import is_frozen, set_frozen, summary
+
+    if request.method == "GET":
+        return jsonify({"frozen": is_frozen(), "spend": summary()}), 200
+
+    body = request.get_json(silent=True) or {}
+    if "frozen" not in body:
+        return jsonify({"error": "body must include 'frozen': true or false"}), 400
+    state = set_frozen(bool(body["frozen"]), reason=str(body.get("reason") or ""))
+    current_app.logger.warning("Freeze toggled via API: %s", state)
+    return jsonify({**state, "spend": summary()}), 200

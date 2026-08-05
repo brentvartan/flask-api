@@ -8,6 +8,30 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from . import bp
 from ...extensions import db, limiter
+
+
+@bp.before_request
+def _refuse_when_frozen():
+    """
+    FREEZE GATE for every manual scan route.
+
+    Scheduled jobs are stopped at _acquire_job_lock; these POSTs bypass that
+    entirely. Guarding the blueprint rather than each route is deliberate — a
+    collector added later is covered automatically, whereas a per-route decorator
+    is exactly the shape that gets forgotten.
+
+    Collection itself costs nothing, but it feeds scoring and writes rows. A
+    freeze means nothing fires.
+    """
+    from flask import jsonify as _jsonify
+    from ...services.cost import is_frozen
+    if request.method == "POST" and is_frozen():
+        return _jsonify({
+            "error": "frozen",
+            "message": "Stealth Finder is frozen. Nothing is scheduled or scanning "
+                       "and no paid calls are made. Unfreeze from Settings or "
+                       "POST /api/admin/freeze with {\"frozen\": false}.",
+        }), 409
 from ...models.item import Item
 from ...services.trademarks import search_recent_trademarks
 from ...services.delaware import search_recent_delaware_entities

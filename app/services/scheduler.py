@@ -74,6 +74,16 @@ def _acquire_job_lock(app, job_id: str, ttl_seconds: int = 3600) -> bool:
     old "run anyway" fallback meant a persistent lock error fired the job in every
     worker at once.
     """
+    # FREEZE GATE. Every scheduled job calls this first, so one check here stops
+    # all seven of them — the nightly scan, the weekly digest, the press monitor,
+    # and the four reminders. Placed here rather than at each call site precisely
+    # because a per-site guard is the shape that drifts: a job added later would
+    # silently be exempt.
+    from .cost import is_frozen
+    if is_frozen():
+        logger.info("Job %r skipped — app is frozen", job_id)
+        return False
+
     from ..models.item import Item
     from ..extensions import db
     from sqlalchemy import text
