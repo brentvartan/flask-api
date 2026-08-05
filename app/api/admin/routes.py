@@ -1607,3 +1607,18 @@ def recall_check():
         },
         "results": out,
     }), 200
+
+
+@bp.route("/spend", methods=["GET"])
+@admin_required()
+def spend():
+    """
+    Month-to-date Anthropic spend against the hard cap.
+
+    Exists because the app previously had no idea what it cost: every call site
+    read response.usage, logged it, and discarded it. A budget denominated in
+    signals ("score 3,000 a night") converts to dollars through the output
+    length, which nothing was measuring.
+    """
+    from ...services.cost import summary
+    return jsonify(summary()), 200

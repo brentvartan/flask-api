@@ -163,6 +163,8 @@ def triage_signal(signal: dict) -> dict:
 
         _usage = getattr(message, "usage", None)
         if _usage is not None:
+            from .cost import record as _record_cost
+            _record_cost(_TRIAGE_MODEL, _usage)
             logger.info(
                 "triage usage: in=%s out=%s",
                 getattr(_usage, "input_tokens", None),
@@ -216,6 +218,15 @@ def triage_signal(signal: dict) -> dict:
 # line — not one it rejected. Set to 35 this promoted 1,611 brands scoring as low
 # as 38, seventeen points under WARM, including many whose own thesis text begins
 # "Pass —". 48 keeps the genuine borderline (the 52s and 54s) and drops the rest.
+# Rough per-call cost, used ONLY to leave headroom in the pre-flight budget
+# check. Actual spend is metered from the response, never from these.
+# Scoring: ~7.6k cached system tokens + ~800 uncached + ~700 out on Sonnet 4.6.
+# Triage: ~850 in + ~80 out on Haiku 4.5, uncached (the 2.2k-token triage prompt
+# is far below Haiku 4.5's 4,096-token minimum cacheable prefix, so it never
+# caches no matter what cache_control says).
+_EST_SCORE_USD  = 0.016
+_EST_TRIAGE_USD = 0.0013
+
 _TIER_FLOOR_NEAR_MISS = 48
 
 # No floor may lift a signal the model REJECTED outright. A score at or below
@@ -458,6 +469,18 @@ def enrich_signal(signal: dict) -> dict:
       - description: str  (the formatted description line)
       - notes: str        (goods & services text from USPTO)
     """
+    # Hard cap. The scan loop stops before it gets here in the normal case; this
+    # is the backstop for manual re-enriches, the admin endpoint, and any future
+    # caller that forgets. check_budget FAILS CLOSED — an unreadable ledger is
+    # treated as exhausted, because "we do not know what we have spent" is not a
+    # state in which to spend more.
+    from .cost import check_budget as _check_budget
+    if not _check_budget(_EST_SCORE_USD):
+        logger.warning("Monthly Anthropic cap reached — refusing to score %r",
+                       (signal.get("company_name") or "")[:60])
+        return {"enriched": False, "error": "monthly_budget_exhausted",
+                "bullish_score": None}
+
     try:
         client = _get_client()
     except RuntimeError as e:
@@ -565,12 +588,17 @@ def enrich_signal(signal: dict) -> dict:
 
         _usage = getattr(message, "usage", None)
         if _usage is not None:
+            # Meter it. This used to log the usage and drop it, which is how the
+            # app ran for months with no idea what it cost.
+            from .cost import record as _record_cost
+            _cost = _record_cost("claude-sonnet-4-6", _usage)
             logger.info(
-                "enrich cache: read=%s created=%s uncached_in=%s out=%s",
+                "enrich cache: read=%s created=%s uncached_in=%s out=%s cost=$%.5f",
                 getattr(_usage, "cache_read_input_tokens", None),
                 getattr(_usage, "cache_creation_input_tokens", None),
                 getattr(_usage, "input_tokens", None),
                 getattr(_usage, "output_tokens", None),
+                _cost,
             )
 
         text = message.content[0].text.strip()

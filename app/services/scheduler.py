@@ -776,6 +776,34 @@ def run_scan_now(scan, user_id: int, days_back_override: int = None) -> dict:
     # there forever. Tune with SCAN_ENRICH_BUDGET.
     _scan_progress("budget", saved=new_saved)
     enrich_budget = _enrich_budget()
+
+    # THE DOLLAR CAP OUTRANKS THE SIGNAL BUDGET.
+    #
+    # SCAN_ENRICH_BUDGET is denominated in signals, which is not a budget — the
+    # conversion to dollars is the output length, and nobody was measuring it.
+    # Convert the month's remaining headroom into a signal count and take
+    # whichever is smaller, so a run can never spend past the cap even if the
+    # signal budget says otherwise.
+    try:
+        from .cost import summary as _cost_summary
+        _spend = _cost_summary()
+        if "error" in _spend:
+            raise RuntimeError(_spend["error"])
+        from .enrichment import _EST_SCORE_USD
+        _affordable = int(_spend["remaining_usd"] / max(_EST_SCORE_USD, 1e-9))
+        if _affordable < enrich_budget:
+            logger.warning(
+                "Monthly cap: $%.2f of $%.2f spent — scoring budget %d -> %d this run",
+                _spend["spent_usd"], _spend["cap_usd"], enrich_budget, max(0, _affordable),
+            )
+            enrich_budget = max(0, _affordable)
+    except Exception as exc:
+        # Fail closed: an unreadable ledger means we do not know what has been
+        # spent, so we do not spend. Collection above already completed and every
+        # signal is saved — only the paid step is skipped, and the next run picks
+        # them up from the backlog.
+        logger.error("Cost ledger unavailable (%s) — skipping scoring this run", exc)
+        enrich_budget = 0
     to_process = _fair_share(new_item_ids, item_signal_types, enrich_budget)
     if len(to_process) < enrich_budget:
         to_process += _backlog_item_ids(enrich_budget - len(to_process),
@@ -1283,6 +1311,23 @@ def _send_weekly_digest(app):
             logger.warning("Weekly digest: backlog count failed: %s", exc)
             unassessed = None
 
+        # Spend line — shown every week, not just at the cap, so the number is
+        # familiar before it ever becomes a decision.
+        try:
+            from .cost import summary as _cs
+            _sp = _cs()
+            spend_notice = (
+                None if "error" in _sp else
+                f"Anthropic spend this month: ${_sp['spent_usd']:,.2f} of "
+                f"${_sp['cap_usd']:,.0f} ({_sp['pct_used']:.0f}%). "
+                + ("SCORING IS PAUSED until the 1st — the cap is a hard stop, not a warning."
+                   if _sp["exhausted"] else
+                   f"${_sp['remaining_usd']:,.2f} left.")
+            )
+        except Exception as exc:
+            logger.warning("Digest: spend summary failed (%s)", exc)
+            spend_notice = None
+
         budget_notice = None
         if _run_cap_reached():
             _backlog = ("unknown" if unassessed is None
@@ -1304,6 +1349,11 @@ def _send_weekly_digest(app):
                 f"of it should start before these are answered."
             )
             logger.info("Weekly digest: two-week run cap reached — decision banner shown")
+
+        # Fold the spend line in. It was previously computed and dropped on the
+        # floor — budget_notice is the only channel the digest renderer reads.
+        if spend_notice:
+            budget_notice = (spend_notice + "\n\n" + budget_notice) if budget_notice else spend_notice
 
         week_label = datetime.now(timezone.utc).strftime("%b %d, %Y")
         sent_ok = False
