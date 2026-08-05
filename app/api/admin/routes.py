@@ -171,7 +171,14 @@ _spend_cache: dict = {"data": None, "expires": 0}
 # Cost constants (update if pricing changes)
 _PROXYCURL_COST_PER_LOOKUP   = 0.01    # ~1 credit per profile fetch @ $0.01/credit
 _SERPAPI_COST_PER_SEARCH     = 0.00    # free plan (250/mo); paid plan ~$0.01/search
-_ANTHROPIC_COST_PER_SIGNAL   = 0.03    # claude-sonnet avg per enrichment call
+# Calibrated against the meter on 2026-08-05, not guessed. The old 0.03 was
+# exactly 2x reality and inflated every derived figure on the spend page —
+# including an all-time estimate of $498 that sat next to a measured $20.
+# A cached scoring call is ~$0.0152: 7,600 system tokens billed at the ~10%
+# cache-read rate, ~800 uncached payload tokens, and ~700 output tokens at 5x
+# input. Output is roughly two thirds of it, which is why answer length is the
+# lever that matters. Re-derive from cost.price_call if the prompt changes.
+_ANTHROPIC_COST_PER_SIGNAL   = 0.0152  # measured, claude-sonnet-4-6 with cache hit
 
 
 def _cost_model_payload():
