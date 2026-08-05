@@ -340,21 +340,38 @@ def _enrich_budget() -> int:
 
 from datetime import date as _date
 
-_BUDGET_RAISED_ON  = _date(2026, 8, 3)     # 2,000 -> 3,000, one-month trial
-_BUDGET_REVIEW_ON  = _date(2026, 9, 3)
+_BUDGET_RAISED_ON  = _date(2026, 8, 3)     # 2,000 -> 3,000
 _BUDGET_TRIAL_FROM = 2000
 _BUDGET_TRIAL_TO   = 3000
+
+# THE RUN CAP. Brent capped this on 2026-08-04: run two more weeks, then decide
+# rather than drift. The elevated-budget trial was originally a month
+# (2026-09-03); it now ends with the cap, because two separate review dates is
+# two chances to ignore both.
+#
+# What happens on this date is a DECISION, not a shutdown — scans keep running.
+# The digest stops being a list of brands and leads with the question instead:
+# is this earning its keep, and is anyone acting on it? Left unanswered the
+# banner simply keeps appearing, which is the intended failure mode. A system
+# quietly spending money that nobody reads should be loud about it.
+_RUN_CAP_SET_ON = _date(2026, 8, 4)
+_RUN_CAP_ON     = _date(2026, 8, 18)
+
+
+def _run_cap_reached() -> bool:
+    """True once the two-week cap is up. Idempotent and safe to leave in."""
+    return _date.today() >= _RUN_CAP_ON
 
 
 def _budget_review_due() -> bool:
     """
-    True once the one-month elevated-budget trial is up.
+    True once the elevated-budget trial is up, which is now the run cap.
 
     Surfaced in the Monday digest rather than left as a note somewhere, because
-    a reminder nobody reads is not a reminder. Harmless after the decision is
-    made — change the constants (or drop this block) when the budget settles.
+    a reminder nobody reads is not a reminder. Goes quiet on its own if the
+    budget is dropped back to 2,000 — no cleanup needed.
     """
-    return _date.today() >= _BUDGET_REVIEW_ON and _enrich_budget() > _BUDGET_TRIAL_FROM
+    return _run_cap_reached() and _enrich_budget() > _BUDGET_TRIAL_FROM
 
 
 def _backlog_item_ids(limit: int, exclude: set) -> list:
@@ -1267,18 +1284,26 @@ def _send_weekly_digest(app):
             unassessed = None
 
         budget_notice = None
-        if _budget_review_due():
+        if _run_cap_reached():
+            _backlog = ("unknown" if unassessed is None
+                        else format(unassessed, ","))
+            _weeks = max(1, (_date.today() - _RUN_CAP_SET_ON).days // 7)
             budget_notice = (
-                f"The scoring budget was raised from {_BUDGET_TRIAL_FROM:,} to "
-                f"{_BUDGET_TRIAL_TO:,} on {_BUDGET_RAISED_ON:%b %d} for a one-month "
-                f"trial, to drain a backlog of never-assessed signals. That month is "
-                f"up. Backlog now: "
-                f"{'unknown' if unassessed is None else format(unassessed, ',')} "
-                f"unassessed signals. Decide whether to keep it at "
-                f"{_BUDGET_TRIAL_TO:,} or drop back to {_BUDGET_TRIAL_FROM:,} "
-                f"(SCAN_ENRICH_BUDGET)."
+                f"The two-week run cap set on {_RUN_CAP_SET_ON:%b %d} is up "
+                f"({_weeks} weeks in). This is a decision point, not a fault — "
+                f"nothing has stopped.\n\n"
+                f"Three questions, in order of how much they matter:\n"
+                f"1. Has anyone opened a brand from these digests and acted on "
+                f"it? If not, the problem is not the scoring.\n"
+                f"2. Keep the scoring budget at {_BUDGET_TRIAL_TO:,} or drop "
+                f"back to {_BUDGET_TRIAL_FROM:,}? Backlog now: {_backlog} "
+                f"unassessed. (SCAN_ENRICH_BUDGET)\n"
+                f"3. Is the weekly rhythm right, or should this go quiet and be "
+                f"pulled on demand instead?\n\n"
+                f"Deferred work is listed in docs/NEXT_LEVEL_BACKLOG.md — none "
+                f"of it should start before these are answered."
             )
-            logger.info("Weekly digest: elevated-budget review is due")
+            logger.info("Weekly digest: two-week run cap reached — decision banner shown")
 
         week_label = datetime.now(timezone.utc).strftime("%b %d, %Y")
         sent_ok = False

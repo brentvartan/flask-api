@@ -25,14 +25,16 @@ def test_budget_is_raised_and_drains_the_backlog():
 
 
 def test_review_date_is_a_month_after_the_raise():
-    assert (sch._BUDGET_REVIEW_ON - sch._BUDGET_RAISED_ON).days >= 28
+    # Brent capped the run at two weeks on 2026-08-04; the budget trial now
+    # ends with the cap rather than on its original one-month date.
+    assert (sch._RUN_CAP_ON - sch._RUN_CAP_SET_ON).days == 14
 
 
 def test_review_not_due_before_the_date(monkeypatch):
     class _Before(date):
         @classmethod
         def today(cls):
-            return sch._BUDGET_REVIEW_ON - timedelta(days=1)
+            return sch._RUN_CAP_ON - timedelta(days=1)
     monkeypatch.setattr(sch, "_date", _Before)
     assert sch._budget_review_due() is False
 
@@ -41,7 +43,7 @@ def test_review_due_on_and_after_the_date(monkeypatch):
     class _After(date):
         @classmethod
         def today(cls):
-            return sch._BUDGET_REVIEW_ON + timedelta(days=3)
+            return sch._RUN_CAP_ON + timedelta(days=3)
     monkeypatch.setattr(sch, "_date", _After)
     assert sch._budget_review_due() is True
 
@@ -51,7 +53,7 @@ def test_review_stops_nagging_once_the_budget_drops_back(monkeypatch):
     class _After(date):
         @classmethod
         def today(cls):
-            return sch._BUDGET_REVIEW_ON + timedelta(days=30)
+            return sch._RUN_CAP_ON + timedelta(days=30)
     monkeypatch.setattr(sch, "_date", _After)
     monkeypatch.setenv("SCAN_ENRICH_BUDGET", str(sch._BUDGET_TRIAL_FROM))
     assert sch._budget_review_due() is False
@@ -60,3 +62,48 @@ def test_review_stops_nagging_once_the_budget_drops_back(monkeypatch):
 def test_env_override_still_wins(monkeypatch):
     monkeypatch.setenv("SCAN_ENRICH_BUDGET", "1234")
     assert sch._enrich_budget() == 1234
+
+
+class TestRunCap:
+    """The cap is a decision point, not a shutdown. Scans keep running; the
+    digest just stops leading with brands and starts leading with the question."""
+
+    def test_cap_is_two_weeks_from_when_it_was_set(self):
+        from app.services import scheduler as sch
+        assert (sch._RUN_CAP_ON - sch._RUN_CAP_SET_ON).days == 14
+
+    def test_not_reached_before_the_date(self, monkeypatch):
+        from datetime import date, timedelta
+        from app.services import scheduler as sch
+
+        class _D(date):
+            @classmethod
+            def today(cls):
+                return sch._RUN_CAP_ON - timedelta(days=1)
+        monkeypatch.setattr(sch, "_date", _D)
+        assert sch._run_cap_reached() is False
+
+    def test_reached_on_and_after_the_date(self, monkeypatch):
+        from datetime import date, timedelta
+        from app.services import scheduler as sch
+
+        for offset in (0, 1, 90):
+            class _D(date):
+                _o = offset
+                @classmethod
+                def today(cls):
+                    return sch._RUN_CAP_ON + timedelta(days=cls._o)
+            monkeypatch.setattr(sch, "_date", _D)
+            assert sch._run_cap_reached() is True, f"offset {offset}"
+
+    def test_banner_keeps_appearing_until_answered(self, monkeypatch):
+        """Deliberate: an unanswered cap should nag, not lapse quietly."""
+        from datetime import date, timedelta
+        from app.services import scheduler as sch
+
+        class _D(date):
+            @classmethod
+            def today(cls):
+                return sch._RUN_CAP_ON + timedelta(days=200)
+        monkeypatch.setattr(sch, "_date", _D)
+        assert sch._run_cap_reached() is True
