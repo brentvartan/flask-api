@@ -166,3 +166,22 @@ class TestLedgerOwnership:
         with cost._lock:
             assert cost._pending["usd"] == 0.0
         assert cost.month_to_date_usd() == pytest.approx(3.00)
+
+
+class TestSpendEndpoint:
+    """/api/admin/spend already existed. Appending a second route with the same
+    rule registers fine and silently never serves — the first one wins. The
+    metered figure therefore has to live inside the existing endpoint."""
+
+    def test_only_one_spend_route(self, app):
+        rules = [r for r in app.url_map.iter_rules() if r.rule == "/api/admin/spend"]
+        assert len(rules) == 1, f"duplicate /spend routes: {rules}"
+
+    def test_reports_metered_spend_and_the_cap(self, client, db, admin_user, admin_token):
+        r = client.get("/api/admin/spend",
+                       headers={"Authorization": f"Bearer {admin_token}"})
+        assert r.status_code == 200
+        metered = r.get_json()["anthropic"]["metered"]
+        assert "error" not in metered, metered
+        assert metered["cap_usd"] > 0
+        assert "spent_usd" in metered and "remaining_usd" in metered

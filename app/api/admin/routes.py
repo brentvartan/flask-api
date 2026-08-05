@@ -172,6 +172,21 @@ _spend_cache: dict = {"data": None, "expires": 0}
 _PROXYCURL_COST_PER_LOOKUP   = 0.01    # ~1 credit per profile fetch @ $0.01/credit
 _SERPAPI_COST_PER_SEARCH     = 0.00    # free plan (250/mo); paid plan ~$0.01/search
 _ANTHROPIC_COST_PER_SIGNAL   = 0.03    # claude-sonnet avg per enrichment call
+
+
+def _metered_spend():
+    """
+    Real Anthropic spend against the hard monthly cap.
+
+    The constant above is a flat per-enrichment guess; this is measured from
+    response.usage on every call. Never raises — a spend dashboard that 500s is
+    worse than one reporting it cannot read the ledger.
+    """
+    try:
+        from ...services.cost import summary
+        return summary()
+    except Exception as exc:
+        return {"error": f"unavailable: {exc}"}
 _ANTHROPIC_HAIKU_PER_RESCORE = 0.005   # claude-haiku founder re-score call
 _RESEND_COST_PER_EMAIL       = 0.0    # Free tier: 3,000/mo; update if upgraded
 
@@ -374,9 +389,14 @@ def get_spend():
         "anthropic": {
             "enrichments_this_month":    anthropic_month,
             "enrichments_all_time":      anthropic_alltime,
+            # Kept for continuity with historical figures, but these multiply a
+            # hardcoded $0.03/enrichment guess by a row count. "metered" below is
+            # the real number: every call priced from the usage the API reported,
+            # including the cache-read and cache-write rates that dominate here.
             "estimated_cost_this_month": anthropic_cost_month,
             "estimated_cost_all_time":   anthropic_cost_alltime,
             "cost_per_enrichment":       _ANTHROPIC_COST_PER_SIGNAL,
+            "metered":                   _metered_spend(),
         },
         "resend": {
             "emails_this_month":         resend["emails_this_month"],
@@ -1608,17 +1628,3 @@ def recall_check():
         "results": out,
     }), 200
 
-
-@bp.route("/spend", methods=["GET"])
-@admin_required()
-def spend():
-    """
-    Month-to-date Anthropic spend against the hard cap.
-
-    Exists because the app previously had no idea what it cost: every call site
-    read response.usage, logged it, and discarded it. A budget denominated in
-    signals ("score 3,000 a night") converts to dollars through the output
-    length, which nothing was measuring.
-    """
-    from ...services.cost import summary
-    return jsonify(summary()), 200
