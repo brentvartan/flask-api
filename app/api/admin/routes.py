@@ -174,6 +174,19 @@ _SERPAPI_COST_PER_SEARCH     = 0.00    # free plan (250/mo); paid plan ~$0.01/se
 _ANTHROPIC_COST_PER_SIGNAL   = 0.03    # claude-sonnet avg per enrichment call
 
 
+def _cost_model_payload():
+    """Declared cost model for the Settings page, with the metered figure folded in.
+
+    Never raises: the spend page must still render if the model file is broken.
+    """
+    try:
+        from ...services.cost_model import cost_model
+        return cost_model(_metered_spend())
+    except Exception as exc:
+        current_app.logger.warning("cost model unavailable: %s", exc)
+        return {"error": "unavailable"}
+
+
 def _metered_spend():
     """
     Real Anthropic spend against the hard monthly cap.
@@ -414,6 +427,7 @@ def get_spend():
             "entries": manual_entries,
             "total":   manual_total,
         },
+        "cost_model": _cost_model_payload(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     _spend_cache["data"] = result_dict
